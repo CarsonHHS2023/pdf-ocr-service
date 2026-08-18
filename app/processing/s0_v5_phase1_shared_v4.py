@@ -1,14 +1,15 @@
 """Shared-aware OpenCV v4 page coordinator for S0 v5 Phase 1.
 
 The existing v4 helper functions and quality gates remain authoritative.  This
-module only avoids recomputing page evidence that the classify-first pass already
-produced.  Any missing shared evidence falls back to the installed v4 helper.
+module only avoids recomputing evidence that the already-composed classification
+path produced for an equivalent provider page.  Unsafe provider transformations
+or missing cache data fall back to the installed v4 helpers.
 """
 from __future__ import annotations
 
 from dataclasses import asdict
 import hashlib
-from typing import Any, Callable
+from typing import Callable
 
 import fitz  # type: ignore[import]
 
@@ -20,6 +21,8 @@ from app.processing.pdf_geometry_preprocessing import (
 
 
 _BASE_DELEGATE: Callable[..., GeometryPreprocessedPdf] | None = None
+_SAFE_COLOR_REUSE_MODES = frozenset({"pdf_page", "orientation_corrected_raster"})
+_SAFE_GEOMETRY_REUSE_MODES = _SAFE_COLOR_REUSE_MODES
 
 
 def configure(*, base_delegate: Callable[..., GeometryPreprocessedPdf]) -> None:
@@ -33,7 +36,7 @@ def preprocess_pdf_geometry_opencv_shared(
     expected_page_count: int | None = None,
     **kwargs: object,
 ) -> GeometryPreprocessedPdf:
-    """Run v4 with shared classify-pass evidence when a Phase 1 run is active."""
+    """Run v4 while reusing only page-equivalent Phase 1 evidence."""
     delegate = _BASE_DELEGATE
     if shared.active_state() is None:
         if delegate is None:
@@ -69,7 +72,18 @@ def preprocess_pdf_geometry_opencv_shared(
         for page_index in range(page_count):
             page = source.load_page(page_index)
             page_number = page_index + 1
-            original_page_number = shared.original_page_number(page)
+            provider_item = shared.provider_item(page)
+            original_page_number = (
+                int(provider_item["original_page_number"])
+                if provider_item is not None
+                and isinstance(provider_item.get("original_page_number"), int)
+                else None
+            )
+            provider_input_mode = (
+                str(provider_item.get("provider_input_mode") or "pdf_page")
+                if provider_item is not None
+                else "pdf_page"
+            )
             cached = (
                 shared.page_cache(original_page_number)
                 if original_page_number is not None
@@ -80,7 +94,14 @@ def preprocess_pdf_geometry_opencv_shared(
                 max(1, int(round(float(page.rect.height)))),
             )
 
-            structure = cached.get("structure") if isinstance(cached, dict) else None
+            # Reuse original-PDF structure only when the provider page is still
+            # that PDF page.  Orientation/native fallback rasterization can
+            # change born-digital semantics and must be inspected afresh.
+            structure = (
+                cached.get("structure")
+                if provider_input_mode == "pdf_page" and isinstance(cached, dict)
+                else None
+            )
             if structure is None:
                 structure = v4._inspect_page_structure(page)
             else:
@@ -109,12 +130,20 @@ def preprocess_pdf_geometry_opencv_shared(
                     "selected": "original",
                     "structure": asdict(structure),
                     "reasons": ["born_digital"],
+                    "phase1_provider_input_mode": provider_input_mode,
                 }
                 manifest_pages.append(decision)
                 v4._log_page_decision(decision)
                 continue
 
-            color = cached.get("color") if isinstance(cached, dict) else None
+            # Discrete rotation preserves color-distribution evidence, while
+            # native fallback raster paths are deliberately recomputed.
+            color = (
+                cached.get("color")
+                if provider_input_mode in _SAFE_COLOR_REUSE_MODES
+                and isinstance(cached, dict)
+                else None
+            )
             if color is None:
                 preview = v4._render_page_bgr(page, dpi=v4._ANALYSIS_DPI)
                 color = v4._color_features(preview)
@@ -122,8 +151,13 @@ def preprocess_pdf_geometry_opencv_shared(
             else:
                 shared.metric("ordinary_color_cache_hits")
 
-            cached_geometry = shared.cached_geometry_for_ordinary(
-                original_page_number
+            cached_geometry = (
+                shared.cached_geometry_for_ordinary(
+                    original_page_number,
+                    provider_input_mode=provider_input_mode,
+                )
+                if provider_input_mode in _SAFE_GEOMETRY_REUSE_MODES
+                else None
             )
             if cached_geometry is None:
                 source_bgr = v4._render_page_bgr(page, dpi=v4._RENDER_DPI)
@@ -266,6 +300,7 @@ def preprocess_pdf_geometry_opencv_shared(
                     "gate": background_gate,
                 },
                 "applied_steps": list(applied_steps),
+                "phase1_provider_input_mode": provider_input_mode,
             }
             manifest_pages.append(decision)
             v4._log_page_decision(decision)
