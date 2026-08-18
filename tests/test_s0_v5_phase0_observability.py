@@ -139,7 +139,7 @@ def test_top_level_delegate_failure_is_preserved(monkeypatch) -> None:
     assert phase0._ACTIVE_PROFILE.get() is None
 
 
-def test_apply_script_inserts_phase1_beneath_phase0_after_prior_overlays(tmp_path) -> None:
+def test_apply_script_installs_phase0_before_phase1_cache_layer(tmp_path) -> None:
     path = tmp_path / "pdf_ingestion.py"
     path.write_text(
         "from app.config import settings\n"
@@ -160,14 +160,14 @@ def test_apply_script_inserts_phase1_beneath_phase0_after_prior_overlays(tmp_pat
     assert once.count("install_s0_v5_cheap_shadow_geometry()") == 1
     assert once.count("install_s0_v5_phase0_observability()") == 1
     assert once.index("install_overlay()") < once.index(
-        "install_s0_v5_phase1_shared_analysis()"
-    )
-    assert once.index("install_s0_v5_phase1_shared_analysis()") < once.index(
         "install_s0_v5_cheap_shadow_geometry()"
     )
     assert once.index("install_s0_v5_cheap_shadow_geometry()") < once.index(
         "install_s0_v5_phase0_observability()"
     )
     assert once.index("install_s0_v5_phase0_observability()") < once.index(
+        "install_s0_v5_phase1_shared_analysis()"
+    )
+    assert once.index("install_s0_v5_phase1_shared_analysis()") < once.index(
         "from app.database import SessionLocal"
     )
