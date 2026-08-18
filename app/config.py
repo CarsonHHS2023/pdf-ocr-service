@@ -35,6 +35,51 @@ class Settings(BaseSettings):
     public_source_transport_origin: str | None = Field(default=None, validation_alias="ATLAS_PUBLIC_SOURCE_TRANSPORT_ORIGIN")
     processing_operator_enabled: bool = Field(default=False, validation_alias="ATLAS_PROCESSING_OPERATOR_ENABLED")
     processing_operator_token: str | None = Field(default=None, validation_alias="ATLAS_PROCESSING_OPERATOR_TOKEN", repr=False)
+
+    # Browser -> S3-compatible object storage direct upload. This is opt-in so
+    # Production and existing Staging deployments retain current behavior until
+    # a private bucket, credentials, CORS, and a signing secret are configured.
+    direct_upload_enabled: bool = Field(default=False, validation_alias="ATLAS_DIRECT_UPLOAD_ENABLED")
+    direct_upload_signing_secret: str | None = Field(
+        default=None,
+        validation_alias="ATLAS_DIRECT_UPLOAD_SIGNING_SECRET",
+        repr=False,
+    )
+    direct_upload_url_ttl_seconds: int = Field(
+        default=900,
+        validation_alias="ATLAS_DIRECT_UPLOAD_URL_TTL_SECONDS",
+    )
+    direct_upload_single_put_max_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        validation_alias="ATLAS_DIRECT_UPLOAD_SINGLE_PUT_MAX_BYTES",
+    )
+    object_storage_endpoint_url: str | None = Field(
+        default=None,
+        validation_alias="ATLAS_OBJECT_STORAGE_ENDPOINT_URL",
+    )
+    object_storage_bucket: str | None = Field(
+        default=None,
+        validation_alias="ATLAS_OBJECT_STORAGE_BUCKET",
+    )
+    object_storage_access_key_id: str | None = Field(
+        default=None,
+        validation_alias="ATLAS_OBJECT_STORAGE_ACCESS_KEY_ID",
+        repr=False,
+    )
+    object_storage_secret_access_key: str | None = Field(
+        default=None,
+        validation_alias="ATLAS_OBJECT_STORAGE_SECRET_ACCESS_KEY",
+        repr=False,
+    )
+    object_storage_region: str = Field(
+        default="auto",
+        validation_alias="ATLAS_OBJECT_STORAGE_REGION",
+    )
+    object_storage_prefix: str = Field(
+        default="atlas",
+        validation_alias="ATLAS_OBJECT_STORAGE_PREFIX",
+    )
+
     # Production TXT structure analysis targets OpenAI GPT-5.6 Luna by default.
     # Endpoint/model remain overrideable for controlled evaluation or rollback;
     # credentials never have a repository default and must come from a secret/env.

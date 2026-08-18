@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.storage.base import StorageProvider
 from app.storage.dependencies import get_storage_provider
-from app.book_service import get_book_service
+from app.book_service import BookDeletionConflict, get_book_service
 from app.schemas import BookSchema, BooksListSchema, BookDetailSchema, BookContentSchema
 
 logger = logging.getLogger(__name__)
@@ -215,7 +215,9 @@ async def delete_book(book_id: str, db: Session = Depends(get_db), storage: Stor
 
     except HTTPException:
         raise
+    except BookDeletionConflict as e:
+        logger.warning("Book delete conflict book_id=%s: %s", book_id, e)
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to delete book: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete book: {e}")
-

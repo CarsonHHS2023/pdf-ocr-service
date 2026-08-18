@@ -1,0 +1,74 @@
+name: Provider Transport Sharding CI
+
+on:
+  pull_request:
+    branches: [main, staging]
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-transport-sharding-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sharding:
+    name: Byte-bounded PDF provider sharding
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-test.txt
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt -r requirements-test.txt
+
+      - name: Apply production overlays
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_crop_llm_background_cleanup.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+
+      - name: Verify sharding overlay and unchanged Modal batch policy
+        run: |
+          grep -q 'install_provider_transport_sharding_compat()' app/processing/pdf_ingestion.py
+          grep -q 'PRODUCTION_BATCH_SIZE = 50' app/processing/pdf_ingestion.py
+          grep -q 'PRODUCTION_MAX_CONCURRENT_WORKERS = 5' app/processing/pdf_ingestion.py
+          grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 80' app/processing/pdf_provider_sharding.py
+          grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 95' app/processing/pdf_provider_sharding.py
+
+      - name: Compile sharding production path
+        run: |
+          python -m py_compile \
+            app/processing/pdf_provider_sharding.py \
+            app/processing/pdf_provider_sharding_compat.py \
+            app/processing/pdf_ingestion.py \
+            scripts/apply_provider_transport_sharding.py \
+            scripts/apply_native_pdf_text_recovery.py
+
+      - name: Run focused sharding tests
+        run: |
+          python -m pytest -q \
+            tests/test_pdf_provider_sharding.py \
+            tests/test_pdf_provider_sharding_compat.py \
+            tests/test_production_pdf_modal_cutover.py

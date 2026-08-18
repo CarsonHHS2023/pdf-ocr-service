@@ -265,6 +265,30 @@ def _set_document_terminal_state(document_id: str, *, status: str, error_message
         db.close()
 
 
+def _set_document_page_count_if_missing(document_id: str, page_count: int) -> None:
+    if int(page_count) <= 0:
+        raise RuntimeError("Preprocessed PDF page count is invalid")
+    db = SessionLocal()
+    try:
+        document = db.get(Document, document_id)
+        if document is None:
+            return
+        if document.pages_count is None or int(document.pages_count or 0) <= 0:
+            document.pages_count = int(page_count)
+            db.commit()
+            _diagnostic(
+                "PDF_DOCUMENT_PAGE_COUNT_DISCOVERED",
+                document_id=document_id,
+                page_count=page_count,
+            )
+    except Exception:
+        db.rollback()
+        logger.exception("Could not persist PDF page count document_id=%s", document_id)
+        raise
+    finally:
+        db.close()
+
+
 def _read_verified_source_pdf(storage, descriptor: RetainedSourceDescriptor) -> bytes:
     source_pdf = storage.get(descriptor.storage_reference)
     if not isinstance(source_pdf, bytes) or not source_pdf.startswith(b"%PDF-"):
@@ -297,7 +321,7 @@ def _prepare_geometry_provider_input_from_storage(
     storage,
     descriptor: RetainedSourceDescriptor,
     processing_attempt_id: str,
-    expected_page_count: int,
+    expected_page_count: int | None,
 ) -> GeometryProviderInput:
     """Read and preprocess only after bounded executor admission."""
     source_pdf = _read_verified_source_pdf(storage, descriptor)
@@ -316,7 +340,7 @@ async def _prepare_geometry_provider_input_async(
     descriptor: RetainedSourceDescriptor,
     processing_attempt_id: str,
     document_id: str,
-    expected_page_count: int,
+    expected_page_count: int | None,
 ) -> GeometryProviderInput:
     """Submit bounded preprocessing and make cancellation cleanup task-independent."""
     if not _PDF_PREPROCESSING_CAPACITY.acquire(blocking=False):
@@ -389,15 +413,7 @@ async def process_pdf_document_background(
                 error_message="Retained PDF source metadata is incomplete",
             )
             return
-        expected_page_count = int(document.pages_count or 0)
-        if expected_page_count <= 0:
-            logger.error("PDF ingestion page count unavailable document_id=%s", document_id)
-            _set_document_terminal_state(
-                document_id,
-                status="failed",
-                error_message="Retained PDF page-count metadata is unavailable",
-            )
-            return
+        expected_page_count = int(document.pages_count) if document.pages_count and int(document.pages_count) > 0 else None
         descriptor = RetainedSourceDescriptor(
             document_id=document.id,
             source_file_id=source.id,
@@ -414,7 +430,7 @@ async def process_pdf_document_background(
             source_file_id=source_file_id,
             processing_attempt_id=ids.processing_attempt_id,
             byte_size=descriptor.byte_size,
-            page_count=expected_page_count,
+            page_count=(expected_page_count if expected_page_count is not None else "deferred"),
         )
     finally:
         db.close()
@@ -432,6 +448,11 @@ async def process_pdf_document_background(
             document_id=document_id,
             expected_page_count=expected_page_count,
         )
+        if expected_page_count is None:
+            _set_document_page_count_if_missing(
+                document_id,
+                geometry_input.preprocessing.page_count,
+            )
         _diagnostic(
             "PDF_GEOMETRY_PREPROCESSING_COMPLETED",
             document_id=document_id,

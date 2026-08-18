@@ -3,6 +3,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+try:
+    from scripts.apply_provider_transport_sharding import (
+        patch_provider_transport_sharding_installation,
+    )
+except ModuleNotFoundError:  # ``python scripts/...`` places scripts/ on sys.path.
+    from apply_provider_transport_sharding import (  # type: ignore[no-redef]
+        patch_provider_transport_sharding_installation,
+    )
+
 
 _IMPORT_ANCHOR = (
     "from app.processing.pdf_page_high_resolution_confirmation_compat import "
@@ -101,6 +110,7 @@ def _patch_preprocess_accounting() -> None:
 def main() -> None:
     _patch_installation()
     _patch_preprocess_accounting()
+    patch_provider_transport_sharding_installation()
 
 
 if __name__ == "__main__":

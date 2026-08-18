@@ -17,6 +17,22 @@ def test_config_validation_and_redaction():
     with pytest.raises(ProviderClientError): PaddleVLClientConfig('https://x', 'token', default_result_profile='raw')
     assert 'secret-token' not in repr(PaddleVLClientConfig('https://x','secret-token'))
 
+
+def test_config_strips_surrounding_environment_whitespace_before_httpx():
+    config = PaddleVLClientConfig('\r\n  https://provider.test/prefix/  \n', 'secret-token')
+    assert config.base_url == 'https://provider.test/prefix/'
+    scoped = PaddleVLClient(config, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    assert str(scoped._client.base_url) == 'https://provider.test/prefix/'
+
+
+@pytest.mark.parametrize('bad_url', ['https://provider.test\u200b', 'https://provider.test:bad'])
+def test_config_maps_httpx_invalid_url_syntax_to_configuration_error(bad_url):
+    with pytest.raises(ProviderClientError) as exc_info:
+        PaddleVLClientConfig(bad_url, 'secret-token')
+    assert exc_info.value.detail.category is ProviderErrorCategory.CONFIGURATION
+    assert 'base URL is invalid' in exc_info.value.detail.safe_message
+
+
 def test_request_validation_and_exact_json():
     assert req().to_provider_json()['documents'][0]['pdf_source_url']=='https://example.com/doc.pdf'
     with pytest.raises(ProviderClientError): PaddleVLDocument('', 'https://x').to_provider_json()

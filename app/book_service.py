@@ -16,6 +16,13 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_PROCESSING_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
+
+
+class BookDeletionConflict(RuntimeError):
+    """Raised when a book cannot be safely deleted while processing is active."""
+
+
 class BookService:
     """Service for managing books on bookshelf."""
 
@@ -105,7 +112,7 @@ class BookService:
     @staticmethod
     def get_all_books(db: Session) -> list[Document]:
         """
-        Get all books.
+        Get all books from bookshelf.
 
         Args:
             db: Database session
@@ -163,6 +170,10 @@ class BookService:
         """
         Delete book and associated files.
 
+        ProcessingRun is durable provenance and therefore remains protected by
+        RESTRICT at the schema boundary. A user-initiated delete explicitly
+        purges only terminal runs; any active/non-terminal run blocks deletion.
+
         Args:
             db: Database session
             book_id: Book ID
@@ -175,6 +186,22 @@ class BookService:
             if not book:
                 logger.warning(f"Book not found: {book_id}")
                 return False
+
+            processing_runs = list(book.processing_runs)
+            nonterminal_runs = [
+                run
+                for run in processing_runs
+                if run.status not in _TERMINAL_PROCESSING_RUN_STATUSES
+            ]
+            if nonterminal_runs:
+                logger.warning(
+                    "Refusing to delete book with active processing runs: book_id=%s active_run_count=%s",
+                    book_id,
+                    len(nonterminal_runs),
+                )
+                raise BookDeletionConflict(
+                    "Book is still being processed and cannot be deleted yet"
+                )
 
             # Delete associated compatibility files only. Opaque retained-source
             # storage references are deleted explicitly through Storage below,
@@ -219,7 +246,22 @@ class BookService:
                     raise
 
             try:
-                # Delete database record (cascades to images)
+                # ProcessingRun intentionally uses ON DELETE RESTRICT so provenance
+                # cannot disappear implicitly. A user-initiated purge removes only
+                # terminal runs explicitly, in the same DB transaction, before the
+                # Document/SourceFile aggregate is deleted.
+                for run in processing_runs:
+                    db.delete(run)
+                if processing_runs:
+                    db.flush()
+                    logger.info(
+                        "Purged %s terminal processing run(s) before deleting book %s",
+                        len(processing_runs),
+                        book_id,
+                    )
+
+                # Delete database record (cascades to source files, images, pages,
+                # content blocks, and other aggregate-owned compatibility rows).
                 db.delete(book)
                 db.commit()
             except Exception:
@@ -230,6 +272,9 @@ class BookService:
             logger.info(f"Deleted book: {book_id}")
             return True
 
+        except BookDeletionConflict:
+            db.rollback()
+            raise
         except Exception as e:
             db.rollback()
             logger.error(f"Failed to delete book: {e}")

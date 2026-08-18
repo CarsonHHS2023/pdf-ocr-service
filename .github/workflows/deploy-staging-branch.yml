@@ -1,0 +1,236 @@
+name: Deploy staging branch to staging Space
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging-branch
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out current staging head
+        uses: actions/checkout@v4
+        with:
+          ref: staging
+          fetch-depth: 2
+          lfs: true
+
+      - name: Verify exact remote staging head
+        id: staging
+        run: |
+          set -euo pipefail
+          local_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote origin refs/heads/staging | awk '{print $1}')"
+          if [[ -z "${remote_sha}" || "${local_sha}" != "${remote_sha}" ]]; then
+            echo "staging head moved: local=${local_sha} remote=${remote_sha}" >&2
+            exit 1
+          fi
+          echo "sha=${local_sha}" >> "$GITHUB_OUTPUT"
+          echo "Deploying exact staging head ${local_sha}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Apply production-equivalent overlays
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_crop_llm_background_cleanup.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+          python scripts/apply_s0_bounded_memory_compat.py
+          python scripts/apply_s0_bounded_v4_output.py
+          python scripts/apply_provider_transport_sharding.py
+          python scripts/apply_s0_pdf_resource_heartbeat.py
+          python scripts/apply_provider_runtime_preflight.py
+          python scripts/apply_s0_v5_phase0_observability.py
+
+      - name: Verify deployable staging build
+        run: |
+          python -m py_compile \
+            app/main.py \
+            app/routers/resumable_upload.py \
+            app/routers/direct_upload.py \
+            app/storage/direct_upload.py \
+            app/storage/factory.py \
+            app/storage/federated.py \
+            app/storage/s3.py \
+            app/processing/pdf_ingestion.py \
+            app/processing/orchestration.py \
+            app/processing/pdf_geometry_integration.py \
+            app/processing/pdf_provider_runtime_preflight.py \
+            app/processing/pdf_s0_bounded_memory_compat.py \
+            app/processing/pdf_s0_bounded_v4_output_compat.py \
+            app/processing/s0_pdf_resource_heartbeat.py \
+            app/processing/s0_stale_processing_run_recovery.py \
+            app/processing/s0_v5_observability.py \
+            app/processing/s0_v5_shadow_planner.py \
+            app/processing/s0_v5_phase0_observability_compat.py \
+            scripts/apply_native_pdf_text_recovery.py \
+            scripts/apply_s0_bounded_memory_compat.py \
+            scripts/apply_s0_bounded_v4_output.py \
+            scripts/apply_provider_transport_sharding.py \
+            scripts/apply_s0_pdf_resource_heartbeat.py \
+            scripts/apply_provider_runtime_preflight.py \
+            scripts/apply_s0_v5_phase0_observability.py
+          grep -q 'install_s0_bounded_memory_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_s0_bounded_v4_output_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_provider_transport_sharding_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_opencv_page_heartbeat_probe' app/processing/pdf_ingestion.py
+          grep -q 'validate_provider_runtime_configuration(settings)' app/processing/pdf_ingestion.py
+          grep -q 'install_s0_v5_phase0_observability' app/processing/pdf_ingestion.py
+          grep -q 'recover_stale_s0_pdf_processing_runs' app/main.py
+          grep -q 'resumable_upload.router' app/main.py
+          grep -q 'direct_upload.router' app/main.py
+          printf '%s\n' '${{ steps.staging.outputs.sha }}' > staging-revision.txt
+
+      - name: Install Hugging Face client
+        run: python -m pip install --disable-pip-version-check -q huggingface-hub
+
+      - name: Upload exact staging head and verify HF runtime
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STAGING_SHA: ${{ steps.staging.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          from huggingface_hub import HfApi
+
+          token = os.environ['HF_TOKEN']
+          sha = os.environ['STAGING_SHA']
+          repo_id = 'carsonhhs/pdf-ocr-service-staging'
+          health_url = 'https://carsonhhs-pdf-ocr-service-staging.hf.space/api/v1/health'
+          api = HfApi(token=token)
+          intermediate_stages = {
+              'BUILDING',
+              'RUNNING_BUILDING',
+              'APP_STARTING',
+              'RUNNING_APP_STARTING',
+          }
+
+          def describe(label, runtime):
+              print(
+                  f'{label}: stage={runtime.stage} '
+                  f'hardware={runtime.hardware} '
+                  f'requested_hardware={runtime.requested_hardware}'
+              )
+
+          def dump_log_tail():
+              for build in (False, True):
+                  kind = 'build' if build else 'run'
+                  try:
+                      lines = [
+                          str(line).rstrip('\n')[:2000]
+                          for line in api.fetch_space_logs(
+                              repo_id,
+                              build=build,
+                              follow=False,
+                          )
+                      ]
+                  except Exception as exc:
+                      print(f'Unable to fetch HF {kind} logs: {exc!r}')
+                      continue
+                  print(f'--- HF {kind} log tail ({min(len(lines), 120)} lines) ---')
+                  for line in lines[-120:]:
+                      print(line)
+
+          before = api.get_space_runtime(repo_id)
+          describe('HF runtime before upload', before)
+
+          print(f'Uploading exact staging branch head {sha} to {repo_id}...')
+          info = api.upload_folder(
+              folder_path='.',
+              repo_id=repo_id,
+              repo_type='space',
+              commit_message=f'Deploy staging {sha}',
+              ignore_patterns=[
+                  '.git*',
+                  '.github*',
+                  '__pycache__',
+                  '*.pyc',
+                  '.env',
+              ],
+          )
+          print(info)
+
+          after_upload = api.get_space_runtime(repo_id)
+          describe('HF runtime after upload', after_upload)
+          if after_upload.stage not in intermediate_stages:
+              print(
+                  'No active HF build/start transition observed after upload; '
+                  f'forcing a restart from the latest Space revision (stage={after_upload.stage}).'
+              )
+              restarted = api.restart_space(repo_id)
+              describe('HF runtime after restart request', restarted)
+
+          try:
+              final = api.wait_for_space(
+                  repo_id,
+                  timeout=600,
+                  poll_interval=5,
+              )
+          except TimeoutError:
+              print('Timed out waiting for HF staging Space to reach a terminal runtime stage.')
+              dump_log_tail()
+              raise
+
+          describe('HF runtime final', final)
+          if final.stage != 'RUNNING':
+              dump_log_tail()
+              raise RuntimeError(
+                  f'HF staging Space did not become RUNNING; final stage={final.stage}'
+              )
+
+          deadline = time.monotonic() + 90
+          last_health_error = None
+          while time.monotonic() < deadline:
+              try:
+                  with urllib.request.urlopen(health_url, timeout=10) as response:
+                      payload = json.loads(response.read(4096).decode('utf-8'))
+                      if (
+                          response.status == 200
+                          and payload.get('status') == 'healthy'
+                          and payload.get('service') == 'pdf-ocr-service'
+                      ):
+                          print(
+                              f'HF staging health endpoint verified for staging head {sha}: '
+                              f'{health_url}'
+                          )
+                          break
+                      last_health_error = RuntimeError(
+                          f'unexpected health response: status={response.status} payload={payload!r}'
+                      )
+              except Exception as exc:
+                  last_health_error = exc
+              print(f'HF staging health is not ready yet: {last_health_error!r}')
+              time.sleep(5)
+          else:
+              dump_log_tail()
+              raise RuntimeError(
+                  f'HF staging runtime is RUNNING but health verification failed: '
+                  f'{last_health_error!r}'
+              )
+
+          print(f'HF staging Space is RUNNING and healthy for staging head {sha}.')
+          PY

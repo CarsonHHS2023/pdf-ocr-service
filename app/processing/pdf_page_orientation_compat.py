@@ -233,6 +233,46 @@ def detect_discrete_orientation(
     return _image_orientation(analysis_image)
 
 
+def _orientation_metadata(orientation: DiscreteOrientation) -> dict[str, object]:
+    return {
+        "correction_degrees": int(orientation.correction_degrees),
+        "applied": bool(orientation.applied),
+        "confidence": float(orientation.confidence),
+        "source": str(orientation.source),
+        "native_text_chars": int(orientation.native_text_chars),
+        "image_score": float(orientation.image_score),
+    }
+
+
+def _orientation_from_decision(
+    decision: Mapping[str, object],
+) -> DiscreteOrientation | None:
+    value = decision.get("orientation")
+    if not isinstance(value, Mapping):
+        geometry = decision.get("geometry")
+        if isinstance(geometry, Mapping):
+            value = geometry.get("orientation")
+    if not isinstance(value, Mapping):
+        return None
+    raw_degrees = value.get("correction_degrees", value.get("detected_degrees", 0))
+    try:
+        degrees = int(raw_degrees or 0) % 360
+        confidence = float(value.get("confidence") or 0.0)
+        native_text_chars = int(value.get("native_text_chars") or 0)
+        image_score = float(value.get("image_score") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if degrees not in {0, 90, 180, 270}:
+        return None
+    return DiscreteOrientation(
+        correction_degrees=degrees,
+        confidence=confidence,
+        source=str(value.get("source") or "decision_metadata"),
+        native_text_chars=native_text_chars,
+        image_score=image_score,
+    )
+
+
 def _oriented_geometry(
     page: fitz.Page,
     orientation: DiscreteOrientation,
@@ -295,6 +335,7 @@ def _oriented_geometry(
         "applied_steps": applied_steps,
         "orientation": {
             "detected_degrees": orientation.correction_degrees,
+            "correction_degrees": orientation.correction_degrees,
             "applied": orientation.applied,
             "confidence": orientation.confidence,
             "source": orientation.source,
@@ -306,13 +347,43 @@ def _oriented_geometry(
     return selected, geometry, oriented_source if orientation.applied else None
 
 
+def _orientation_image_from_decision(
+    page: fitz.Page,
+    decision: Mapping[str, object],
+) -> np.ndarray | None:
+    """Recreate only the page-scoped orientation raster required by provider input."""
+    if decision.get("decision_reason") in {
+        "pre_ocr_geometry_failed",
+        "pre_ocr_analysis_failed",
+    }:
+        return None
+    orientation = _orientation_from_decision(decision)
+    if orientation is None or not orientation.applied:
+        return None
+    from app.processing import pdf_opencv_quality_pipeline as v4
+
+    source_bgr = v4._render_page_bgr(page, dpi=v4._RENDER_DPI)
+    return _rotate_clockwise(source_bgr, orientation.correction_degrees)
+
+
+def _presentation_geometry_from_decision(
+    page: fitz.Page,
+    decision: Mapping[str, object],
+) -> tuple[np.ndarray | None, dict[str, object]]:
+    """Recreate presentation geometry just-in-time instead of retaining it."""
+    orientation = _orientation_from_decision(decision)
+    if orientation is None:
+        return bridge._geometry_only_page(page)
+    selected, geometry, _ = _oriented_geometry(page, orientation)
+    return selected, geometry
+
+
 def _classify_source_pages_oriented(
     source: fitz.Document,
 ) -> list[dict[str, object]]:
-    from app.processing import pdf_opencv_quality_pipeline as v4
-
     decisions: list[dict[str, object]] = []
     page_count = source.page_count
+    preprocess._set_s0_work_phase("presentation_classification", page_count)
     for page_index in range(page_count):
         page_number = page_index + 1
         source_unit_id = bridge._source_unit_id(page_number)
@@ -348,9 +419,10 @@ def _classify_source_pages_oriented(
             source_unit_id,
             "not_selected_for_multimodal_review",
         )
-        geometry_image = None
-        orientation_image = None
         geometry: dict[str, object] = {}
+        geometry_image: np.ndarray | None = None
+        orientation_image: np.ndarray | None = None
+        classification_image: np.ndarray | None = None
         if candidate:
             geometry_image, geometry, orientation_image = _oriented_geometry(
                 page,
@@ -397,8 +469,9 @@ def _classify_source_pages_oriented(
             skip_ocr = False
             decision_reason = "not_a_local_candidate"
             if orientation.applied:
-                # Orientation itself makes the page a candidate, but retain this
-                # defensive branch for custom test feature overrides.
+                # Orientation itself normally makes the page a candidate. Keep
+                # this defensive branch for custom test feature overrides while
+                # retaining only metadata from the temporary raster operation.
                 _, geometry, orientation_image = _oriented_geometry(
                     page,
                     orientation,
@@ -439,12 +512,21 @@ def _classify_source_pages_oriented(
                 "classification": classification,
                 "skip_ocr": skip_ocr,
                 "decision_reason": decision_reason,
-                "geometry_image": geometry_image,
-                "orientation_image": orientation_image,
+                "orientation": _orientation_metadata(orientation),
                 "geometry": geometry,
                 "page_width_points": float(page.rect.width),
                 "page_height_points": float(page.rect.height),
             }
+        )
+        classification_image = None
+        geometry_image = None
+        orientation_image = None
+        oriented_analysis = None
+        raw_analysis = None
+        preprocess._mark_s0_work_page_completed(
+            page_number=page_number,
+            page_count=page_count,
+            route="presentation_classification",
         )
     return decisions
 
@@ -464,12 +546,13 @@ def _build_ordinary_source_oriented(
             if decision["skip_ocr"]:
                 continue
             page_index = int(decision["page_index"])
+            page = source[page_index]
             provider_page_index = ordinary.page_count
-            orientation_image = decision.get("orientation_image")
+            orientation_image = _orientation_image_from_decision(page, decision)
             if isinstance(orientation_image, np.ndarray):
                 v4._insert_raster_page(
                     ordinary,
-                    source[page_index].rect,
+                    page.rect,
                     orientation_image,
                 )
             else:
@@ -478,6 +561,7 @@ def _build_ordinary_source_oriented(
                     from_page=page_index,
                     to_page=page_index,
                 )
+            orientation_image = None
             provider_map.append(
                 {
                     "provider_page_index": provider_page_index,

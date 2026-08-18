@@ -1,0 +1,37 @@
+"""Install Staging-only S0 v5 Phase 0 observability after existing overlays."""
+from __future__ import annotations
+
+from pathlib import Path
+
+
+PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
+_ANCHOR = "from app.database import SessionLocal\n"
+_INSTALL = (
+    "from app.processing.s0_v5_shadow_geometry import "
+    "install_s0_v5_cheap_shadow_geometry\n"
+    "from app.processing.s0_v5_phase0_observability_compat import "
+    "install_s0_v5_phase0_observability\n\n"
+    "install_s0_v5_cheap_shadow_geometry()\n"
+    "install_s0_v5_phase0_observability()\n\n"
+)
+
+
+def patch_s0_v5_phase0_observability(
+    path: Path = PDF_INGESTION_PATH,
+) -> None:
+    """Add the Phase 0 installer after prior overlays but before bound imports."""
+    source = path.read_text(encoding="utf-8")
+    if _INSTALL in source:
+        return
+    if source.count(_ANCHOR) != 1:
+        raise RuntimeError("Could not find unique pdf_ingestion database import anchor")
+    source = source.replace(_ANCHOR, _INSTALL + _ANCHOR, 1)
+    path.write_text(source, encoding="utf-8")
+
+
+def main() -> None:
+    patch_s0_v5_phase0_observability()
+
+
+if __name__ == "__main__":
+    main()

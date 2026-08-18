@@ -1,0 +1,149 @@
+name: Staging Backend Integration CI
+
+on:
+  pull_request:
+    branches: [staging]
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/atlas_staging_ci
+      ATLAS_POSTGRESQL_SCHEMA_TEST: '1'
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: atlas_staging_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d atlas_staging_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-test.txt
+
+      - name: Install CI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt -r requirements-test.txt
+
+      - name: Apply production-equivalent overlays
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_crop_llm_background_cleanup.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+          python scripts/apply_s0_bounded_memory_compat.py
+          python scripts/apply_s0_bounded_v4_output.py
+          python scripts/apply_provider_transport_sharding.py
+          python scripts/apply_s0_pdf_resource_heartbeat.py
+          python scripts/apply_provider_runtime_preflight.py
+          python scripts/apply_s0_v5_phase0_observability.py
+
+      - name: Static and workflow checks
+        run: |
+          python -m compileall -q app alembic scripts
+          grep -q 'install_s0_bounded_memory_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_s0_bounded_v4_output_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_provider_transport_sharding_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_opencv_page_heartbeat_probe' app/processing/pdf_ingestion.py
+          grep -q 'validate_provider_runtime_configuration(settings)' app/processing/pdf_ingestion.py
+          grep -q 'install_s0_v5_phase0_observability' app/processing/pdf_ingestion.py
+          grep -q 'recover_stale_s0_pdf_processing_runs' app/main.py
+          grep -q 'resumable_upload.router' app/main.py
+          grep -q 'direct_upload.router' app/main.py
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in sorted(Path('.github/workflows').glob('*.yml')):
+              with path.open('r', encoding='utf-8') as handle:
+                  yaml.safe_load(handle)
+              print(f'valid yaml: {path}')
+          PY
+          git diff --check
+
+      - name: Upgrade fresh PostgreSQL database
+        run: |
+          alembic upgrade head
+          alembic current
+          python -m pytest -q tests/test_postgresql_readiness.py
+
+      - name: Verify SQLite to PostgreSQL replay on empty target
+        run: python -m pytest -q tests/test_postgresql_data_migration.py
+
+      - name: Verify PostgreSQL relational integrity
+        run: |
+          python -m pytest -q \
+            tests/test_postgresql_schema_integration.py \
+            tests/test_postgresql_book_delete.py
+
+      # These tests exercise contracts that remain valid after the deployment
+      # overlay chain has been installed. Unit tests that intentionally construct
+      # pre-overlay compatibility types stay in Required Backend CI instead.
+      - name: Run production-equivalent staging contracts
+        run: |
+          python -m pytest -q \
+            tests/test_source_transport_grants.py \
+            tests/test_source_transport_endpoint.py \
+            tests/test_end_to_end_processing_integration.py \
+            tests/test_processing_orchestration.py \
+            tests/test_paddle_vl_api_client.py \
+            tests/test_paddle_vl_api_mapping.py \
+            tests/test_production_pdf_modal_cutover.py \
+            tests/test_pdf_geometry_preprocessing.py \
+            tests/test_reader_contracts.py \
+            tests/test_reader_validation_boundaries.py \
+            tests/test_reader_service.py \
+            tests/test_reader_api.py \
+            tests/test_terminal_book_delete.py \
+            tests/test_resumable_upload.py \
+            tests/test_direct_object_upload.py \
+            tests/test_direct_upload_page_count.py \
+            tests/test_federated_storage_provider.py \
+            tests/test_s3_storage_provider.py
+
+      - name: Run provider sharding and S0 observability contracts
+        run: |
+          python -m pytest -q \
+            tests/test_pdf_provider_sharding.py \
+            tests/test_pdf_provider_sharding_compat.py \
+            tests/test_s0_pdf_resource_heartbeat.py \
+            tests/test_s0_presentation_memory_bounds.py \
+            tests/test_s0_bounded_v4_output.py \
+            tests/test_s0_benchmark_sampling.py \
+            tests/test_s0_v5_shadow_planner.py \
+            tests/test_s0_v5_phase0_observability.py \
+            tests/test_provider_runtime_preflight.py \
+            tests/test_s0_stale_processing_run_recovery.py

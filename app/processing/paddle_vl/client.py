@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 import hashlib
 import hmac
 
@@ -20,6 +20,36 @@ from app.processing.paddle_vl.models import PaddleVLJobRequest
 VALID_RESULT_PROFILES = {"summary", "standard", "full"}
 
 
+def _configuration_error(message: str) -> ProviderClientError:
+    return ProviderClientError(
+        ProviderErrorDetail(
+            ProviderErrorCategory.CONFIGURATION,
+            message,
+        )
+    )
+
+
+def _normalized_provider_base_url(value: str) -> str:
+    if not isinstance(value, str):
+        raise _configuration_error("paddle-vl-api base URL must be configured with HTTPS")
+
+    # Environment-variable editors can preserve an otherwise invisible trailing
+    # CR/LF or surrounding spaces. Strip only the outer deployment noise; URL
+    # syntax itself remains fail-closed below.
+    normalized = value.strip()
+    if not normalized:
+        raise _configuration_error("paddle-vl-api base URL must be configured with HTTPS")
+
+    try:
+        parsed = httpx.URL(normalized)
+    except httpx.InvalidURL as exc:
+        raise _configuration_error("paddle-vl-api base URL is invalid") from exc
+
+    if parsed.scheme != "https" or not parsed.host:
+        raise _configuration_error("paddle-vl-api base URL must be configured with HTTPS")
+    return normalized
+
+
 @dataclass(frozen=True)
 class PaddleVLClientConfig:
     base_url: str
@@ -28,14 +58,7 @@ class PaddleVLClientConfig:
     default_result_profile: str = "standard"
 
     def __post_init__(self) -> None:
-        parsed = urlparse(self.base_url or "")
-        if parsed.scheme != "https" or not parsed.netloc:
-            raise ProviderClientError(
-                ProviderErrorDetail(
-                    ProviderErrorCategory.CONFIGURATION,
-                    "paddle-vl-api base URL must be configured with HTTPS",
-                )
-            )
+        object.__setattr__(self, "base_url", _normalized_provider_base_url(self.base_url))
         if not self.bearer_token:
             raise ProviderClientError(
                 ProviderErrorDetail(
@@ -70,12 +93,15 @@ class PaddleVLClient:
     ) -> None:
         self.config = config
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
-            base_url=_normalize_base_url(config.base_url),
-            timeout=config.timeout_seconds,
-            follow_redirects=False,
-            transport=transport,
-        )
+        try:
+            self._client = client or httpx.AsyncClient(
+                base_url=_normalize_base_url(config.base_url),
+                timeout=config.timeout_seconds,
+                follow_redirects=False,
+                transport=transport,
+            )
+        except httpx.InvalidURL as exc:
+            raise _configuration_error("paddle-vl-api base URL is invalid") from exc
 
     async def aclose(self) -> None:
         if self._owns_client:

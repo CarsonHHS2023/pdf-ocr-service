@@ -24,11 +24,142 @@ _INSTALLED = False
 _VERSION = "pre_ocr_presentation_route_v2"
 
 
+def _install_s0_phase_aware_stage_probe(heartbeat: Any) -> None:
+    """Prefix existing S0 deep stages with the active semantic work phase."""
+    current = heartbeat._set_opencv_stage
+    if getattr(current, "__atlas_s0_work_phase__", False):
+        return
+
+    def wrapped(
+        stage: str,
+        *,
+        page_number: int | None = None,
+        durable_first_page: bool = True,
+    ) -> None:
+        state = heartbeat._active_state()
+        phase = None
+        if isinstance(state, dict):
+            lock = state.get("lock")
+            if hasattr(lock, "__enter__"):
+                with lock:
+                    value = state.get("work_phase")
+                    if isinstance(value, str) and value:
+                        phase = value
+        qualified = f"{phase}:{stage}"[:128] if phase else stage
+        current(
+            qualified,
+            page_number=page_number,
+            durable_first_page=durable_first_page,
+        )
+
+    setattr(wrapped, "__atlas_s0_work_phase__", True)
+    heartbeat._set_opencv_stage = wrapped
+
+
+def _set_s0_work_phase(phase: str, page_count: int) -> None:
+    """Update optional S0 phase telemetry without coupling processing to it."""
+    try:
+        from app.processing import s0_pdf_resource_heartbeat as heartbeat
+
+        state = heartbeat._active_state()
+        if not isinstance(state, dict):
+            return
+        _install_s0_phase_aware_stage_probe(heartbeat)
+        lock = state.get("lock")
+        if not hasattr(lock, "__enter__"):
+            return
+        phase = phase[:64]
+        with lock:
+            document_page_count = state.get("document_page_count")
+            if not isinstance(document_page_count, int) or document_page_count <= 0:
+                document_page_count = int(state.get("page_count") or page_count)
+                state["document_page_count"] = document_page_count
+            state["work_phase"] = phase
+            state["page_count"] = int(page_count)
+            state["current_page_number"] = None
+            state["current_stage"] = f"{phase}:started"[:128]
+            state["last_completed_page"] = 0
+            state["stage_updated_at"] = heartbeat._utcnow_iso()
+            processing_run_id = str(state["processing_run_id"])
+            document_id = str(state["document_id"])
+        heartbeat.record_pdf_processing_heartbeat(
+            processing_run_id=processing_run_id,
+            document_id=document_id,
+            phase="work_phase_started",
+            page_count=int(page_count),
+            document_page_count=document_page_count,
+            work_phase=phase,
+            current_stage=f"{phase}:started"[:128],
+            last_completed_page=0,
+        )
+    except Exception:
+        bridge._diagnostic(
+            "PDF_S0_WORK_PHASE_PROBE_FAILED",
+            phase=phase,
+        )
+
+
+def _mark_s0_work_page_completed(
+    *,
+    page_number: int,
+    page_count: int,
+    route: str,
+) -> None:
+    """Advance optional S0 page progress without affecting the processing path."""
+    try:
+        from app.processing import s0_pdf_resource_heartbeat as heartbeat
+
+        state = heartbeat._active_state()
+        if not isinstance(state, dict):
+            return
+        lock = state.get("lock")
+        if not hasattr(lock, "__enter__"):
+            return
+        with lock:
+            phase_value = state.get("work_phase")
+            phase = phase_value if isinstance(phase_value, str) else None
+            state["current_page_number"] = int(page_number)
+            state["current_stage"] = (
+                f"{phase}:page_completed"[:128]
+                if phase
+                else "page_completed"
+            )
+            state["last_completed_page"] = int(page_number)
+            state["stage_updated_at"] = heartbeat._utcnow_iso()
+            processing_run_id = str(state["processing_run_id"])
+            document_id = str(state["document_id"])
+            document_page_count = int(
+                state.get("document_page_count") or state.get("page_count") or page_count
+            )
+            current_stage = str(state["current_stage"])
+        if not heartbeat._should_record_page(int(page_number), int(page_count)):
+            return
+        heartbeat.record_pdf_processing_heartbeat(
+            processing_run_id=processing_run_id,
+            document_id=document_id,
+            phase="work_page_completed",
+            page_number=int(page_number),
+            page_count=int(page_count),
+            document_page_count=document_page_count,
+            work_phase=phase,
+            route=route[:128],
+            current_stage=current_stage,
+            last_completed_page=int(page_number),
+        )
+    except Exception:
+        bridge._diagnostic(
+            "PDF_S0_WORK_PAGE_PROBE_FAILED",
+            page_number=page_number,
+            page_count=page_count,
+        )
+
+
 def _classify_source_pages(source: fitz.Document) -> list[dict[str, object]]:
     from app.processing import pdf_opencv_quality_pipeline as v4
 
     decisions: list[dict[str, object]] = []
     page_count = source.page_count
+    _set_s0_work_phase("presentation_classification", page_count)
     for page_index in range(page_count):
         page_number = page_index + 1
         source_unit_id = bridge._source_unit_id(page_number)
@@ -51,11 +182,11 @@ def _classify_source_pages(source: fitz.Document) -> list[dict[str, object]]:
             source_unit_id,
             "not_selected_for_multimodal_review",
         )
-        geometry_image = None
         geometry: dict[str, object] = {}
         if candidate:
-            # This route calls only the existing V4 geometry candidate and gate.
-            # It never invokes the V4 background candidate builder.
+            # Keep the 300-DPI candidate bounded to this page. The accepted
+            # presentation geometry is recomputed only if the page is finally
+            # assembled as a presentation page.
             geometry_image, geometry = bridge._geometry_only_page(page)
             classification_image = (
                 geometry_image
@@ -88,6 +219,9 @@ def _classify_source_pages(source: fitz.Document) -> list[dict[str, object]]:
                     source_unit_id=source_unit_id,
                     reason=type(exc).__name__,
                 )
+            finally:
+                classification_image = None
+                geometry_image = None
             skip_ocr, decision_reason = bridge._skip_ocr_decision(
                 classification,
                 features,
@@ -131,11 +265,16 @@ def _classify_source_pages(source: fitz.Document) -> list[dict[str, object]]:
                 "classification": classification,
                 "skip_ocr": skip_ocr,
                 "decision_reason": decision_reason,
-                "geometry_image": geometry_image,
                 "geometry": geometry,
                 "page_width_points": float(page.rect.width),
                 "page_height_points": float(page.rect.height),
             }
+        )
+        analysis_image = None
+        _mark_s0_work_page_completed(
+            page_number=page_number,
+            page_count=page_count,
+            route="presentation_classification",
         )
     return decisions
 
@@ -300,9 +439,16 @@ def _build_full_render(
     decisions: list[dict[str, object]],
     processed_ordinary: GeometryPreprocessedPdf | None,
 ) -> bytes:
+    page_count = len(decisions)
+    _set_s0_work_phase("presentation_render_assembly", page_count)
     if not any(bool(item["skip_ocr"]) for item in decisions):
         if processed_ordinary is None:
             raise RuntimeError("ordinary V4 output is unavailable")
+        _mark_s0_work_page_completed(
+            page_number=page_count,
+            page_count=page_count,
+            route="ordinary_render_reused",
+        )
         return processed_ordinary.pdf_bytes
 
     ordinary_document = (
@@ -316,12 +462,24 @@ def _build_full_render(
         if source.metadata:
             output.set_metadata(source.metadata)
         for decision in decisions:
+            page_number = int(decision["page_number"])
             if decision["skip_ocr"]:
+                page_index = int(decision["page_index"])
+                geometry_image, geometry = bridge._geometry_only_page(
+                    source[page_index]
+                )
+                decision["geometry"] = geometry
                 bridge._insert_geometry_or_original(
                     output,
                     source,
-                    int(decision["page_index"]),
-                    decision.get("geometry_image"),
+                    page_index,
+                    geometry_image,
+                )
+                geometry_image = None
+                route = (
+                    "presentation_geometry_only"
+                    if bool(geometry.get("accepted"))
+                    else "presentation_original"
                 )
             else:
                 if ordinary_document is None:
@@ -332,6 +490,12 @@ def _build_full_render(
                     to_page=ordinary_index,
                 )
                 ordinary_index += 1
+                route = "ordinary_v4_render"
+            _mark_s0_work_page_completed(
+                page_number=page_number,
+                page_count=page_count,
+                route=route,
+            )
         return output.tobytes(garbage=4, deflate=True)
     finally:
         output.close()
@@ -422,6 +586,10 @@ def prepare_presentation_provider_input_v2(
         }
         subset_pages: dict[int, dict[str, object]] = {}
         if ordinary_source_bytes is not None:
+            _set_s0_work_phase(
+                "ordinary_v4_preprocessing",
+                provider_page_count,
+            )
             processed_ordinary = v4.preprocess_pdf_geometry_opencv(
                 ordinary_source_bytes,
                 expected_page_count=provider_page_count,
@@ -433,6 +601,13 @@ def prepare_presentation_provider_input_v2(
             )
             subset_manifest = bridge._v4_manifest(processed_ordinary)
             subset_pages = bridge._v4_page_map(subset_manifest)
+            ordinary_source_bytes = None
+
+        render_bytes = _build_full_render(
+            source,
+            decisions,
+            processed_ordinary,
+        )
 
         page_entries: list[dict[str, object]] = []
         ordinary_position = 0
@@ -448,11 +623,6 @@ def prepare_presentation_provider_input_v2(
                     )
                 )
 
-        render_bytes = _build_full_render(
-            source,
-            decisions,
-            processed_ordinary,
-        )
         render_checksum = hashlib.sha256(render_bytes).hexdigest()
         render_put = storage.put(
             render_bytes,
