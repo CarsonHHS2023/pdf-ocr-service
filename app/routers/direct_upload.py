@@ -174,6 +174,7 @@ def complete_direct_upload_session(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> UploadBookResponse:
+    complete_started = time.perf_counter()
     provider, secret = _runtime()
     claims = _claims_from_token(upload_id, request.completion_token, secret)
     reference = StorageReference.parse(claims.storage_reference)
@@ -185,13 +186,11 @@ def complete_direct_upload_session(
             raise HTTPException(status_code=409, detail="Existing direct upload source metadata is incomplete")
         return _response_for_existing(existing_document, existing_source, claims)
 
+    publish_started = time.perf_counter()
     try:
-        provider.verify_ingress(
-            upload_id=claims.upload_id,
-            expected_size=claims.byte_size,
-            expected_sha256=claims.checksum_sha256,
-            expected_content_type=claims.content_type,
-        )
+        # publish_ingress owns the authoritative integrity boundary and performs
+        # its own ingress verification before destination lookup/copy. Calling
+        # verify_ingress here as well adds a redundant remote HEAD request.
         published = provider.publish_ingress(
             upload_id=claims.upload_id,
             reference=reference,
@@ -206,6 +205,7 @@ def complete_direct_upload_session(
     except StorageError as exc:
         logger.exception("Direct upload publish failed upload_id=%s", claims.upload_id)
         raise HTTPException(status_code=503, detail="Direct object upload could not be committed") from exc
+    publish_ms = (time.perf_counter() - publish_started) * 1000.0
 
     book = Document(
         id=claims.document_id,
@@ -229,6 +229,7 @@ def complete_direct_upload_session(
     )
     db.add(book)
     db.add(source)
+    db_commit_started = time.perf_counter()
     try:
         db.commit()
     except Exception:
@@ -242,13 +243,16 @@ def complete_direct_upload_session(
             reference,
         )
         raise
+    db_commit_ms = (time.perf_counter() - db_commit_started) * 1000.0
 
     # Only now is the durable object business-owned. The ingress object remains
     # available until commit, which makes a failed DB transaction retryable.
+    ingress_delete_started = time.perf_counter()
     try:
         provider.delete_ingress(claims.upload_id)
     except Exception:
         logger.exception("Direct upload ingress cleanup failed upload_id=%s", claims.upload_id)
+    ingress_delete_ms = (time.perf_counter() - ingress_delete_started) * 1000.0
 
     ingestion_ids = new_pdf_ingestion_ids()
     background_tasks.add_task(
@@ -256,6 +260,16 @@ def complete_direct_upload_session(
         book.id,
         source.id,
         ingestion_ids,
+    )
+    total_ms = (time.perf_counter() - complete_started) * 1000.0
+    logger.info(
+        "DIRECT_UPLOAD_COMPLETE_TIMING upload_id=%s byte_size=%s publish_ms=%.1f db_commit_ms=%.1f ingress_delete_ms=%.1f total_ms=%.1f",
+        claims.upload_id,
+        claims.byte_size,
+        publish_ms,
+        db_commit_ms,
+        ingress_delete_ms,
+        total_ms,
     )
     logger.info(
         "DIRECT_UPLOAD_COMMITTED upload_id=%s document_id=%s source_file_id=%s storage_reference=%s byte_size=%s processing_attempt_id=%s",
