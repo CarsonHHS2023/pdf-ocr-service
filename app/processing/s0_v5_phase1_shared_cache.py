@@ -108,6 +108,8 @@ def _save_geometry(page_number: int, image: np.ndarray) -> str | None:
         return None
     try:
         np.save(path, np.ascontiguousarray(image), allow_pickle=False)
+        metric("scratch_write_files")
+        metric("scratch_write_bytes", path.stat().st_size)
         return str(path)
     except Exception as exc:
         diagnostic(
@@ -123,7 +125,11 @@ def _load_geometry(cached: Mapping[str, object]) -> np.ndarray | None:
     if not isinstance(path, str) or not path:
         return None
     try:
-        image = np.load(path, allow_pickle=False)
+        scratch_path = Path(path)
+        byte_size = scratch_path.stat().st_size
+        image = np.load(scratch_path, allow_pickle=False)
+        metric("scratch_read_files")
+        metric("scratch_read_bytes", byte_size)
     except Exception as exc:
         diagnostic(
             "PDF_S0_V5_PHASE1_SCRATCH_READ_FAILED",
