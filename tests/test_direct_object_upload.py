@@ -39,6 +39,14 @@ class FakeDirectObjectStore:
         self.verified.append(kwargs)
 
     def publish_ingress(self, **kwargs) -> PutResult:
+        # Match the real StorageProvider contract: publish_ingress owns the
+        # authoritative ingress verification before publishing the object.
+        self.verify_ingress(
+            upload_id=kwargs["upload_id"],
+            expected_size=kwargs["expected_size"],
+            expected_sha256=kwargs["expected_sha256"],
+            expected_content_type=kwargs["expected_content_type"],
+        )
         self.published.append(kwargs)
         return PutResult(
             reference=kwargs["reference"],
@@ -164,6 +172,7 @@ def test_direct_upload_complete_is_idempotent_after_database_commit(direct_uploa
     assert second.json()["book_id"] == first.json()["book_id"]
     assert db.query(Document).count() == 1
     assert db.query(SourceFile).count() == 1
+    assert len(store.verified) == 1
     assert len(store.published) == 1
     background.assert_called_once()
 
@@ -191,4 +200,5 @@ def test_direct_upload_token_tamper_fails_before_publish(direct_upload_env):
 
     assert response.status_code == 400
     assert db.query(Document).count() == 0
+    assert store.verified == []
     assert store.published == []
