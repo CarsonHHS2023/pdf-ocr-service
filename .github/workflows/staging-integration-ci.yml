@@ -80,6 +80,7 @@ jobs:
           grep -q 'install_provider_transport_sharding_compat' app/processing/pdf_ingestion.py
           grep -q 'install_opencv_page_heartbeat_probe' app/processing/pdf_ingestion.py
           grep -q 'validate_provider_runtime_configuration(settings)' app/processing/pdf_ingestion.py
+          grep -q 'install_s0_v5_phase1_shared_analysis' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase0_observability' app/processing/pdf_ingestion.py
           grep -q 'recover_stale_s0_pdf_processing_runs' app/main.py
           grep -q 'resumable_upload.router' app/main.py
@@ -145,5 +146,6 @@ jobs:
             tests/test_s0_benchmark_sampling.py \
             tests/test_s0_v5_shadow_planner.py \
             tests/test_s0_v5_phase0_observability.py \
+            tests/test_s0_v5_phase1_shared_analysis.py \
             tests/test_provider_runtime_preflight.py \
             tests/test_s0_stale_processing_run_recovery.py
