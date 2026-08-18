@@ -16,9 +16,9 @@ The design target is:
 ```text
 source page
   -> one shared low-resolution analysis
-  -> presentation classification evidence
+  -> existing authoritative classification chain
   -> at most one 300-DPI source/geometry computation
-  -> ordinary or presentation treatment reuses that evidence
+  -> ordinary or presentation treatment reuses equivalent evidence
 ```
 
 The implementation remains page-bounded in memory and uses only run-local temporary scratch for large reusable rasters.
@@ -66,15 +66,16 @@ The Phase 0 path performs two heavy phases.
 For each page it may perform:
 
 1. 120-DPI analysis render;
-2. local/native presentation features;
+2. native/presentation/orientation features;
 3. candidate selection;
-4. 300-DPI geometry source render for candidates;
-5. geometry candidate + quality gate;
-6. multimodal presentation classification.
+4. high-resolution orientation confirmation when required;
+5. 300-DPI geometry source render for candidates;
+6. geometry candidate + quality gate;
+7. multimodal presentation classification and existing conflict/fail-open checks.
 
 ### Ordinary v4 phase
 
-Ordinary pages are then serialized into a subset PDF and processed again:
+Ordinary pages are then serialized into a provider subset PDF and processed again:
 
 1. page structure inspection;
 2. 120-DPI analysis render;
@@ -86,13 +87,47 @@ Ordinary pages are then serialized into a subset PDF and processed again:
 
 Presentation render assembly can also request geometry again for presentation pages.
 
-Phase 1 removes the duplicate render/geometry work while retaining the same decision functions.
+Phase 1 removes equivalent duplicate render/geometry work while retaining the same decision functions and the same composed classifier chain.
+
+## Composition boundary
+
+### The classifier pipeline is authoritative and untouched
+
+Phase 1 does **not** replace or copy `presentation._classify_source_pages`.
+
+This is a hard architecture boundary because the already-composed classifier includes behavior from multiple compatibility layers, including:
+
+- discrete orientation detection/correction;
+- high-resolution confirmation;
+- native-PDF text acceptance and raster fallback;
+- analysis/geometry fail-open handling;
+- presentation/native page decisions;
+- bounded-memory decision cleanup.
+
+Phase 1 sits below this chain. It wraps low-level operations that the chain already calls and returns the exact authoritative results on first computation.
+
+A regression test statically rejects any Phase 1 installer assignment to `_classify_source_pages`.
+
+### Phase 0 accounting is inside the Phase 1 cache layer
+
+Staging installation order is intentionally:
+
+```text
+existing production-equivalent overlays
+  -> bounded-v4 compatibility
+  -> cheap shadow geometry
+  -> S0 v5 Phase 0 observability
+  -> S0 v5 Phase 1 low-level cache
+  -> bound pdf_ingestion imports
+```
+
+Phase 1 therefore captures Phase-0-wrapped expensive delegates. A real cache miss calls the Phase 0 delegate and is timed/counted normally. A cache hit skips that delegate, so Phase 0 counters represent actual expensive work rather than logical page visits.
 
 ## Phase 1 architecture
 
 ### Run-local shared scope
 
-Each S0 execution owns an isolated `ContextVar` state containing only that run's evidence and provider-page mapping.
+Each S0 execution owns an isolated `ContextVar` state containing only that run's lightweight evidence, provider-page mapping, transient current-page rasters, and temporary scratch references.
 
 No shared global page cache is used between documents or users.
 
@@ -100,33 +135,58 @@ The run scope is reset on both successful and failed processing.
 
 ### One low-resolution analysis image
 
-The classify-first pass renders one 120-DPI image for each source page. The same image feeds:
+Phase 1 wraps the existing authoritative `bridge._analysis_image` function.
 
-- existing presentation image features;
-- OpenCV v4 color evidence;
-- the presentation classifier when geometry is not selected.
+The first call for a page still executes that function exactly as before. The returned image is then retained only for the current source page. The same image can satisfy later same-page 120-DPI renderer requests without a second rasterization.
 
-V4 page-structure evidence is also recorded during this pass.
+Phase 1 also derives optimization-only V4 evidence from that image:
 
-The classification model, feature extraction functions, candidate rules, confidence thresholds, high-resolution confirmation layer, continuous-prose conflict gate, and fallback behavior are not replaced.
+- color features;
+- source-page structure evidence.
 
-### Authoritative geometry reuse
+Failures while producing this optimization evidence are fail-open: the authoritative classification image is still returned unchanged and later V4 work is recomputed normally.
 
-Phase 1 wraps the already-installed `bridge._geometry_only_page` delegate. It does not replace that delegate's geometry thresholds or quality checks.
+The low-resolution image is replaced when analysis advances to the next page, so it does not accumulate across the document.
 
-When the delegate runs, Phase 1 captures the source 300-DPI render and retains the final geometry-selected raster. The returned geometry decision remains authoritative.
+### Same-page 300-DPI render reuse
 
-For later ordinary-page treatment:
+Phase 1 wraps the existing Phase-0-profiled V4 renderer.
 
-- accepted geometry reuses the accepted geometry raster;
-- rejected geometry reuses the original 300-DPI source raster;
-- missing or unreadable scratch causes normal v4 render/build/gate work to run again.
+For the current source page, the first 300-DPI request performs the normal render. Later same-page 300-DPI requests reuse that exact raster in memory. This covers cases such as high-resolution orientation confirmation followed by geometry analysis without retaining a whole-document 300-DPI array set.
 
-Presentation render assembly calls the same wrapped geometry delegate and therefore reuses the prior decision/raster instead of recomputing it.
+The transient current-page 300-DPI raster is released before the ordinary provider-document phase.
+
+### Authoritative base and oriented geometry reuse
+
+Phase 1 wraps both existing geometry entry points:
+
+- `bridge._geometry_only_page`;
+- `orientation._oriented_geometry`.
+
+It also wraps the existing V4 geometry gate only to capture its exact return tuple. The gate implementation and thresholds are not replaced.
+
+For oriented pages, Phase 1 keeps two concepts separate:
+
+- the presentation-level geometry decision, which can be accepted because a discrete orientation correction was applied;
+- the underlying V4 geometry-gate acceptance, which determines whether ordinary V4 should treat perspective/deskew geometry as accepted.
+
+This avoids turning a pure 90/180/270-degree orientation correction into a false V4 geometry acceptance.
+
+### Provider-page equivalence rules
+
+The ordinary provider builder remains authoritative and its `provider_input_mode` is captured for each provider page.
+
+Reuse is deliberately restricted:
+
+- `pdf_page`: original structure, color, and geometry evidence may be reused;
+- `orientation_corrected_raster`: color distribution and oriented geometry may be reused, but page structure is re-inspected because rasterization changes born-digital semantics;
+- native-text fallback raster modes: original geometry is not reused; authoritative V4 analysis is recomputed.
+
+Chunk-local provider indexes are translated back to original source page numbers through the existing provider map plus the bounded-v4 chunk offset.
 
 ### Temporary scratch boundary
 
-Large 300-DPI rasters are not retained in the whole-document Python object graph. They are written losslessly as local `.npy` scratch files under a temporary run directory.
+Large geometry-selected/orientation rasters are not retained in the whole-document Python object graph. They are written losslessly as local `.npy` scratch files under a temporary run directory.
 
 The scratch directory:
 
@@ -136,15 +196,13 @@ The scratch directory:
 - is never exposed through a source reference;
 - is not a durable artifact or business record.
 
-This deliberately trades bounded local disk I/O for lower CPU duplication and bounded RSS. The benchmark must verify that scratch I/O does not become the next dominant cost. If it does, the next optimization should preserve pixel identity while reducing scratch traffic rather than reintroducing duplicate rendering.
+Phase 1 emits bounded counters for scratch read/write file counts and bytes. The benchmark must verify that scratch I/O does not become the next dominant cost. If it does, the next optimization should preserve pixel identity while reducing scratch traffic rather than reintroducing duplicate rendering.
 
 ### Existing bounded-v4 chunking remains
 
 The 16-page ordinary-v4 chunk coordinator remains the memory boundary.
 
-Phase 1 replaces only its base page processor with a shared-aware processor. Chunk-local provider page indexes are translated back to original source page numbers before evidence lookup.
-
-If page mapping or evidence is unavailable, processing falls back to the existing OpenCV v4 path.
+Phase 1 replaces only its base page processor with a shared-aware processor. If provider mapping, cache evidence, or scratch is unavailable/inapplicable, that page falls back to the existing OpenCV v4 render/build/gate functions.
 
 ## Quality invariants
 
@@ -155,6 +213,7 @@ Phase 1 must not change:
 - presentation confidence threshold;
 - high-resolution presentation confirmation;
 - continuous-body-prose conflict protection;
+- native-PDF text acceptance/fallback behavior;
 - discrete orientation handling or confirmation;
 - OpenCV geometry candidate algorithm;
 - geometry quality gate;
@@ -169,34 +228,19 @@ Phase 1 must not change:
 
 A cache or scratch failure is an optimization failure, not a document-processing failure: the authoritative current work must be recomputed.
 
-## Phase 0 observability remains outermost
-
-Installation order in Staging is:
-
-```text
-existing production-equivalent overlays
-  -> bounded v4 compatibility
-  -> S0 v5 Phase 1 shared analysis
-  -> cheap shadow geometry
-  -> S0 v5 Phase 0 observability
-  -> bound pdf_ingestion imports
-```
-
-Keeping Phase 0 profiling outside Phase 1 is intentional. Its render/build/gate counters therefore measure actual expensive calls after sharing rather than logical page visits.
-
 ## Runtime acceptance gate
 
 CI passing is necessary but is not sufficient to validate Phase 1.
 
-After the candidate is deployed to Staging, rerun the exact locked 100-page benchmark and compare with Phase 0.
+After the candidate is merged only to `staging` and deployed by the staging-branch workflow, rerun the exact locked 100-page benchmark and compare with Phase 0.
 
 Required evidence:
 
 1. `render_120_count` moves from `200` toward `100`.
 2. `render_300_count` moves from `200` toward `100` for this raster-heavy fixture.
-3. Geometry build/gate calls are no longer duplicated for the same relevant source pages.
+3. Geometry build/gate calls are no longer duplicated for equivalent source/provider pages.
 4. `changed_page_count` remains consistent with the Phase 0 result (`99`) unless a concrete page-level quality review explains a difference.
-5. Presentation classification behavior remains equivalent on known presentation/mixed pages.
+5. Presentation/native/orientation classification behavior remains equivalent on known presentation/mixed pages.
 6. `shadow_false_negative_count == 0`.
 7. `shadow_route_miss_count == 0`.
 8. No new unnecessary escalation regression is introduced.
@@ -211,7 +255,22 @@ A successful benchmark should also record Phase 1 cache metrics from:
 PDF_S0_V5_PHASE1_SHARED_ANALYSIS_COMPLETE
 ```
 
-including ordinary structure/color/geometry cache hits and presentation geometry reuse.
+including:
+
+- analysis page/evidence counts;
+- 120-DPI and same-page 300-DPI cache hits;
+- ordinary structure/color/geometry cache hits;
+- presentation geometry/orientation-source reuse;
+- scratch read/write file counts and bytes.
+
+## Staging validation sequence
+
+1. CI and code review pass on the exact PR head.
+2. Merge only to `staging`.
+3. Let the staging-branch workflow deploy the exact staging head to the HF Staging Space.
+4. Run the locked 100-page benchmark.
+5. If runtime evidence regresses, revert only Staging.
+6. Do not promote Phase 1 to `main` / Production until runtime evidence satisfies the gate.
 
 ## Non-goals
 
