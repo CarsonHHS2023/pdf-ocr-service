@@ -295,3 +295,50 @@ def test_shared_v4_reuses_structure_color_and_geometry_without_second_render(
     assert state["metrics"]["ordinary_structure_cache_hits"] == 1
     assert state["metrics"]["ordinary_color_cache_hits"] == 1
     assert state["metrics"]["ordinary_geometry_cache_hits"] == 1
+
+
+def test_chunk_offset_maps_provider_page_to_original_page(tmp_path, monkeypatch) -> None:
+    provider_map = [
+        {"original_page_number": 101 + index}
+        for index in range(20)
+    ]
+    state = _shared_state(tmp_path, provider_map=provider_map)
+    monkeypatch.setattr(shared, "_PAGE_OFFSET_DELEGATE", None)
+
+    token = shared._ACTIVE.set(state)
+    try:
+        with shared.page_offset(16):
+            assert shared.original_page_number(SimpleNamespace(number=0)) == 117
+            assert shared.original_page_number(SimpleNamespace(number=3)) == 120
+    finally:
+        shared._ACTIVE.reset(token)
+
+
+def test_missing_geometry_scratch_forces_authoritative_fallback(tmp_path) -> None:
+    page_number = 9
+    state = _shared_state(tmp_path)
+    state["pages"][page_number] = {
+        "geometry_completed": True,
+        "geometry_path": str(tmp_path / "missing.npy"),
+        "geometry_diag": v4._GeometryDiagnostic(
+            perspective_applied=False,
+            perspective_confidence=0.0,
+            perspective_distortion=0.0,
+            deskew_applied=False,
+            deskew_angle_degrees=0.0,
+            deskew_confidence=0.0,
+            residual_angle_degrees=0.0,
+            residual_confidence=0.0,
+        ),
+        "geometry_accepted": True,
+        "geometry_reason": "accepted",
+        "geometry_gate": {"quality": "ok"},
+    }
+
+    token = shared._ACTIVE.set(state)
+    try:
+        assert shared.cached_geometry_for_ordinary(page_number) is None
+    finally:
+        shared._ACTIVE.reset(token)
+
+    assert "ordinary_geometry_cache_hits" not in state["metrics"]
