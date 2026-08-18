@@ -1,4 +1,4 @@
-"""Install Staging-only S0 v5 Phase 1 plus Phase 0 observability overlays."""
+"""Install Staging-only S0 v5 Phase 0 observability plus Phase 1 sharing."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,22 +7,22 @@ from pathlib import Path
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 _ANCHOR = "from app.database import SessionLocal\n"
 _INSTALL = (
-    "from app.processing.s0_v5_phase1_shared_analysis_compat import "
-    "install_s0_v5_phase1_shared_analysis\n"
     "from app.processing.s0_v5_shadow_geometry import "
     "install_s0_v5_cheap_shadow_geometry\n"
     "from app.processing.s0_v5_phase0_observability_compat import "
-    "install_s0_v5_phase0_observability\n\n"
-    "install_s0_v5_phase1_shared_analysis()\n"
+    "install_s0_v5_phase0_observability\n"
+    "from app.processing.s0_v5_phase1_shared_analysis_compat import "
+    "install_s0_v5_phase1_shared_analysis\n\n"
     "install_s0_v5_cheap_shadow_geometry()\n"
-    "install_s0_v5_phase0_observability()\n\n"
+    "install_s0_v5_phase0_observability()\n"
+    "install_s0_v5_phase1_shared_analysis()\n\n"
 )
 
 
 def patch_s0_v5_phase0_observability(
     path: Path = PDF_INGESTION_PATH,
 ) -> None:
-    """Install Phase 1 beneath Phase 0 after prior staging overlays."""
+    """Install Phase 0 first, then Phase 1 cache checks around its delegates."""
     source = path.read_text(encoding="utf-8")
     if _INSTALL in source:
         return
