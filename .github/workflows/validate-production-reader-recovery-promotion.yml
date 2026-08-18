@@ -1,0 +1,82 @@
+name: Validate production Reader recovery promotion
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/processing/duplicate_visual_refinement.py'
+      - 'app/processing/pdf_page_presentation_recovery.py'
+      - 'tests/processing/test_duplicate_visual_refinement.py'
+      - 'tests/processing/test_pdf_page_number_furniture_position.py'
+      - 'tests/structured_content/test_pdf_recovery_spr_v2.py'
+      - '.github/workflows/validate-production-reader-recovery-promotion.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify selective production promotion file set
+        run: |
+          git fetch origin main
+          python - <<'PY'
+          import subprocess
+
+          allowed = {
+              '.github/workflows/validate-production-reader-recovery-promotion.yml',
+              'app/processing/duplicate_visual_refinement.py',
+              'app/processing/pdf_page_presentation_recovery.py',
+              'tests/processing/test_duplicate_visual_refinement.py',
+              'tests/processing/test_pdf_page_number_furniture_position.py',
+              'tests/structured_content/test_pdf_recovery_spr_v2.py',
+          }
+          changed = set(
+              subprocess.check_output(
+                  ['git', 'diff', '--name-only', 'origin/main...HEAD'],
+                  text=True,
+              ).splitlines()
+          )
+          unexpected = sorted(changed - allowed)
+          assert not unexpected, f'unexpected production promotion files: {unexpected}'
+          required = {
+              'app/processing/duplicate_visual_refinement.py',
+              'app/processing/pdf_page_presentation_recovery.py',
+              'tests/processing/test_duplicate_visual_refinement.py',
+              'tests/processing/test_pdf_page_number_furniture_position.py',
+          }
+          missing = sorted(required - changed)
+          assert not missing, f'missing production promotion files: {missing}'
+          PY
+      - name: Install focused validation dependencies
+        run: python -m pip install --disable-pip-version-check -q pytest SQLAlchemy==2.0.28
+      - name: Compile combined Reader recovery path
+        run: |
+          python -m py_compile \
+            app/processing/duplicate_visual_refinement.py \
+            app/processing/pdf_page_presentation_recovery.py \
+            tests/processing/test_duplicate_visual_refinement.py \
+            tests/processing/test_pdf_page_number_furniture_position.py \
+            tests/processing/test_unresolved_structure_refinement.py \
+            tests/structured_content/test_pdf_recovery_spr_v2.py
+      - name: Run combined Reader recovery regressions
+        run: |
+          python -m pytest -q \
+            tests/processing/test_duplicate_visual_refinement.py \
+            tests/processing/test_pdf_page_number_furniture_position.py \
+            tests/processing/test_unresolved_structure_refinement.py \
+            tests/structured_content/test_pdf_recovery_spr_v2.py
+      - name: Verify production wiring and bounded policies
+        run: |
+          grep -q 'collapse_duplicate_refined_visuals_fail_open' app/processing/pdf_page_presentation_recovery.py
+          grep -q 'PDF_DUPLICATE_VISUAL_REFINEMENT_DEGRADED' app/processing/duplicate_visual_refinement.py
+          grep -q '_NUMBER_HEADER_MAX_CENTER = 0.20' app/processing/pdf_page_presentation_recovery.py
+          grep -q '_NUMBER_FOOTER_MIN_CENTER = 0.80' app/processing/pdf_page_presentation_recovery.py
+          grep -q 'bounded_page_furniture_band_v1' app/processing/pdf_page_presentation_recovery.py

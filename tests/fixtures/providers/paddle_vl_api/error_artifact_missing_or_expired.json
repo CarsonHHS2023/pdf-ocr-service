@@ -1,0 +1,7 @@
+{
+  "detail": {
+    "code": "ARTIFACT_NOT_FOUND",
+    "message": "Result artifact was not found.",
+    "retryable": false
+  }
+}

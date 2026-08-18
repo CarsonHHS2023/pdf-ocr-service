@@ -1,0 +1,646 @@
+# M5 Source-Unit Architecture Refactor Plan
+
+| Field | Value |
+|---|---|
+| Document Type | Architecture Refactor / Implementation Plan |
+| Status | Proposed for implementation |
+| Date | 2026-07-26 |
+| Backend Repository | `CarsonHHS2023/pdf-ocr-service` |
+| Frontend Repository | `CarsonHHS2023/speed-reading-trainer` |
+| Related Plans | `m5-reader-mvp-implementation-plan.md`, `m5-reader-speed-reading-implementation-plan.md` |
+| Related Open PRs | #160, #162 |
+
+## 1. Why this refactor is needed
+
+The current M4/M5 model is still too page-centric for the broader Smart Reading OS / Atlas import goal.
+
+The existing SPR v1 requires page records with dimensions, and the current Structured Content model binds semantic nodes to `ContentPage`. This is natural for PDF but forces non-paged sources such as TXT into artificial page-like containers. It also becomes a poor foundation for HTML, EPUB, DOCX, Markdown, standalone images, audio, and video.
+
+This plan changes the core abstraction from:
+
+```text
+Document -> Pages -> Nodes
+```
+
+to:
+
+```text
+Document -> ordered Source Units -> semantic Nodes
+                         |
+                         +-> typed Source Anchors
+```
+
+A physical PDF page remains a first-class source unit, but it is only one source-unit kind.
+
+There is currently no production content or user dataset requiring migration/backfill compatibility. Therefore the project should prefer a clean v2 contract over adding fake pages, dual-read compatibility layers, or transitional canonical representations.
+
+## 2. Long-term ingestion target
+
+The common architecture is:
+
+```text
+PDF / TXT / HTML / EPUB / DOCX / Markdown / Image / Audio / Video
+                              |
+                              v
+                        Source Adapter
+                              |
+                              v
+                    Normalized Observations
+                              |
+                              v
+                     Structure Recovery
+                              |
+                              v
+                            SPR v2
+                              |
+                              v
+              Deterministic Canonical Transformer
+                              |
+                              v
+                 Structured Content v2
+                              |
+                              v
+                    explicit selection
+                              |
+                              v
+                 Structured Document / Reader
+```
+
+The source-specific work is intentionally confined to extraction, normalization, and structure recovery. The canonical transformer remains provider-independent and deterministic.
+
+## 3. Processing-layer responsibilities
+
+### 3.1 Source Adapter / Extractor
+
+Responsible for source-specific extraction only.
+
+Examples:
+
+- PDF: backend orchestration -> Modal PaddleOCR-VL -> OCR/layout observations.
+- TXT: encoding decode -> stable line/span index.
+- HTML: DOM parser -> DOM/text/media observations.
+- EPUB: package/spine/XHTML parser -> ordered spine-item observations.
+- DOCX: OOXML/style/list/table parser.
+- Markdown: Markdown AST parser.
+- Image: image canvas + OCR/layout observations.
+- Audio: ASR + speaker/time-segment observations.
+- Video: transcript + scene/keyframe + optional OCR observations.
+
+Source adapters must not create canonical Structured Content directly.
+
+### 3.2 Normalized Observations
+
+Provider- and parser-specific output is normalized into a common observation vocabulary before structure recovery.
+
+A normalized observation may carry:
+
+```text
+observation identity
+source-unit identity
+raw/normalized text
+observed kind/label
+source ordering
+confidence
+source anchor(s)
+provider evidence/provenance
+asset/media references
+```
+
+The observation layer may contain uncertain or incomplete classifications. It is still processing evidence, not canonical content.
+
+### 3.3 Structure Recovery
+
+Structure Recovery answers: "What document structure do these observations form?"
+
+It may use deterministic rules, ML/LLM inference, or a combination, but its output is validated before becoming SPR.
+
+Initial recovery engines:
+
+```text
+PDFRecoveryEngine
+  -> MinerU-Popo / equivalent document recovery
+  -> paragraph recovery
+  -> heading hierarchy
+  -> cross-page recovery
+  -> list recovery
+  -> caption association
+  -> table recovery
+  -> asset association
+
+TXTRecoveryEngine
+  -> deterministic source-line/span preparation
+  -> bounded LLM structure analysis
+  -> title/heading detection
+  -> heading-level / section hierarchy
+  -> list / TOC detection where supported
+  -> paragraph classification
+  -> source-text-preserving reconciliation
+```
+
+The LLM never owns TXT source text. It returns structural decisions referencing stable source line/span IDs. Canonical text is copied from the retained source, not regenerated by the model.
+
+### 3.4 SPR v2
+
+SPR v2 is the provider-independent, persistence-neutral result after source extraction and structure recovery.
+
+It must be capable of representing spatial, linear-text, DOM, ebook-spine, and timeline sources without requiring fake pages.
+
+### 3.5 Deterministic Canonical Transformer
+
+The transformer remains a pure, deterministic mapping boundary:
+
+```text
+same validated SPR v2
++ same transformation context
++ same mapping/policy versions
+= same Structured Content v2
+```
+
+The transformer owns canonicalization, not inference. It maps known semantic node types, derives stable identities/order/lineage, attaches evidence and assets, derives warnings/recovery, and validates the output graph.
+
+## 4. SourceUnit v2
+
+### 4.1 Core contract
+
+Conceptual contract:
+
+```text
+SourceUnit
+- source_unit_id
+- kind
+- source_order
+- source_ref
+- recovery_state
+- dimensions?          # spatial sources only
+- rotation?            # spatial sources only
+- source_span?         # linear text sources when the unit represents a bounded range
+- duration?            # temporal sources only
+- extensions           # bounded, noncanonical source-specific metadata
+```
+
+Initial `kind` vocabulary should be deliberately small but extensible:
+
+```text
+physical_page
+text_flow
+html_section
+ebook_spine_item
+document_part
+image_canvas
+audio_segment
+video_segment
+```
+
+This vocabulary may be revised during implementation if two kinds prove semantically identical. The contract should not encode UI presentation concepts.
+
+### 4.2 Source order
+
+Every source unit has a deterministic `source_order`.
+
+Examples:
+
+- PDF: physical page order.
+- TXT: text-flow/chunk order.
+- EPUB: spine order.
+- HTML: document/DOM section order.
+- DOCX: package/body order.
+- Audio/video: timeline segment order.
+
+Source-unit order is canonical source order. It is not Reader presentation pagination.
+
+## 5. Typed SourceAnchor v2
+
+Canonical evidence/location must support multiple source coordinate systems.
+
+Recommended typed union:
+
+```text
+SourceAnchor
+├─ SpatialAnchor
+│   - source_unit_id
+│   - normalized_bbox / polygon
+│
+├─ TextSpanAnchor
+│   - source_unit_id
+│   - start
+│   - end
+│
+├─ TemporalAnchor
+│   - source_unit_id
+│   - start_ms
+│   - end_ms
+│
+└─ DomAnchor
+    - source_unit_id
+    - stable node/path identity
+    - optional text range
+```
+
+A semantic node may have more than one anchor when recovery merges multiple observations.
+
+The anchor model must not require all source types to implement geometry or pagination.
+
+## 6. SPR v2 changes
+
+Replace the page-centric requirement:
+
+```text
+pages[]
+node.page_ids
+observation.page_id
+page diagnostics
+page dimensions
+```
+
+with:
+
+```text
+source_units[]
+node.source_unit_ids / primary_source_unit_id
+observation.source_unit_id
+source-unit diagnostics
+optional typed anchors
+```
+
+### 6.1 Nodes
+
+Nodes remain semantic processing results and may include:
+
+```text
+title
+heading
+paragraph
+list
+list_item
+caption
+formula
+header
+footer
+footnote
+table
+figure
+quote
+code
+reference
+unknown
+```
+
+Hierarchy is document-semantic hierarchy and is independent from source-unit boundaries where appropriate.
+
+The current v1 transformer forbids cross-page parent relationships. v2 must revisit that rule. A section heading may logically govern content in later source units/pages. The canonical hierarchy model should represent document hierarchy separately from physical source containment.
+
+### 6.2 Recovery
+
+Rename/reframe page-specific recovery as source-unit recovery:
+
+```text
+SourceUnitRecoveryState
+- complete
+- degraded
+- no_usable_semantic_content
+- unavailable
+```
+
+Document recovery aggregates source-unit and node recovery without assuming pages.
+
+## 7. Structured Content v2 changes
+
+The canonical content graph should become source-unit-centric:
+
+```text
+StructuredContentCandidate
+├─ source_units[]
+├─ nodes[]
+├─ evidence[]
+├─ assets[]
+├─ renditions[]
+├─ warnings[]
+└─ recovery_summary
+```
+
+Replace canonical requirements based on:
+
+```text
+ContentPage
+ContentNode.page_id
+```
+
+with:
+
+```text
+StructuredSourceUnit
+ContentNode.primary_source_unit_id / source_unit_refs
+ContentNode.source_locations
+```
+
+A source unit is canonical source identity. A Reader presentation page is derived presentation state and must never be written back as canonical content for reflowable sources.
+
+### 7.1 PDF
+
+PDF preserves:
+
+```text
+physical_page SourceUnit
+page number/order
+page dimensions
+rotation
+SpatialAnchor/bbox
+original page rendition asset
+```
+
+### 7.2 TXT
+
+TXT uses:
+
+```text
+text_flow SourceUnit(s)
+TextSpanAnchor
+no physical-page dimensions
+no canonical presentation page
+```
+
+Bounded TXT chunks may exist for processing/storage/delivery, but their identity must not imply presentation pagination.
+
+## 8. PDF pipeline correction
+
+The target PDF processing pipeline is:
+
+```text
+PDF SourceFile
+  -> backend ProcessingRun/orchestration
+  -> Modal PaddleOCR-VL
+  -> durable Raw Processing Result
+  -> provider normalizer
+  -> normalized OCR observations
+  -> PDFRecoveryEngine (MinerU-Popo or successor)
+  -> validated SPR v2
+  -> deterministic transformer
+  -> Structured Content v2 candidate
+  -> explicit selection
+```
+
+MinerU-Popo is retained as a structure-recovery stage. It should move away from direct Paddle-specific block assumptions by consuming normalized observations where practical.
+
+The current local `PageOCRService`/legacy `MineruResult` pipeline is transitional and must not become the new canonical ingestion architecture.
+
+## 9. TXT pipeline correction
+
+The target TXT processing pipeline is:
+
+```text
+TXT SourceFile
+  -> deterministic decode
+  -> stable source-line/span index
+  -> bounded TXT structure-analysis jobs
+  -> LLM structural inference
+  -> deterministic reconciliation/validation
+  -> normalized TXT observations + document hierarchy
+  -> validated SPR v2
+  -> same deterministic transformer
+  -> Structured Content v2 candidate
+  -> explicit selection
+```
+
+### 9.1 LLM constraints
+
+The LLM should return references to stable source identities rather than rewritten content.
+
+Example input records:
+
+```text
+L000001 | span 0..8   | 第一章 绪论
+L000002 | span 9..35  | 本章介绍……
+L000003 | span 36..48 | 1.1 研究背景
+```
+
+Example model result:
+
+```json
+{
+  "nodes": [
+    {"source_line_ids": ["L000001"], "type": "heading", "level": 1},
+    {"source_line_ids": ["L000002"], "type": "paragraph"},
+    {"source_line_ids": ["L000003"], "type": "heading", "level": 2}
+  ]
+}
+```
+
+The backend reconstructs canonical/SPR text from the original source spans.
+
+### 9.2 Large TXT
+
+Long TXT files must use bounded windows, for example overlapping line windows. Window-level inference is reconciled deterministically, followed by a lightweight document-outline reconciliation pass. The exact window size is an implementation policy, not a canonical contract.
+
+## 10. Reader consequences
+
+The M5 Reader Source must stop equating canonical source units with presentation pages.
+
+The application layer should expose bounded ordered semantic content plus source identity/anchors.
+
+Purpose-specific presentation adapters then derive:
+
+```text
+physical_page -> PdfPageAdapter -> original PDF page
+text_flow     -> ReflowPageAdapter -> dynamic presentation pages
+semantic nodes -> SpeedReadingAdapter -> ReadingElements/frames
+```
+
+Changing TXT viewport width, font size, font weight, or max lines may change presentation pages without changing canonical source identity or ReaderLocation anchors.
+
+ReaderLocation v2 should therefore be node/source-anchor based, not dependent on presentation page number for reflowable content.
+
+## 11. Future source-format mapping
+
+The abstraction must be tested mentally/design-wise against the expected future formats before implementation is accepted.
+
+| Source | Source Unit | Primary Anchor | Structure Recovery |
+|---|---|---|---|
+| PDF | `physical_page` | SpatialAnchor | MinerU-Popo / PDFRecoveryEngine |
+| TXT | `text_flow` | TextSpanAnchor | LLM + deterministic reconciliation |
+| HTML | `html_section` or document flow | DomAnchor / TextSpanAnchor | DOM semantics + optional recovery |
+| EPUB | `ebook_spine_item` | DomAnchor / TextSpanAnchor | spine/HTML semantics + book recovery |
+| DOCX | `document_part` | TextSpan/OOXML-derived anchor | styles/lists/tables + recovery |
+| Markdown | `document_part` / text flow | TextSpanAnchor | Markdown AST, usually minimal inference |
+| Image | `image_canvas` | SpatialAnchor | OCR/layout recovery |
+| Audio | `audio_segment` | TemporalAnchor | ASR + speaker/topic/chapter recovery |
+| Video | `video_segment` | Temporal + optional SpatialAnchor | transcript + scene/keyframe/OCR recovery |
+
+The first implementation only needs to prove PDF and TXT. The remaining formats are architecture fitness tests, not immediate runtime scope.
+
+## 12. What stays from M4/M5
+
+The refactor should preserve the architectural value already implemented:
+
+- immutable Structured Content candidates;
+- explicit zero-or-one selection, with no implicit latest fallback;
+- ProcessingRun provenance;
+- deterministic candidate identity/lineage policy;
+- deterministic canonical transformation;
+- evidence and source provenance;
+- warnings and recovery semantics;
+- tables and logical assets/renditions;
+- StructuredDocument as deterministic derived state;
+- Reader as a versioned application projection over explicitly selected content;
+- bounded content delivery;
+- no provider payloads or transient URLs as canonical content.
+
+This is a model-boundary correction, not a reset of those principles.
+
+## 13. Implementation sequence
+
+### Phase 0 — Reconcile active plans and pause wrong-path implementation
+
+1. Keep PR #162 unmerged.
+2. Mark its direct `build_txt_candidate()` approach as superseded by this plan.
+3. Preserve reusable work from #162: source retention, encoding detection, source-span tests, no OCR/Modal invocation for TXT.
+4. Update PR #160 / active M5 planning documents so TXT is no longer described as `backend parser -> StructuredContentCandidate` directly.
+
+Exit criterion: active planning documents agree on the source-adapter -> recovery -> SPR v2 -> common transformer path.
+
+### Phase 1 — Contract design only
+
+Introduce and test pure in-memory contracts for:
+
+```text
+SourceUnit v2
+SourceAnchor typed union
+SPR v2
+Structured Content v2 source-unit model
+```
+
+No persistence migration, ingestion orchestration, Reader route, or frontend work in this phase.
+
+Exit criterion: PDF and TXT fixtures can both be represented naturally without fake pages; HTML/EPUB/audio/video architecture-fit fixtures do not expose a contract contradiction.
+
+### Phase 2 — Deterministic transformer v2
+
+Implement:
+
+```text
+SPR v2 -> Structured Content v2
+```
+
+Port stable mapping rules from the current transformer:
+
+- node type mapping;
+- text normalization;
+- deterministic identity/order/lineage;
+- hierarchy validation;
+- tables/assets/renditions;
+- evidence;
+- warnings/recovery;
+- canonical validation;
+- golden/determinism/scale tests.
+
+Exit criterion: PDF and TXT SPR v2 goldens produce deterministic canonical candidates and equivalent repeated canonical bytes.
+
+### Phase 3 — Persistence and selection v2
+
+Adapt candidate persistence, reconstruction, selection, and ProcessingRun provenance to Structured Content v2.
+
+Because there is no production data, prefer a clean schema evolution rather than historical-data backfill or dual canonical storage.
+
+Exit criterion: transform -> persist -> reconstruct -> explicit select round trip is lossless for PDF and TXT v2 fixtures.
+
+### Phase 4 — PDF ingestion convergence
+
+Replace the current transitional local page OCR / `MineruResult` canonical path with:
+
+```text
+backend orchestration -> Modal OCR -> normalized observations -> PDFRecoveryEngine -> SPR v2 -> transformer v2
+```
+
+Retain MinerU-Popo recovery behavior but move it to the processing/recovery boundary.
+
+Exit criterion: a newly uploaded PDF reaches selected Structured Content v2 through the production ingestion path without legacy `MineruResult`/Text Stream being Reader authority.
+
+### Phase 5 — TXT ingestion convergence
+
+Refactor #162 rather than merging it as currently written:
+
+```text
+decode -> source line/span index -> TXTRecoveryEngine/LLM -> SPR v2 -> transformer v2
+```
+
+Initial product requirements:
+
+- title detection;
+- heading detection and hierarchy;
+- paragraphs;
+- lists/TOC where confidence/contract support is sufficient;
+- source text remains authoritative;
+- bounded LLM processing;
+- no physical/fake TXT pages;
+- no OCR/Modal invocation.
+
+Exit criterion: TXT selected Structured Content v2 contains meaningful semantic hierarchy and stable text-span provenance.
+
+### Phase 6 — Reader v2 source-unit convergence
+
+Adapt StructuredDocument/Reader contracts and bounded API delivery to source units and anchors.
+
+Preserve PDF original-page presentation and TXT reflow presentation as separate derived adapters.
+
+Exit criterion: PDF and TXT both use one selected canonical source while retaining correct format-specific presentation semantics.
+
+### Phase 7 — Resume Speed Reading frontend work
+
+Only after Reader v2 source semantics are stable:
+
+```text
+M5 Reader Source
+  -> SpeedReadingAdapter
+  -> Layout Engine
+  -> Playback Frames
+```
+
+Proceed with the already accepted Block/Line/Page, Focus/Moving, reading-unit timing, media/manual-continue, PDF-page overlay, and reflow rules.
+
+## 14. PR slicing recommendation
+
+Do not implement this refactor as one giant PR.
+
+Recommended backend PR sequence:
+
+1. **Planning reconciliation** — this document + updates to active M5 plan.
+2. **SourceUnit / SourceAnchor pure contracts**.
+3. **SPR v2 pure contracts + validation**.
+4. **Structured Content v2 pure contracts + validation**.
+5. **Transformer v2 core text/structure mapping**.
+6. **Transformer v2 tables/assets/recovery + verification**.
+7. **v2 persistence/selection round trip**.
+8. **PDF recovery/ingestion convergence**.
+9. **TXT LLM recovery/ingestion convergence**.
+10. **Reader v2 source-unit convergence**.
+
+Each implementation PR must have focused tests, exact-head CI, and a review before Ready/merge.
+
+## 15. Decisions to confirm during implementation
+
+These are intentionally not over-specified now; implementation evidence may change the best answer.
+
+1. Whether `SourceUnit.kind` needs separate `html_section` and `ebook_spine_item` at the canonical processing layer or can use a smaller generic flow-unit vocabulary.
+2. Whether semantic hierarchy should allow a parent to govern nodes in later source units directly, or whether section hierarchy should be represented separately from node containment.
+3. Exact typed-anchor serialization shape and whether compound anchors are first-class or represented as an ordered tuple of anchors.
+4. Exact boundary between provider normalization and MinerU-Popo recovery.
+5. LLM provider/model/prompt policy for TXT structure analysis and how confidence/review warnings are represented.
+6. Whether TXT structure recovery needs a separate document-outline reconciliation model call or can be handled deterministically from bounded window outputs.
+7. ReaderLocation v2 exact identity shape.
+
+These are implementation decisions, not reasons to retain a page-centric model.
+
+## 16. Planning principle
+
+Plans are implementation hypotheses, not immutable truth.
+
+The project should keep architectural invariants stable where evidence supports them, but revise plans when implementation exposes a wrong abstraction. Each revision should record:
+
+```text
+what assumption changed
+why the previous abstraction failed
+what principles remain valid
+what code/PRs are affected
+what new exit criteria prove the revision
+```
+
+The current refactor follows that rule: explicit selection, deterministic canonicalization, provenance, bounded delivery, and derived Reader views remain valid; the assumption that every source is fundamentally page-based does not.

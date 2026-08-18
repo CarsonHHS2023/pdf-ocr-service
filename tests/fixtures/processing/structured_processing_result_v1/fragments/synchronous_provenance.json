@@ -1,0 +1,1 @@
+{"limitation":"Current RawResultIdentity requires provider_job_id, so this is a deliberate boundary decision rather than a representable envelope.","provider_shape":{"provider_name":"paddle-vl-api","provider_request_id":"request_synthetic_sync","provider_result_profile":"sync","provider_result_status":"completed"}}

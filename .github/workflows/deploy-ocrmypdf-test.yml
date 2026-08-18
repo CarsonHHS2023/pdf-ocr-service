@@ -1,0 +1,185 @@
+name: Deploy stable-v4 OpenCV and Modal test Space
+
+on:
+  push:
+    branches:
+      - deploy/ocrmypdf-test
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ocrmypdf-test-space
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact deployment revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          lfs: true
+
+      - name: Apply stable-v4, provider-result, provenance, refinement, scope, high-resolution confirmation, and native-text overlays
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+
+      - name: Validate stable-v4 OpenCV, Modal, provider-result, provenance, refinement, scope, high-resolution confirmation, and native-text flow
+        run: |
+          python -m pip install --disable-pip-version-check -q \
+            'numpy<2' \
+            opencv-python-headless \
+            PyMuPDF \
+            Pillow \
+            SQLAlchemy==2.0.28 \
+            httpx \
+            pydantic \
+            pydantic-settings \
+            pytest
+          python -m py_compile \
+            app/processing/pdf_opencv_quality_pipeline.py \
+            app/processing/pdf_opencv_modal_bridge.py \
+            app/processing/pdf_geometry_integration.py \
+            app/processing/pdf_ingestion.py \
+            app/processing/pdf_canonicalization.py \
+            app/processing/pdf_visual_assets.py \
+            app/processing/batched_structure_refinement.py \
+            app/processing/openai_batched_structure_refinement.py \
+            app/processing/pdf_page_presentation_bridge.py \
+            app/processing/pdf_page_presentation_lifecycle_compat.py \
+            app/processing/pdf_page_high_resolution_confirmation_compat.py \
+            app/processing/pdf_native_text_compat.py \
+            app/processing/orchestration.py \
+            scripts/apply_opencv_v4_modal_bridge.py \
+            scripts/apply_provider_result_diagnostics.py \
+            scripts/apply_presentation_provenance_fix.py \
+            scripts/apply_heading_review_semantic_retry.py \
+            scripts/apply_page_role_scope_alignment.py \
+            scripts/apply_high_resolution_page_confirmation.py \
+            scripts/apply_native_pdf_text_recovery.py \
+            scripts/validate_opencv_quality_pipeline_v4.py \
+            scripts/validate_opencv_v4_modal_bridge.py \
+            tests/processing/test_pdf_opencv_modal_bridge.py \
+            tests/processing/test_openai_batched_structure_refinement.py \
+            tests/test_provider_result_diagnostics.py \
+            tests/test_presentation_provenance_mappingproxy_fix.py \
+            tests/test_heading_review_semantic_retry.py \
+            tests/test_page_role_scope_alignment.py \
+            tests/test_high_resolution_page_confirmation.py \
+            tests/test_native_pdf_text_recovery.py
+          python -m scripts.validate_opencv_quality_pipeline_v4
+          python -m scripts.validate_opencv_v4_modal_bridge
+          python -m pytest -q \
+            tests/processing/test_pdf_opencv_modal_bridge.py \
+            tests/processing/test_openai_batched_structure_refinement.py \
+            tests/test_provider_result_diagnostics.py \
+            tests/test_presentation_provenance_mappingproxy_fix.py \
+            tests/test_heading_review_semantic_retry.py \
+            tests/test_page_role_scope_alignment.py \
+            tests/test_high_resolution_page_confirmation.py \
+            tests/test_native_pdf_text_recovery.py
+          grep -q 'opencv_unified_quality_gate_experiment_v4' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q '_gate_geometry_candidate' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q '_gate_background_candidate' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q 'install_opencv_v4_modal_bridge()' app/processing/pdf_ingestion.py
+          grep -q 'install_high_resolution_page_confirmation_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_native_pdf_text_compat()' app/processing/pdf_ingestion.py
+          grep -q 'PDF_PAGE_ORIENTATION_CONFIRMATION_RESULT' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'PDF_PAGE_CLASSIFICATION_HIGH_RES_CONFIRMATION_RESULT' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'PDF_NATIVE_TEXT_PAGE_ACCEPTED' app/processing/pdf_native_text_compat.py
+          grep -q 'PDF_NATIVE_TEXT_PAGE_RASTER_FALLBACK' app/processing/pdf_native_text_compat.py
+          grep -q 'native_text_page_count' app/processing/pdf_page_presentation_preprocess_compat.py
+          grep -q 'PaddleVLClient(' app/processing/pdf_ingestion.py
+          grep -q 'ProviderInputChecksumProvider(' app/processing/pdf_ingestion.py
+          grep -q 'outcome = await service.process(request)' app/processing/pdf_ingestion.py
+          grep -q 'opencv_preprocessing_manifest' app/processing/pdf_opencv_modal_bridge.py
+          grep -q 'opencv_crop_preprocessing' app/processing/pdf_opencv_modal_bridge.py
+          grep -q '"status": "deferred" if required else "not_required"' app/processing/pdf_opencv_modal_bridge.py
+          grep -q 'PDF_PROVIDER_RESULT_RECEIVED' app/processing/pdf_page_presentation_bridge.py
+          grep -q 'PDF_ORCHESTRATION_STAGE_FAILED' app/processing/orchestration.py
+          grep -q 'integration_category=' app/processing/pdf_ingestion.py
+          grep -q '_rebuild_presentation_provider_provenance' app/processing/pdf_page_presentation_lifecycle_compat.py
+          ! grep -q 'provider=replace(' app/processing/pdf_page_presentation_lifecycle_compat.py
+          grep -q 'PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED' app/processing/batched_structure_refinement.py
+          grep -q '_HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS = 2' app/processing/batched_structure_refinement.py
+          grep -q 'boundary_positions = batched._document_boundary_positions(spr)' app/processing/openai_batched_structure_refinement.py
+          ! grep -q 'boundary_positions = _document_boundary_positions(spr)' app/processing/openai_batched_structure_refinement.py
+          ! grep -q 'PDF_OPENCV_EXPERIMENT_SKIP_PROVIDER' app/processing/pdf_ingestion.py
+          ! grep -qi '^ocrmypdf' requirements.txt
+          ! grep -qE '^[[:space:]]+(ghostscript|qpdf|tesseract-ocr)' Dockerfile
+
+      - name: Validate deployment target
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          test -n "$HF_TOKEN"
+          test "$GITHUB_REF_NAME" = "deploy/ocrmypdf-test"
+          echo "Deploying $GITHUB_SHA to carsonhhs/pdf-ocr-service-ocrmypdf-test"
+
+      - name: Record exact integrated v4 test revision
+        run: |
+          mkdir -p deployments
+          cat > deployments/ocrmypdf-test-revision.txt <<EOF
+          Application source commit: $GITHUB_SHA
+          Application source branch: $GITHUB_REF_NAME
+          Target Space: carsonhhs/pdf-ocr-service-ocrmypdf-test
+          Purpose: stable OpenCV v4 page preprocessing, Modal OCR, presentation remap, bounded provider-result diagnostics, safe frozen provenance rebuilding, one bounded retry for incomplete mandatory heading review, aligned page-role scope, high-resolution confirmation before rotation or OCR skipping, and native PDF text/figure recovery with rasterized OCR fallback for rejected text layers
+          Expected routing: low-resolution proposal -> high-resolution confirmation for risky orientation/presentation decisions -> reliable native PDF page recovery or ordinary-page V4/raster fallback -> Modal when required -> result remap -> raw-result ingestion -> Reader v2 canonicalization
+          EOF
+
+      - name: Synchronize branch to OpenCV v4 Modal test Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: carsonhhs
+          HF_SPACE_REPO: carsonhhs/pdf-ocr-service-ocrmypdf-test
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/hf-askpass.sh <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "$HF_USERNAME" ;;
+            *Password*) printf '%s\n' "$HF_TOKEN" ;;
+            *) printf '\n' ;;
+          esac
+          SH
+          chmod 700 /tmp/hf-askpass.sh
+
+          export GIT_ASKPASS=/tmp/hf-askpass.sh
+          export GIT_TERMINAL_PROMPT=0
+
+          git clone "https://huggingface.co/spaces/${HF_SPACE_REPO}" /tmp/hf-space
+          git -C /tmp/hf-space lfs install --local
+
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.env' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.pytest_cache/' \
+            --exclude='test_samples/' \
+            ./ /tmp/hf-space/
+
+          git -C /tmp/hf-space config user.name "github-actions[bot]"
+          git -C /tmp/hf-space config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C /tmp/hf-space add -A
+
+          if git -C /tmp/hf-space diff --cached --quiet; then
+            echo "Test Space already matches $GITHUB_SHA"
+          else
+            git -C /tmp/hf-space commit -m "Deploy stable OpenCV v4 Modal flow from GitHub ${GITHUB_SHA::12}"
+            git -C /tmp/hf-space push origin HEAD:main
+          fi
+
+          rm -f /tmp/hf-askpass.sh
+          echo "Synchronized $GITHUB_SHA to ${HF_SPACE_REPO}"

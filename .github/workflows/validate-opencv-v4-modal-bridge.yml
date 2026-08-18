@@ -1,0 +1,171 @@
+name: Validate OpenCV v4 Modal bridge
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/deploy-ocrmypdf-test.yml'
+      - '.github/workflows/validate-opencv-v4-modal-bridge.yml'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'app/processing/pdf_opencv_quality_pipeline.py'
+      - 'app/processing/pdf_opencv_modal_bridge.py'
+      - 'app/processing/pdf_geometry_integration.py'
+      - 'app/processing/pdf_canonicalization.py'
+      - 'app/processing/pdf_visual_assets.py'
+      - 'app/processing/batched_structure_refinement.py'
+      - 'app/processing/openai_batched_structure_refinement.py'
+      - 'app/processing/pdf_page_presentation_bridge.py'
+      - 'app/processing/pdf_page_presentation_classifier_compat.py'
+      - 'app/processing/pdf_page_presentation_preprocess_compat.py'
+      - 'app/processing/pdf_page_presentation_lifecycle_compat.py'
+      - 'app/processing/pdf_page_orientation_compat.py'
+      - 'app/processing/pdf_page_orientation_dimensions_compat.py'
+      - 'app/processing/pdf_page_analysis_fail_open_compat.py'
+      - 'app/processing/pdf_page_high_resolution_confirmation_compat.py'
+      - 'app/processing/pdf_native_text_compat.py'
+      - 'scripts/apply_opencv_v4_modal_bridge.py'
+      - 'scripts/apply_provider_result_diagnostics.py'
+      - 'scripts/apply_presentation_provenance_fix.py'
+      - 'scripts/apply_heading_review_semantic_retry.py'
+      - 'scripts/apply_page_role_scope_alignment.py'
+      - 'scripts/apply_high_resolution_page_confirmation.py'
+      - 'scripts/apply_native_pdf_text_recovery.py'
+      - 'scripts/validate_opencv_quality_pipeline_v4.py'
+      - 'scripts/validate_opencv_v4_modal_bridge.py'
+      - 'tests/processing/test_pdf_opencv_modal_bridge.py'
+      - 'tests/processing/test_openai_batched_structure_refinement.py'
+      - 'tests/test_pre_ocr_page_presentation.py'
+      - 'tests/test_pre_ocr_classifier_compat.py'
+      - 'tests/test_pre_ocr_preprocess_order.py'
+      - 'tests/test_pre_ocr_presentation_lifecycle.py'
+      - 'tests/test_pre_ocr_page_orientation.py'
+      - 'tests/test_pre_ocr_v4_manifest_capture.py'
+      - 'tests/test_provider_result_diagnostics.py'
+      - 'tests/test_presentation_provenance_mappingproxy_fix.py'
+      - 'tests/test_heading_review_semantic_retry.py'
+      - 'tests/test_page_role_scope_alignment.py'
+      - 'tests/test_high_resolution_page_confirmation.py'
+      - 'tests/test_native_pdf_text_recovery.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply test overlays
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+      - name: Install focused validation dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -q \
+            'numpy<2' \
+            opencv-python-headless \
+            PyMuPDF \
+            Pillow \
+            SQLAlchemy==2.0.28 \
+            httpx \
+            pydantic \
+            pydantic-settings \
+            pytest
+      - name: Compile and validate
+        run: |
+          python -m py_compile \
+            app/processing/pdf_opencv_quality_pipeline.py \
+            app/processing/pdf_opencv_modal_bridge.py \
+            app/processing/pdf_geometry_integration.py \
+            app/processing/pdf_ingestion.py \
+            app/processing/pdf_canonicalization.py \
+            app/processing/pdf_visual_assets.py \
+            app/processing/batched_structure_refinement.py \
+            app/processing/openai_batched_structure_refinement.py \
+            app/processing/pdf_page_presentation_bridge.py \
+            app/processing/pdf_page_presentation_classifier_compat.py \
+            app/processing/pdf_page_presentation_preprocess_compat.py \
+            app/processing/pdf_page_presentation_lifecycle_compat.py \
+            app/processing/pdf_page_orientation_compat.py \
+            app/processing/pdf_page_orientation_dimensions_compat.py \
+            app/processing/pdf_page_analysis_fail_open_compat.py \
+            app/processing/pdf_page_high_resolution_confirmation_compat.py \
+            app/processing/pdf_native_text_compat.py \
+            scripts/apply_opencv_v4_modal_bridge.py \
+            scripts/apply_provider_result_diagnostics.py \
+            scripts/apply_presentation_provenance_fix.py \
+            scripts/apply_heading_review_semantic_retry.py \
+            scripts/apply_page_role_scope_alignment.py \
+            scripts/apply_high_resolution_page_confirmation.py \
+            scripts/apply_native_pdf_text_recovery.py \
+            scripts/validate_opencv_quality_pipeline_v4.py \
+            scripts/validate_opencv_v4_modal_bridge.py \
+            tests/processing/test_pdf_opencv_modal_bridge.py \
+            tests/processing/test_openai_batched_structure_refinement.py \
+            tests/test_pre_ocr_page_presentation.py \
+            tests/test_pre_ocr_classifier_compat.py \
+            tests/test_pre_ocr_preprocess_order.py \
+            tests/test_pre_ocr_presentation_lifecycle.py \
+            tests/test_pre_ocr_page_orientation.py \
+            tests/test_pre_ocr_v4_manifest_capture.py \
+            tests/test_provider_result_diagnostics.py \
+            tests/test_presentation_provenance_mappingproxy_fix.py \
+            tests/test_heading_review_semantic_retry.py \
+            tests/test_page_role_scope_alignment.py \
+            tests/test_high_resolution_page_confirmation.py \
+            tests/test_native_pdf_text_recovery.py
+          python -m scripts.validate_opencv_quality_pipeline_v4
+          python -m scripts.validate_opencv_v4_modal_bridge
+          python -m pytest -q \
+            tests/processing/test_pdf_opencv_modal_bridge.py \
+            tests/processing/test_openai_batched_structure_refinement.py \
+            tests/test_pre_ocr_page_presentation.py \
+            tests/test_pre_ocr_classifier_compat.py \
+            tests/test_pre_ocr_preprocess_order.py \
+            tests/test_pre_ocr_presentation_lifecycle.py \
+            tests/test_pre_ocr_page_orientation.py \
+            tests/test_pre_ocr_v4_manifest_capture.py \
+            tests/test_provider_result_diagnostics.py \
+            tests/test_presentation_provenance_mappingproxy_fix.py \
+            tests/test_heading_review_semantic_retry.py \
+            tests/test_page_role_scope_alignment.py \
+            tests/test_high_resolution_page_confirmation.py \
+            tests/test_native_pdf_text_recovery.py
+      - name: Enforce scope boundaries
+        run: |
+          grep -q 'opencv_unified_quality_gate_experiment_v4' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q 'outcome = await service.process(request)' app/processing/pdf_ingestion.py
+          grep -q 'install_pre_ocr_presentation_bridge' app/processing/pdf_ingestion.py
+          grep -q 'install_classifier_audit_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_preprocess_order_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_presentation_lifecycle_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_discrete_orientation_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_orientation_dimensions_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_analysis_render_fail_open_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_high_resolution_page_confirmation_compat' app/processing/pdf_ingestion.py
+          grep -q 'install_native_pdf_text_compat' app/processing/pdf_ingestion.py
+          grep -q 'PDF_PAGE_ORIENTATION_CONFIRMATION_RESULT' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'PDF_PAGE_CLASSIFICATION_HIGH_RES_CONFIRMATION_RESULT' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'high_resolution_body_prose_conflict' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'PDF_NATIVE_TEXT_PAGE_ACCEPTED' app/processing/pdf_native_text_compat.py
+          grep -q 'PDF_NATIVE_TEXT_PAGE_RASTER_FALLBACK' app/processing/pdf_native_text_compat.py
+          grep -q 'native_text_fallback_raster' app/processing/pdf_native_text_compat.py
+          grep -q 'native_text_page_count' app/processing/pdf_page_presentation_preprocess_compat.py
+          grep -q 'PDF_PROVIDER_RESULT_RECEIVED' app/processing/pdf_page_presentation_bridge.py
+          grep -q 'PDF_ORCHESTRATION_STAGE_FAILED' app/processing/orchestration.py
+          grep -q 'integration_category=' app/processing/pdf_ingestion.py
+          grep -q '_rebuild_presentation_provider_provenance' app/processing/pdf_page_presentation_lifecycle_compat.py
+          ! grep -q 'provider=replace(' app/processing/pdf_page_presentation_lifecycle_compat.py
+          grep -q 'PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED' app/processing/batched_structure_refinement.py
+          grep -q '_HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS = 2' app/processing/batched_structure_refinement.py
+          grep -q 'boundary_positions = batched._document_boundary_positions(spr)' app/processing/openai_batched_structure_refinement.py
+          ! grep -q 'boundary_positions = _document_boundary_positions(spr)' app/processing/openai_batched_structure_refinement.py
+          ! grep -q 'PDF_OPENCV_EXPERIMENT_SKIP_PROVIDER' app/processing/pdf_ingestion.py
+          ! grep -qi '^ocrmypdf' requirements.txt
+          ! grep -qE '^[[:space:]]+(ghostscript|qpdf|tesseract-ocr)' Dockerfile

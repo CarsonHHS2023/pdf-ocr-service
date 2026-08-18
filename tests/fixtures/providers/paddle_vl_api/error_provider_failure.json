@@ -1,0 +1,7 @@
+{
+  "detail": {
+    "code": "OCR_JOB_FAILED",
+    "message": "No documents completed OCR.",
+    "retryable": true
+  }
+}

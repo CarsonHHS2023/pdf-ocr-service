@@ -1,0 +1,44 @@
+{
+  "schema_version": "2026-07-10",
+  "job_id": "job_fixture_001",
+  "request_id": "request_fixture_001",
+  "documents_total": 1,
+  "documents_completed": 0,
+  "documents_planned": 0,
+  "documents_failed": 0,
+  "tasks_total": 0,
+  "tasks_completed": 0,
+  "pages_total": 0,
+  "pages_completed": 0,
+  "percent_complete": 0.0,
+  "failed_tasks": 0,
+  "created_at": "2026-07-14T00:00:00Z",
+  "started_at": null,
+  "updated_at": "2026-07-14T00:00:05Z",
+  "completed_at": null,
+  "expires_at": "2026-07-14T01:00:00Z",
+  "error": {
+    "code": "JOB_EXPIRED",
+    "message": "Short-lived OCR job state has expired.",
+    "retryable": true
+  },
+  "documents": [
+    {
+      "document_id": "document_fixture_001",
+      "status": "queued",
+      "pages_total": 0,
+      "pages_completed": 0,
+      "tasks_total": 0,
+      "tasks_completed": 0,
+      "failed_tasks": 0,
+      "error": null,
+      "tasks": []
+    }
+  ],
+  "tasks": [],
+  "ok": false,
+  "build_tag": "build_fixture_001",
+  "result_ready": false,
+  "result_url": "/ocr/jobs/job_fixture_001/result",
+  "status": "expired"
+}

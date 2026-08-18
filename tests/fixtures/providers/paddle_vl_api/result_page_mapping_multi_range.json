@@ -1,0 +1,382 @@
+{
+  "ok": true,
+  "schema_version": "2026-07-10",
+  "build_tag": "build_fixture_001",
+  "job_id": "job_fixture_001",
+  "request_id": "request_fixture_001",
+  "status": "completed",
+  "summary": {
+    "documents_total": 1,
+    "pages_total": 3,
+    "pages_completed": 3
+  },
+  "created_at": "2026-07-14T00:00:00Z",
+  "completed_at": "2026-07-14T00:00:05Z",
+  "expires_at": "2026-07-14T01:00:00Z",
+  "error": null,
+  "planning_only": false,
+  "runs_ocr": true,
+  "profile": "full",
+  "result_artifact": null,
+  "statistics": {
+    "documents": 1,
+    "pages_total": 3,
+    "pages_completed": 3,
+    "blocks": 3,
+    "images": 0,
+    "tables": 0,
+    "formulas": 0
+  },
+  "diagnostics": {
+    "configured_max_concurrent_workers": 1,
+    "observed_max_concurrency": 1,
+    "execution_mode": "bounded_concurrent",
+    "queue_wait": {
+      "count": 0,
+      "min_sec": null,
+      "max_sec": null,
+      "avg_sec": null
+    },
+    "ocr_duration_sec": null,
+    "merge_duration_sec": null,
+    "merge_summaries": [
+      {
+        "pages_merged": 3,
+        "page_order_verified": true,
+        "duplicate_pages": [],
+        "missing_pages": []
+      }
+    ],
+    "artifact_generated": false,
+    "artifact_size_bytes": null
+  },
+  "documents": [
+    {
+      "document_id": "document_fixture_001",
+      "status": "completed",
+      "pages_total": 3,
+      "pages_completed": 3,
+      "tasks_total": 2,
+      "tasks_completed": 2,
+      "failed_tasks": 0,
+      "markdown": "# Fixture page 1\n\nHello page one.\n\nFixture page 2 text.\n\nFixture page 3 text.",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "# Fixture page 1\n\nHello page one.",
+          "bbox": [
+            72,
+            72,
+            540,
+            120
+          ],
+          "confidence": 0.91,
+          "order": 0,
+          "polygon_points": null,
+          "metadata": {
+            "label": "text"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Fixture page 2 text.",
+          "bbox": [
+            72,
+            72,
+            540,
+            120
+          ],
+          "confidence": 0.91,
+          "order": 1,
+          "polygon_points": null,
+          "metadata": {
+            "label": "text"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Fixture page 3 text.",
+          "bbox": [
+            72,
+            72,
+            540,
+            120
+          ],
+          "confidence": 0.91,
+          "order": 0,
+          "polygon_points": null,
+          "metadata": {
+            "label": "text"
+          }
+        }
+      ],
+      "merge_summary": {
+        "pages_merged": 3,
+        "page_order_verified": true,
+        "duplicate_pages": [],
+        "missing_pages": []
+      },
+      "tasks": [
+        {
+          "task_id": "job_fixture_001:document_fixture_001:range_0001",
+          "page_start": 1,
+          "page_end": 2,
+          "status": "completed",
+          "error": null
+        },
+        {
+          "task_id": "job_fixture_001:document_fixture_001:range_0002",
+          "page_start": 3,
+          "page_end": 3,
+          "status": "completed",
+          "error": null
+        }
+      ],
+      "error": null,
+      "pages": [
+        {
+          "page_number": 1,
+          "page_index": 0,
+          "markdown": "# Fixture page 1\n\nHello page one.",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "# Fixture page 1\n\nHello page one.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ],
+              "confidence": 0.91,
+              "order": 0,
+              "polygon_points": null,
+              "metadata": {
+                "label": "text"
+              }
+            }
+          ]
+        },
+        {
+          "page_number": 2,
+          "page_index": 1,
+          "markdown": "Fixture page 2 text.",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Fixture page 2 text.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ],
+              "confidence": 0.91,
+              "order": 1,
+              "polygon_points": null,
+              "metadata": {
+                "label": "text"
+              }
+            }
+          ]
+        },
+        {
+          "page_number": 3,
+          "page_index": 2,
+          "markdown": "Fixture page 3 text.",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Fixture page 3 text.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ],
+              "confidence": 0.91,
+              "order": 0,
+              "polygon_points": null,
+              "metadata": {
+                "label": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "raw_result": [
+        {
+          "page_number": 1,
+          "page_index": 0,
+          "markdown": "# Fixture page 1\n\nHello page one.",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "# Fixture page 1\n\nHello page one.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ],
+              "confidence": 0.91,
+              "order": 0,
+              "polygon_points": null,
+              "metadata": {
+                "label": "text"
+              }
+            }
+          ],
+          "local_page_index": 0,
+          "source_page_range": {
+            "page_start": 1,
+            "page_end": 2
+          },
+          "width": 612,
+          "height": 792,
+          "parsing_res_list": [
+            {
+              "type": "text",
+              "text": "# Fixture page 1\n\nHello page one.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ]
+            }
+          ],
+          "layout_det_res": {
+            "boxes": [
+              {
+                "label": "text",
+                "bbox": [
+                  72,
+                  72,
+                  540,
+                  120
+                ],
+                "score": 0.91,
+                "order": 0
+              }
+            ]
+          }
+        },
+        {
+          "page_number": 2,
+          "page_index": 1,
+          "markdown": "Fixture page 2 text.",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Fixture page 2 text.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ],
+              "confidence": 0.91,
+              "order": 1,
+              "polygon_points": null,
+              "metadata": {
+                "label": "text"
+              }
+            }
+          ],
+          "local_page_index": 1,
+          "source_page_range": {
+            "page_start": 1,
+            "page_end": 2
+          },
+          "width": 612,
+          "height": 792,
+          "parsing_res_list": [
+            {
+              "type": "text",
+              "text": "Fixture page 2 text.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ]
+            }
+          ],
+          "layout_det_res": {
+            "boxes": [
+              {
+                "label": "text",
+                "bbox": [
+                  72,
+                  72,
+                  540,
+                  120
+                ],
+                "score": 0.91,
+                "order": 1
+              }
+            ]
+          }
+        },
+        {
+          "page_number": 3,
+          "page_index": 2,
+          "markdown": "Fixture page 3 text.",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Fixture page 3 text.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ],
+              "confidence": 0.91,
+              "order": 0,
+              "polygon_points": null,
+              "metadata": {
+                "label": "text"
+              }
+            }
+          ],
+          "local_page_index": 0,
+          "source_page_range": {
+            "page_start": 3,
+            "page_end": 3
+          },
+          "width": 612,
+          "height": 792,
+          "parsing_res_list": [
+            {
+              "type": "text",
+              "text": "Fixture page 3 text.",
+              "bbox": [
+                72,
+                72,
+                540,
+                120
+              ]
+            }
+          ],
+          "layout_det_res": {
+            "boxes": [
+              {
+                "label": "text",
+                "bbox": [
+                  72,
+                  72,
+                  540,
+                  120
+                ],
+                "score": 0.91,
+                "order": 0
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,229 @@
+name: Validate production OpenCV crop promotion
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/main.py'
+      - 'app/processing/pdf_clean_white_background_skip_compat.py'
+      - 'app/processing/pdf_crop_dark_foreground_anchor_compat.py'
+      - 'app/processing/pdf_crop_dark_foreground_anchor_diagnostics_compat.py'
+      - 'app/processing/pdf_crop_dark_foreground_anchor_peak_diagnostics_compat.py'
+      - 'app/processing/pdf_crop_opencv_candidate_persistence_compat.py'
+      - 'app/processing/pdf_crop_opencv_candidate_persistence_hardening_compat.py'
+      - 'app/processing/pdf_crop_opencv_readable_diagnostics_compat.py'
+      - 'app/processing/pdf_crop_opencv_semantic_consensus_compat.py'
+      - 'app/processing/pdf_crop_opencv_semantic_gate_compat.py'
+      - 'app/processing/pdf_crop_opencv_semantic_gate_hardening_compat.py'
+      - 'app/processing/pdf_crop_opencv_semantic_gate_request_compat.py'
+      - 'app/processing/pdf_visual_crop_lifecycle_compat.py'
+      - 'app/reader_v2/assets.py'
+      - 'app/routers/dark_anchor_diagnostics.py'
+      - 'app/routers/reader_v2.py'
+      - 'scripts/apply_crop_llm_background_cleanup.py'
+      - 'tests/processing/test_pdf_clean_white_background_skip_compat.py'
+      - 'tests/processing/test_pdf_clean_white_background_skip_fail_open.py'
+      - 'tests/processing/test_pdf_crop_dark_foreground_anchor_compat.py'
+      - 'tests/processing/test_pdf_crop_dark_foreground_anchor_histogram.py'
+      - 'tests/processing/test_pdf_crop_dark_foreground_anchor_layering.py'
+      - 'tests/processing/test_pdf_crop_dark_foreground_anchor_local_peak.py'
+      - 'tests/processing/test_pdf_crop_dark_foreground_anchor_safety.py'
+      - 'tests/processing/test_pdf_crop_opencv_readable_diagnostics_compat.py'
+      - 'tests/processing/test_pdf_crop_opencv_semantic_consensus_compat.py'
+      - 'tests/processing/test_pdf_crop_opencv_semantic_gate_compat.py'
+      - 'tests/processing/test_pdf_crop_opencv_semantic_gate_hardening_compat.py'
+      - 'tests/processing/test_pdf_crop_opencv_semantic_gate_request_compat.py'
+      - 'tests/processing/test_pdf_visual_crop_lifecycle_compat.py'
+      - 'tests/structured_content/test_opencv_diagnostic_reader_selection.py'
+      - 'tests/structured_content/test_pdf_visual_asset_persistence_priority.py'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/validate-production-opencv-crop-promotion.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install integrated validation dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -q \
+            'numpy<2' opencv-python-headless PyMuPDF Pillow \
+            SQLAlchemy==2.0.28 alembic httpx fastapi python-multipart \
+            pydantic pydantic-settings pytest huggingface-hub chardet
+
+      - name: Apply exact production overlay order
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_crop_llm_background_cleanup.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+
+      - name: Compile integrated production crop path
+        run: |
+          python -m py_compile \
+            app/main.py \
+            app/processing/pdf_opencv_quality_pipeline.py \
+            app/processing/pdf_opencv_modal_bridge.py \
+            app/processing/pdf_clean_white_background_skip_compat.py \
+            app/processing/pdf_crop_dark_foreground_anchor_compat.py \
+            app/processing/pdf_crop_dark_foreground_anchor_diagnostics_compat.py \
+            app/processing/pdf_crop_dark_foreground_anchor_peak_diagnostics_compat.py \
+            app/processing/pdf_crop_opencv_candidate_persistence_compat.py \
+            app/processing/pdf_crop_opencv_candidate_persistence_hardening_compat.py \
+            app/processing/pdf_crop_opencv_readable_diagnostics_compat.py \
+            app/processing/pdf_crop_opencv_semantic_consensus_compat.py \
+            app/processing/pdf_crop_opencv_semantic_gate_compat.py \
+            app/processing/pdf_crop_opencv_semantic_gate_hardening_compat.py \
+            app/processing/pdf_crop_opencv_semantic_gate_request_compat.py \
+            app/processing/pdf_visual_crop_lifecycle_compat.py \
+            app/reader_v2/assets.py app/routers/dark_anchor_diagnostics.py app/routers/reader_v2.py
+
+      - name: Validate active runtime and retired generated-image exclusion
+        run: |
+          for token in \
+            install_pdf_crop_opencv_semantic_gate_compat \
+            install_pdf_crop_opencv_semantic_gate_hardening_compat \
+            install_pdf_crop_opencv_semantic_gate_request_compat \
+            install_pdf_crop_opencv_semantic_consensus_compat \
+            install_pdf_clean_white_background_skip_compat \
+            install_pdf_crop_opencv_candidate_persistence_compat \
+            install_pdf_crop_opencv_candidate_persistence_hardening_compat \
+            install_pdf_crop_dark_foreground_anchor_compat \
+            install_pdf_crop_dark_foreground_anchor_peak_diagnostics_compat \
+            install_pdf_crop_opencv_readable_diagnostics_compat \
+            install_pdf_visual_crop_lifecycle_compat; do
+            grep -q "${token}()" app/processing/pdf_ingestion.py
+          done
+          ! grep -q 'install_pdf_crop_llm_background_cleanup_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_semantic_v2_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_semantic_v2_foreground_lock_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_semantic_v2_coherent_background_compat()' app/processing/pdf_ingestion.py
+          grep -q 'PDF_CROP_LLM_BACKGROUND_CLEANUP_ENABLED.*"0"' app.py
+          grep -q 'PDF_CROP_LLM_SEMANTIC_V2_ENABLED.*"0"' app.py
+          grep -q 'PDF_CROP_OPENCV_SEMANTIC_GATE_ENABLED.*"1"' app.py
+          grep -q 'PDF_CROP_OPENCV_SEMANTIC_GATE_MIN_CONFIDENCE.*"0.90"' app.py
+          grep -q 'PDF_CROP_OPENCV_SEMANTIC_GATE_MAX_JUDGE_CALLS.*"6"' app.py
+          grep -q 'dark_foreground_anchor_lock_v2_local_peak' app/processing/pdf_crop_dark_foreground_anchor_compat.py
+          grep -q 'opencv_semantic_adverse_confirmation_consensus_v1' app/processing/pdf_crop_opencv_semantic_consensus_compat.py
+          grep -q 'production-revision.txt' app/processing/pdf_visual_crop_lifecycle_compat.py
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('app/processing/pdf_ingestion.py').read_text(encoding='utf-8')
+          names = [
+              'install_opencv_v4_modal_bridge()',
+              'install_pdf_crop_opencv_semantic_gate_compat()',
+              'install_pdf_crop_opencv_semantic_gate_hardening_compat()',
+              'install_pdf_crop_opencv_semantic_gate_request_compat()',
+              'install_pdf_crop_opencv_semantic_consensus_compat()',
+              'install_pdf_clean_white_background_skip_compat()',
+              'install_pdf_crop_opencv_candidate_persistence_compat()',
+              'install_pdf_crop_opencv_candidate_persistence_hardening_compat()',
+              'install_pdf_crop_dark_foreground_anchor_compat()',
+              'install_pdf_crop_dark_foreground_anchor_peak_diagnostics_compat()',
+              'install_pdf_crop_opencv_readable_diagnostics_compat()',
+              'install_pdf_visual_crop_lifecycle_compat()',
+          ]
+          positions = [s.index(name) for name in names]
+          assert positions == sorted(positions), positions
+          PY
+
+      - name: Verify runtime composition and fresh app routes
+        run: |
+          python - <<'PY'
+          import app.processing.pdf_ingestion  # noqa: F401
+          from app.processing import pdf_crop_opencv_semantic_gate_compat as semantic
+          from app.processing import pdf_opencv_modal_bridge as bridge
+          from app.processing import pdf_opencv_quality_pipeline as v4
+          from app.main import app
+          from app.routers import dark_anchor_diagnostics, reader_v2
+
+          def children(fn):
+              return [c.cell_contents for c in (getattr(fn, '__closure__', None) or ())]
+          def has(root, *, marker=None, target=None, seen=None):
+              seen = seen or set()
+              if not callable(root) or id(root) in seen:
+                  return False
+              seen.add(id(root))
+              if target is not None and root is target:
+                  return True
+              if marker is not None and getattr(root, marker, False):
+                  return True
+              return any(has(x, marker=marker, target=target, seen=seen) for x in children(root) if callable(x))
+
+          assert getattr(bridge.process_visual_crop_v4, '_pdf_crop_dark_foreground_anchor', False)
+          assert has(bridge.process_visual_crop_v4, marker='_opencv_semantic_consensus_budget_refresh')
+          assert has(bridge.process_visual_crop_v4, marker='_clean_white_background_skip')
+          assert has(bridge.process_visual_crop_v4, target=semantic.process_visual_crop_opencv_semantic_gate)
+          assert getattr(v4._normalize_background, '_pdf_crop_readable_diagnostics_capture', False)
+          assert has(v4._normalize_background, marker='_pdf_crop_dark_foreground_anchor')
+          assert has(v4._normalize_background, marker='_pdf_crop_opencv_candidate_capture')
+          assert has(v4._normalize_background, marker='_clean_white_background_skip')
+
+          expected = {
+              '/api/reader/v2/documents/{document_ref}/assets/{asset_id}/diagnostics/dark-anchor-histogram/plot',
+              '/api/reader/v2/documents/{document_ref}/assets/{asset_id}/diagnostics/dark-anchor-histogram/data',
+          }
+          diag = [getattr(r, 'path', None) for r in dark_anchor_diagnostics.router.routes]
+          live = [getattr(r, 'path', None) for r in app.routes]
+          for path in expected:
+              assert diag.count(path) == 1, diag
+              assert live.count(path) == 1, live
+          assert not any('dark-anchor-histogram' in str(getattr(r, 'path', '')) for r in reader_v2.router.routes)
+          PY
+
+      - name: Run validated crop regressions
+        run: |
+          python -m pytest -q \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_compat.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_layering.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_safety.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_histogram.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_local_peak.py \
+            tests/processing/test_pdf_crop_opencv_semantic_consensus_compat.py \
+            tests/processing/test_pdf_crop_opencv_readable_diagnostics_compat.py \
+            tests/processing/test_pdf_clean_white_background_skip_compat.py \
+            tests/processing/test_pdf_clean_white_background_skip_fail_open.py \
+            tests/processing/test_pdf_crop_opencv_semantic_gate_compat.py \
+            tests/processing/test_pdf_crop_opencv_semantic_gate_hardening_compat.py \
+            tests/processing/test_pdf_crop_opencv_semantic_gate_request_compat.py \
+            tests/processing/test_pdf_visual_crop_lifecycle_compat.py \
+            tests/processing/test_pdf_opencv_modal_bridge.py \
+            tests/structured_content/test_pdf_visual_asset_persistence_priority.py \
+            tests/structured_content/test_opencv_diagnostic_reader_selection.py
+
+      - name: Run existing production-flow regressions
+        run: |
+          python -m scripts.validate_opencv_quality_pipeline_v4
+          python -m scripts.validate_opencv_v4_modal_bridge
+          python -m pytest -q \
+            tests/processing/test_openai_batched_structure_refinement.py \
+            tests/test_provider_result_diagnostics.py \
+            tests/test_presentation_provenance_mappingproxy_fix.py \
+            tests/test_heading_review_semantic_retry.py \
+            tests/test_page_role_scope_alignment.py \
+            tests/test_high_resolution_page_confirmation.py \
+            tests/test_native_pdf_text_recovery.py
+
+      - name: Verify production deployment contract
+        run: |
+          grep -q 'python scripts/apply_crop_llm_background_cleanup.py' .github/workflows/deploy.yml
+          grep -q 'test "$GITHUB_REF_NAME" = "main"' .github/workflows/deploy.yml
+          grep -q 'repo_id = "carsonhhs/pdf-ocr-service"' .github/workflows/deploy.yml
+          grep -q 'production-revision.txt' .github/workflows/deploy.yml
+          ! grep -q 'carsonhhs/pdf-ocr-service-ocrmypdf-test' .github/workflows/deploy.yml
+          ! grep -q 'gpt-image' .github/workflows/deploy.yml
+          ! grep -qE '^[[:space:]]+python .*semantic_v2' .github/workflows/deploy.yml

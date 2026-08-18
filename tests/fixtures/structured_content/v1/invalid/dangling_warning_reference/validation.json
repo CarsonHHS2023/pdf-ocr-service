@@ -1,0 +1,1 @@
+{"blocking_issue_count":1,"is_valid":false,"issues":[{"blocking":true,"code":"DANGLING_WARNING_REFERENCE","details":{"warning_id":"warn-missing"},"evidence_ids":[],"safe_summary":"Warning reference was not found.","scope_path":"$.pages['page-001'].warning_ids","severity":"error"}],"nonblocking_issue_count":0,"schema_id":"atlas.structured-content-candidate","schema_version":1}

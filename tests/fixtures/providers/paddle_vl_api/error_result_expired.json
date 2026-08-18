@@ -1,0 +1,7 @@
+{
+  "detail": {
+    "code": "JOB_EXPIRED",
+    "message": "Short-lived OCR job state has expired.",
+    "retryable": true
+  }
+}

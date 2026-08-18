@@ -1,0 +1,86 @@
+name: Cleanup HF Storage Buckets
+
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Cleanup policy to run
+        required: true
+        default: scheduled
+        type: choice
+        options:
+          - scheduled
+          - purge-test
+      apply:
+        description: Actually delete selected files (false = dry run)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hf-storage-bucket-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Hugging Face bucket client
+        run: python -m pip install --disable-pip-version-check -q 'huggingface-hub>=1.5.0,<2'
+
+      - name: Validate cleanup credential
+        run: test -n "$HF_TOKEN"
+
+      - name: Run scheduled retention cleanup
+        if: github.event_name == 'schedule'
+        run: |
+          python scripts/cleanup_hf_buckets.py \
+            --mode scheduled \
+            --test-retention-days 7 \
+            --production-diagnostics-retention-days 14 \
+            --apply
+
+      - name: Run manual cleanup
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CLEANUP_MODE: ${{ inputs.mode }}
+          CLEANUP_APPLY: ${{ inputs.apply }}
+        run: |
+          args=(
+            --mode "$CLEANUP_MODE"
+            --test-retention-days 7
+            --production-diagnostics-retention-days 14
+          )
+          if [ "$CLEANUP_APPLY" = "true" ]; then
+            args+=(--apply)
+          fi
+          python scripts/cleanup_hf_buckets.py "${args[@]}"
+
+      - name: Record policy summary
+        if: always()
+        run: |
+          {
+            echo '### HF Storage Bucket cleanup policy'
+            echo ''
+            echo '- Test bucket: files older than 7 days on scheduled runs.'
+            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days.'
+            echo '- Manual `purge-test` can empty the test bucket; it never targets the production bucket root.'
+            echo '- Manual runs default to dry-run unless **apply** is checked.'
+          } >> "$GITHUB_STEP_SUMMARY"

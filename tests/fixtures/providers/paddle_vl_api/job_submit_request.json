@@ -1,0 +1,22 @@
+{
+  "schema_version": "2026-07-10",
+  "job_id": "job_fixture_001",
+  "request_id": "request_fixture_001",
+  "documents": [
+    {
+      "document_id": "document_fixture_001",
+      "pdf_source_url": "https://example.invalid/source.pdf",
+      "pdf_source_etag": "fixture-etag-001",
+      "pdf_source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "options": {
+    "batch_size": 2,
+    "max_concurrent_workers": 1,
+    "fail_fast": false,
+    "ttl_seconds": 3600,
+    "pdf_download_timeout_seconds": 30.0,
+    "max_pdf_bytes": 10485760,
+    "mock_step_delay_seconds": 0.0
+  }
+}

@@ -1,0 +1,424 @@
+name: Deploy exact PR merge candidate to staging Space
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number targeting main
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-staging-space
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR merge candidate
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/merge
+          fetch-depth: 2
+          lfs: true
+
+      - name: Verify exact current merge candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+
+          pr_number = os.environ["PR_NUMBER"]
+          token = os.environ["GH_TOKEN"]
+          api_url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/pulls/{pr_number}"
+          request = urllib.request.Request(
+              api_url,
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              pr = json.load(response)
+
+          if pr.get("state") != "open":
+              raise SystemExit(f"PR #{pr_number} is not open")
+          if pr.get("base", {}).get("ref") != "main":
+              raise SystemExit(f"PR #{pr_number} does not target main")
+
+          candidate_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          parents = subprocess.check_output(
+              ["git", "show", "-s", "--format=%P", "HEAD"], text=True
+          ).strip().split()
+          if len(parents) != 2:
+              raise SystemExit(f"Expected a two-parent GitHub PR merge commit, got parents={parents}")
+
+          merge_base_sha, merge_head_sha = parents
+          api_base_sha = pr["base"]["sha"]
+          api_head_sha = pr["head"]["sha"]
+          if merge_base_sha != api_base_sha:
+              raise SystemExit(
+                  f"Stale merge ref: merge base {merge_base_sha} != current PR base {api_base_sha}"
+              )
+          if merge_head_sha != api_head_sha:
+              raise SystemExit(
+                  f"Stale merge ref: merge head {merge_head_sha} != current PR head {api_head_sha}"
+              )
+
+          remote_main = subprocess.check_output(
+              ["git", "ls-remote", "origin", "refs/heads/main"], text=True
+          ).strip().split()[0]
+          if merge_base_sha != remote_main:
+              raise SystemExit(
+                  f"Stale merge ref: merge base {merge_base_sha} != current main {remote_main}"
+              )
+
+          print(f"PR #{pr_number}")
+          print(f"base/main: {merge_base_sha}")
+          print(f"head: {merge_head_sha}")
+          print(f"candidate: {candidate_sha}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"candidate_sha={candidate_sha}\n")
+              handle.write(f"base_sha={merge_base_sha}\n")
+              handle.write(f"head_sha={merge_head_sha}\n")
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Apply validated production overlays
+        run: |
+          python scripts/apply_opencv_v4_modal_bridge.py
+          python scripts/apply_crop_llm_background_cleanup.py
+          python scripts/apply_provider_result_diagnostics.py
+          python scripts/apply_presentation_provenance_fix.py
+          python scripts/apply_heading_review_semantic_retry.py
+          python scripts/apply_page_role_scope_alignment.py
+          python scripts/apply_high_resolution_page_confirmation.py
+          python scripts/apply_native_pdf_text_recovery.py
+
+      - name: Validate integrated production-equivalent build
+        run: |
+          python -m pip install --disable-pip-version-check -q \
+            'numpy<2' \
+            opencv-python-headless \
+            PyMuPDF \
+            Pillow \
+            SQLAlchemy==2.0.28 \
+            alembic \
+            httpx \
+            fastapi \
+            python-multipart \
+            pydantic \
+            pydantic-settings \
+            pytest \
+            huggingface-hub \
+            chardet
+
+          python -m py_compile \
+            app/main.py \
+            app/processing/pdf_opencv_quality_pipeline.py \
+            app/processing/pdf_opencv_modal_bridge.py \
+            app/processing/pdf_clean_white_background_skip_compat.py \
+            app/processing/pdf_crop_dark_foreground_anchor_compat.py \
+            app/processing/pdf_crop_dark_foreground_anchor_diagnostics_compat.py \
+            app/processing/pdf_crop_dark_foreground_anchor_peak_diagnostics_compat.py \
+            app/processing/pdf_crop_opencv_candidate_persistence_compat.py \
+            app/processing/pdf_crop_opencv_candidate_persistence_hardening_compat.py \
+            app/processing/pdf_crop_opencv_readable_diagnostics_compat.py \
+            app/processing/pdf_crop_opencv_semantic_consensus_compat.py \
+            app/processing/pdf_crop_opencv_semantic_gate_compat.py \
+            app/processing/pdf_crop_opencv_semantic_gate_hardening_compat.py \
+            app/processing/pdf_crop_opencv_semantic_gate_request_compat.py \
+            app/processing/pdf_visual_crop_lifecycle_compat.py \
+            app/processing/pdf_geometry_integration.py \
+            app/processing/pdf_ingestion.py \
+            app/processing/pdf_canonicalization.py \
+            app/processing/pdf_visual_assets.py \
+            app/reader_v2/assets.py \
+            app/routers/dark_anchor_diagnostics.py \
+            app/routers/reader_v2.py \
+            app/processing/batched_structure_refinement.py \
+            app/processing/openai_batched_structure_refinement.py \
+            app/processing/pdf_page_presentation_bridge.py \
+            app/processing/pdf_page_presentation_lifecycle_compat.py \
+            app/processing/pdf_page_high_resolution_confirmation_compat.py \
+            app/processing/pdf_native_text_compat.py \
+            app/processing/pdf_native_orientation_preservation_compat.py \
+            app/processing/orchestration.py \
+            scripts/apply_opencv_v4_modal_bridge.py \
+            scripts/apply_crop_llm_background_cleanup.py \
+            scripts/apply_provider_result_diagnostics.py \
+            scripts/apply_presentation_provenance_fix.py \
+            scripts/apply_heading_review_semantic_retry.py \
+            scripts/apply_page_role_scope_alignment.py \
+            scripts/apply_high_resolution_page_confirmation.py \
+            scripts/apply_native_pdf_text_recovery.py \
+            scripts/validate_opencv_quality_pipeline_v4.py \
+            scripts/validate_opencv_v4_modal_bridge.py
+
+          python -m scripts.validate_opencv_quality_pipeline_v4
+          python -m scripts.validate_opencv_v4_modal_bridge
+
+          python -m pytest -q \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_compat.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_layering.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_safety.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_histogram.py \
+            tests/processing/test_pdf_crop_dark_foreground_anchor_local_peak.py \
+            tests/processing/test_pdf_crop_opencv_semantic_consensus_compat.py \
+            tests/processing/test_pdf_crop_opencv_readable_diagnostics_compat.py \
+            tests/processing/test_pdf_clean_white_background_skip_compat.py \
+            tests/processing/test_pdf_clean_white_background_skip_fail_open.py \
+            tests/processing/test_pdf_crop_opencv_semantic_gate_compat.py \
+            tests/processing/test_pdf_crop_opencv_semantic_gate_hardening_compat.py \
+            tests/processing/test_pdf_crop_opencv_semantic_gate_request_compat.py \
+            tests/processing/test_pdf_visual_crop_lifecycle_compat.py \
+            tests/processing/test_pdf_opencv_modal_bridge.py \
+            tests/structured_content/test_pdf_visual_asset_persistence_priority.py \
+            tests/structured_content/test_opencv_diagnostic_reader_selection.py \
+            tests/processing/test_openai_batched_structure_refinement.py \
+            tests/test_provider_result_diagnostics.py \
+            tests/test_presentation_provenance_mappingproxy_fix.py \
+            tests/test_heading_review_semantic_retry.py \
+            tests/test_page_role_scope_alignment.py \
+            tests/test_high_resolution_page_confirmation.py \
+            tests/test_native_pdf_text_recovery.py
+
+          grep -q 'opencv_unified_quality_gate_experiment_v4' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q '_gate_geometry_candidate' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q '_gate_background_candidate' app/processing/pdf_opencv_quality_pipeline.py
+          grep -q 'install_opencv_v4_modal_bridge()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_semantic_gate_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_semantic_gate_hardening_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_semantic_gate_request_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_semantic_consensus_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_clean_white_background_skip_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_candidate_persistence_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_candidate_persistence_hardening_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_dark_foreground_anchor_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_dark_foreground_anchor_peak_diagnostics_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_crop_opencv_readable_diagnostics_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_pdf_visual_crop_lifecycle_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_background_cleanup_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_semantic_v2_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_semantic_v2_foreground_lock_compat()' app/processing/pdf_ingestion.py
+          ! grep -q 'install_pdf_crop_llm_semantic_v2_coherent_background_compat()' app/processing/pdf_ingestion.py
+          grep -q 'PDF_CROP_LLM_BACKGROUND_CLEANUP_ENABLED.*"0"' app.py
+          grep -q 'PDF_CROP_LLM_SEMANTIC_V2_ENABLED.*"0"' app.py
+          grep -q 'PDF_CROP_OPENCV_SEMANTIC_GATE_ENABLED.*"1"' app.py
+          grep -q 'PDF_CROP_OPENCV_SEMANTIC_GATE_MIN_CONFIDENCE.*"0.90"' app.py
+          grep -q 'PDF_CROP_OPENCV_SEMANTIC_GATE_MAX_JUDGE_CALLS.*"6"' app.py
+          grep -q 'dark_foreground_anchor_lock_v2_local_peak' app/processing/pdf_crop_dark_foreground_anchor_compat.py
+          grep -q 'opencv_semantic_adverse_confirmation_consensus_v1' app/processing/pdf_crop_opencv_semantic_consensus_compat.py
+          grep -q 'production-revision.txt' app/processing/pdf_visual_crop_lifecycle_compat.py
+          grep -q 'install_high_resolution_page_confirmation_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_native_pdf_text_compat()' app/processing/pdf_ingestion.py
+          grep -q 'install_native_orientation_preservation_compat()' app/processing/pdf_ingestion.py
+          grep -q 'PDF_PAGE_ORIENTATION_CONFIRMATION_RESULT' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'PDF_PAGE_CLASSIFICATION_HIGH_RES_CONFIRMATION_RESULT' app/processing/pdf_page_high_resolution_confirmation_compat.py
+          grep -q 'PDF_NATIVE_TEXT_PAGE_ACCEPTED' app/processing/pdf_native_text_compat.py
+          grep -q 'PDF_NATIVE_TEXT_PAGE_RASTER_FALLBACK' app/processing/pdf_native_text_compat.py
+          grep -q 'native_text_page_count' app/processing/pdf_page_presentation_preprocess_compat.py
+          grep -q '_ANALYSIS_PROVIDER_PAGES' app/processing/pdf_native_orientation_preservation_compat.py
+          grep -q '_ORDINARY_FAIL_OPEN_PAGES' app/processing/pdf_native_orientation_preservation_compat.py
+          grep -q 'PaddleVLClient(' app/processing/pdf_ingestion.py
+          grep -q 'ProviderInputChecksumProvider(' app/processing/pdf_ingestion.py
+          grep -q 'outcome = await service.process(request)' app/processing/pdf_ingestion.py
+          grep -q 'opencv_preprocessing_manifest' app/processing/pdf_opencv_modal_bridge.py
+          grep -q 'opencv_crop_preprocessing' app/processing/pdf_opencv_modal_bridge.py
+          grep -q 'PDF_PROVIDER_RESULT_RECEIVED' app/processing/pdf_page_presentation_bridge.py
+          grep -q 'PDF_ORCHESTRATION_STAGE_FAILED' app/processing/orchestration.py
+          grep -q 'integration_category=' app/processing/pdf_ingestion.py
+          grep -q '_rebuild_presentation_provider_provenance' app/processing/pdf_page_presentation_lifecycle_compat.py
+          ! grep -q 'provider=replace(' app/processing/pdf_page_presentation_lifecycle_compat.py
+          grep -q 'PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED' app/processing/batched_structure_refinement.py
+          grep -q '_HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS = 2' app/processing/batched_structure_refinement.py
+          grep -q 'boundary_positions = batched._document_boundary_positions(spr)' app/processing/openai_batched_structure_refinement.py
+          ! grep -q 'boundary_positions = _document_boundary_positions(spr)' app/processing/openai_batched_structure_refinement.py
+          ! grep -q 'PDF_OPENCV_EXPERIMENT_SKIP_PROVIDER' app/processing/pdf_ingestion.py
+          ! grep -qi '^ocrmypdf' requirements.txt
+          ! grep -qE '^[[:space:]]+(ghostscript|qpdf|tesseract-ocr)' Dockerfile
+
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('app/processing/pdf_ingestion.py').read_text(encoding='utf-8')
+          order = [
+              source.index('install_opencv_v4_modal_bridge()'),
+              source.index('install_pdf_crop_opencv_semantic_gate_compat()'),
+              source.index('install_pdf_crop_opencv_semantic_gate_hardening_compat()'),
+              source.index('install_pdf_crop_opencv_semantic_gate_request_compat()'),
+              source.index('install_pdf_crop_opencv_semantic_consensus_compat()'),
+              source.index('install_pdf_clean_white_background_skip_compat()'),
+              source.index('install_pdf_crop_opencv_candidate_persistence_compat()'),
+              source.index('install_pdf_crop_opencv_candidate_persistence_hardening_compat()'),
+              source.index('install_pdf_crop_dark_foreground_anchor_compat()'),
+              source.index('install_pdf_crop_dark_foreground_anchor_peak_diagnostics_compat()'),
+              source.index('install_pdf_crop_opencv_readable_diagnostics_compat()'),
+              source.index('install_pdf_visual_crop_lifecycle_compat()'),
+          ]
+          assert order == sorted(order), order
+          PY
+
+          python - <<'PY'
+          from app.main import app
+          from app.routers import dark_anchor_diagnostics, reader_v2
+          expected = {
+              '/api/reader/v2/documents/{document_ref}/assets/{asset_id}/diagnostics/dark-anchor-histogram/plot',
+              '/api/reader/v2/documents/{document_ref}/assets/{asset_id}/diagnostics/dark-anchor-histogram/data',
+          }
+          diagnostic_paths = [getattr(route, 'path', None) for route in dark_anchor_diagnostics.router.routes]
+          app_paths = [getattr(route, 'path', None) for route in app.routes]
+          for path in expected:
+              assert diagnostic_paths.count(path) == 1, diagnostic_paths
+              assert app_paths.count(path) == 1, app_paths
+          assert not any('dark-anchor-histogram' in str(getattr(route, 'path', '')) for route in reader_v2.router.routes)
+          PY
+
+      - name: Validate staging target
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          echo "Candidate ${{ steps.candidate.outputs.candidate_sha }} will deploy to carsonhhs/pdf-ocr-service-staging"
+
+      - name: Recheck candidate is still current before upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_BASE_SHA: ${{ steps.candidate.outputs.base_sha }}
+          EXPECTED_HEAD_SHA: ${{ steps.candidate.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+
+          request = urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/pulls/{os.environ['PR_NUMBER']}",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              pr = json.load(response)
+
+          if pr.get("state") != "open" or pr.get("base", {}).get("ref") != "main":
+              raise SystemExit("PR is no longer an open PR targeting main")
+          if pr["base"]["sha"] != os.environ["EXPECTED_BASE_SHA"]:
+              raise SystemExit("main changed while staging validation was running; refusing stale deployment")
+          if pr["head"]["sha"] != os.environ["EXPECTED_HEAD_SHA"]:
+              raise SystemExit("PR head changed while staging validation was running; refusing stale deployment")
+
+          remote_main = subprocess.check_output(
+              ["git", "ls-remote", "origin", "refs/heads/main"], text=True
+          ).strip().split()[0]
+          if remote_main != os.environ["EXPECTED_BASE_SHA"]:
+              raise SystemExit("main moved while staging validation was running; refusing stale deployment")
+          print("Candidate remains current; upload is authorized for staging only.")
+          PY
+
+      - name: Record exact staging revision
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          BASE_SHA: ${{ steps.candidate.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.candidate.outputs.head_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          mkdir -p deployments
+          cat > deployments/production-revision.txt <<EOF
+          Application source commit: $CANDIDATE_SHA
+          Application source ref: refs/pull/$PR_NUMBER/merge
+          Candidate base/main commit: $BASE_SHA
+          Candidate PR head commit: $HEAD_SHA
+          Candidate PR number: $PR_NUMBER
+          Target Space: carsonhhs/pdf-ocr-service-staging
+          Environment: staging / production candidate
+          Purpose: production-equivalent validation of the exact GitHub PR merge result before Production promotion.
+          Data boundary: no Production DATABASE_URL or Production storage is configured by this workflow.
+          EOF
+
+      - name: Upload integrated build to staging Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          python <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ["HF_TOKEN"]
+          repo_id = "carsonhhs/pdf-ocr-service-staging"
+          candidate = os.environ["CANDIDATE_SHA"]
+          pr_number = os.environ["PR_NUMBER"]
+
+          print(f"Uploading PR #{pr_number} exact merge candidate {candidate} to {repo_id}...")
+          info = HfApi().upload_folder(
+              folder_path=".",
+              repo_id=repo_id,
+              repo_type="space",
+              token=token,
+              ignore_patterns=[
+                  ".git*",
+                  ".github*",
+                  "__pycache__",
+                  "*.pyc",
+                  ".env",
+                  ".pytest_cache*",
+                  "test_samples*",
+              ],
+              commit_message=f"Stage PR #{pr_number} merge candidate {candidate[:12]}",
+          )
+          print(f"Upload complete: {getattr(info, 'oid', None) or getattr(info, 'commit_url', info)}")
+          PY
+
+      - name: Wait for staging Space runtime
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python <<'PY'
+          import os
+          import time
+          from huggingface_hub import HfApi
+
+          repo_id = "carsonhhs/pdf-ocr-service-staging"
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          deadline = time.time() + 20 * 60
+          last_stage = None
+          while time.time() < deadline:
+              runtime = api.get_space_runtime(repo_id=repo_id)
+              stage = str(getattr(runtime, "stage", ""))
+              if stage != last_stage:
+                  print(f"Space stage: {stage}")
+                  last_stage = stage
+              upper = stage.upper()
+              if "RUNNING" in upper and "BUILDING" not in upper and "STARTING" not in upper:
+                  print("Staging Space reached a running state.")
+                  break
+              if any(marker in upper for marker in ("BUILD_ERROR", "RUNTIME_ERROR", "CONFIG_ERROR")):
+                  raise SystemExit(f"Staging Space failed: {stage}")
+              time.sleep(15)
+          else:
+              raise SystemExit(f"Timed out waiting for staging Space; last stage={last_stage}")
+          PY

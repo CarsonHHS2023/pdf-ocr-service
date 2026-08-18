@@ -1,0 +1,7 @@
+{
+  "detail": {
+    "code": "JOB_NOT_FOUND",
+    "message": "OCR job was not found.",
+    "retryable": false
+  }
+}

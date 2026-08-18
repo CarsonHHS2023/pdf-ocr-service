@@ -1,0 +1,10 @@
+{
+  "detail": {
+    "code": "VALIDATION_ERROR",
+    "message": "pdf_source_url must use HTTPS.",
+    "retryable": false,
+    "details": {
+      "document_id": "document_fixture_001"
+    }
+  }
+}

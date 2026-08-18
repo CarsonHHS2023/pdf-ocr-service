@@ -1,0 +1,5 @@
+Application source: deploy/ocrmypdf-test workflow exact GITHUB_SHA
+Target Space: carsonhhs/pdf-ocr-service-ocrmypdf-test
+Purpose: pages 1-N all-page OpenCV classification and staged quality-gate real-page evaluation only
+Expected routing: page-number-independent automatic no-op for protected pages
+Note: deployment workflow rewrites this file with the exact deployed commit SHA.

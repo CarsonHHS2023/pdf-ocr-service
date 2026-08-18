@@ -1,0 +1,1 @@
+The MinerU/Popo PDF recovery stage consumes normalized observations and emits validated SPR v2. It does not depend on legacy page BLOBs, database ORM models, provider runtimes, Reader, or Structured Content persistence.

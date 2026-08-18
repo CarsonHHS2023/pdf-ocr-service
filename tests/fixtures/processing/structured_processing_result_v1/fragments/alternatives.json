@@ -1,0 +1,1 @@
+{"ambiguities":["title alternatives","OCR versus embedded text","multiple table interpretations","conflicting reading order","overlap","low confidence"],"provider_blocks":[{"confidence":0.51,"text":"Title A","type":"title"},{"source":"embedded_pdf_text","text":"Title B","type":"text"}]}

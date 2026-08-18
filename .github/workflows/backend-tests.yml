@@ -1,0 +1,131 @@
+name: Required Backend CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: required-backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-light:
+    name: Python setup, static checks, and lightweight tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Leptonica runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libleptonica-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-test.txt
+
+      - name: Install lightweight dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt -r requirements-test.txt
+
+      - name: Static syntax check
+        run: python -m compileall -q app alembic scripts/cleanup_hf_buckets.py scripts/migrate_sqlite_to_postgresql.py tests/test_api.py tests/test_app_access_gate.py tests/test_database_integrity.py tests/test_production_sqlite_backup.py tests/test_production_sqlite_recovery_cutover.py tests/test_production_sqlite_second_recovery_cutover.py tests/test_postgresql_readiness.py tests/test_postgresql_schema_integration.py tests/test_postgresql_data_migration.py tests/test_phase2_light.py tests/test_foundation_schema.py tests/test_foundation_models.py tests/test_migrations.py tests/test_storage_contract.py tests/test_source_retention.py tests/test_source_transport_grants.py tests/test_source_transport_endpoint.py tests/test_processing_operator_endpoint.py tests/test_smoke_fixture_preparation.py tests/test_end_to_end_processing_integration.py tests/test_processing_orchestration.py tests/test_raw_processing_result_ingestion.py tests/test_paddle_vl_api_client.py tests/test_paddle_vl_api_mapping.py tests/test_production_pdf_modal_cutover.py tests/test_pdf_geometry_integration.py tests/test_pdf_geometry_preprocessing.py tests/test_pdf_snapshot_wall_clock.py tests/test_hf_bucket_cleanup.py tests/test_reader_contracts.py tests/test_reader_validation_boundaries.py tests/test_reader_service.py tests/test_reader_api.py tests/test_reader_assets.py tests/test_structured_content_transformation_tables_assets.py tests/test_structured_content_transformation_persistence_integration.py tests/test_structured_content_v2_persistence_schema.py tests/test_structured_content_v2_persistence_roundtrip.py tests/structured_content
+
+      - name: Workflow YAML validity check
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in sorted(Path('.github/workflows').glob('*.yml')):
+              with path.open('r', encoding='utf-8') as handle:
+                  yaml.safe_load(handle)
+              print(f'valid yaml: {path}')
+          PY
+
+      - name: Whitespace diff check
+        run: git diff --check
+
+      - name: Alembic migration smoke
+        run: |
+          alembic heads
+          alembic history
+
+      - name: Pytest collection/import smoke
+        run: python -m pytest --collect-only -q tests/test_api.py tests/test_app_access_gate.py tests/test_database_integrity.py tests/test_production_sqlite_backup.py tests/test_production_sqlite_recovery_cutover.py tests/test_production_sqlite_second_recovery_cutover.py tests/test_postgresql_readiness.py tests/test_postgresql_data_migration.py tests/test_phase2_light.py tests/test_foundation_schema.py tests/test_foundation_models.py tests/test_migrations.py tests/test_storage_contract.py tests/test_source_retention.py tests/test_source_transport_grants.py tests/test_source_transport_endpoint.py tests/test_processing_operator_endpoint.py tests/test_smoke_fixture_preparation.py tests/test_end_to_end_processing_integration.py tests/test_processing_orchestration.py tests/test_raw_processing_result_ingestion.py tests/test_paddle_vl_api_client.py tests/test_paddle_vl_api_mapping.py tests/test_production_pdf_modal_cutover.py tests/test_pdf_geometry_integration.py tests/test_pdf_geometry_preprocessing.py tests/test_pdf_snapshot_wall_clock.py tests/test_hf_bucket_cleanup.py tests/test_reader_contracts.py tests/test_reader_validation_boundaries.py tests/test_reader_service.py tests/test_reader_api.py tests/test_reader_assets.py tests/test_structured_content_transformation_tables_assets.py tests/test_structured_content_transformation_persistence_integration.py tests/test_structured_content_v2_persistence_schema.py tests/test_structured_content_v2_persistence_roundtrip.py tests/structured_content
+
+      - name: Run lightweight required tests
+        run: python -m pytest -q tests/test_api.py tests/test_app_access_gate.py tests/test_database_integrity.py tests/test_production_sqlite_backup.py tests/test_production_sqlite_recovery_cutover.py tests/test_production_sqlite_second_recovery_cutover.py tests/test_postgresql_readiness.py tests/test_phase2_light.py tests/test_foundation_schema.py tests/test_foundation_models.py tests/test_migrations.py tests/test_storage_contract.py tests/test_source_retention.py tests/test_source_transport_grants.py tests/test_source_transport_endpoint.py tests/test_processing_operator_endpoint.py tests/test_smoke_fixture_preparation.py tests/test_end_to_end_processing_integration.py tests/test_processing_orchestration.py tests/test_raw_processing_result_ingestion.py tests/test_paddle_vl_api_client.py tests/test_paddle_vl_api_mapping.py tests/test_production_pdf_modal_cutover.py tests/test_pdf_geometry_integration.py tests/test_pdf_geometry_preprocessing.py tests/test_pdf_snapshot_wall_clock.py tests/test_hf_bucket_cleanup.py
+
+      - name: Run Structured Content tests
+        run: python -m pytest -q tests/structured_content tests/test_reader_contracts.py tests/test_reader_validation_boundaries.py tests/test_reader_service.py tests/test_reader_api.py tests/test_reader_assets.py tests/test_structured_content_transformation_tables_assets.py tests/test_structured_content_transformation_persistence_integration.py tests/test_structured_content_v2_persistence_schema.py tests/test_structured_content_v2_persistence_roundtrip.py
+
+  postgresql-schema:
+    name: PostgreSQL Alembic and FK compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/atlas_ci
+      ATLAS_POSTGRESQL_SCHEMA_TEST: '1'
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: atlas_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d atlas_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-test.txt
+
+      - name: Install PostgreSQL test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt -r requirements-test.txt
+
+      - name: Verify PostgreSQL URL configuration
+        run: python -m pytest -q tests/test_postgresql_readiness.py
+
+      - name: Upgrade fresh PostgreSQL database to Alembic head
+        run: |
+          alembic upgrade head
+          alembic current
+
+      - name: Verify SQLite to PostgreSQL recovery replay
+        run: python -m pytest -q tests/test_postgresql_data_migration.py
+
+      - name: Verify PostgreSQL schema and v2 relational integrity
+        run: python -m pytest -q tests/test_postgresql_schema_integration.py

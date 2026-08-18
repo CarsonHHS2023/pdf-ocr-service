@@ -1,0 +1,32 @@
+{
+  "schema_version": "2026-07-10",
+  "job_id": "job_fixture_001",
+  "request_id": "request_fixture_001",
+  "status": "running",
+  "documents_total": 1,
+  "documents_completed": 0,
+  "documents_planned": 1,
+  "documents_failed": 0,
+  "tasks_total": 2,
+  "tasks_completed": 1,
+  "pages_total": 3,
+  "pages_completed": 1,
+  "percent_complete": 33.3,
+  "failed_tasks": 0,
+  "created_at": "2026-07-14T00:00:00Z",
+  "started_at": "2026-07-14T00:00:01Z",
+  "updated_at": "2026-07-14T00:00:05Z",
+  "completed_at": null,
+  "expires_at": "2026-07-14T01:00:00Z",
+  "error": {
+    "code": "RESULT_NOT_READY",
+    "message": "OCR job result is not ready yet.",
+    "retryable": true
+  },
+  "documents": [],
+  "tasks": [],
+  "ok": true,
+  "build_tag": "build_fixture_001",
+  "result_ready": false,
+  "result_url": "/ocr/jobs/job_fixture_001/result"
+}

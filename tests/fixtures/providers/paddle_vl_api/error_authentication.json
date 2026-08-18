@@ -1,0 +1,7 @@
+{
+  "detail": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid bearer token.",
+    "retryable": false
+  }
+}

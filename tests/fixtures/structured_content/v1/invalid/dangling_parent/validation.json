@@ -1,0 +1,1 @@
+{"blocking_issue_count":1,"is_valid":false,"issues":[{"blocking":true,"code":"DANGLING_PARENT","details":{"parent_id":"node-missing"},"evidence_ids":[],"safe_summary":"Parent node was not found.","scope_path":"$.nodes['node-paragraph-001'].parent_id","severity":"error"}],"nonblocking_issue_count":0,"schema_id":"atlas.structured-content-candidate","schema_version":1}
