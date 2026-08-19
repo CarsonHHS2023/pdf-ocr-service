@@ -60,6 +60,7 @@ jobs:
 
       - name: Apply production-equivalent overlays
         run: |
+          python scripts/apply_durable_ingestion_dispatch.py
           python scripts/apply_opencv_v4_modal_bridge.py
           python scripts/apply_crop_llm_background_cleanup.py
           python scripts/apply_provider_result_diagnostics.py
@@ -78,6 +79,7 @@ jobs:
       - name: Static and workflow checks
         run: |
           python -m compileall -q app alembic scripts
+          grep -q 'RESUMABLE_UPLOAD_COMPLETE_IDEMPOTENT' app/routers/resumable_upload.py
           grep -q 'install_s0_bounded_memory_compat' app/processing/pdf_ingestion.py
           grep -q 'install_s0_bounded_v4_output_compat' app/processing/pdf_ingestion.py
           grep -q 'install_provider_transport_sharding_compat' app/processing/pdf_ingestion.py
@@ -123,6 +125,7 @@ jobs:
             tests/test_processing_orchestration.py \
             tests/test_ingestion_dispatch.py \
             tests/test_ingestion_acceptance.py \
+            tests/test_durable_ingestion_dispatch_overlay.py \
             tests/test_paddle_vl_api_client.py \
             tests/test_paddle_vl_api_mapping.py \
             tests/test_production_pdf_modal_cutover.py \
