@@ -1,6 +1,5 @@
 """Health and sanitized runtime configuration routes."""
 import logging
-import os
 from pathlib import Path
 import re
 
@@ -22,11 +21,7 @@ _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def runtime_build_revision() -> str | None:
-    """Return a sanitized exact build SHA when the deployment supplied one."""
-    configured = str(os.getenv("ATLAS_BUILD_REVISION") or "").strip().lower()
-    if _REVISION_RE.fullmatch(configured):
-        return configured
-
+    """Return the exact sanitized SHA embedded in the deployed Staging artifact."""
     revision_file = _RUNTIME_ROOT / "staging-revision.txt"
     try:
         value = revision_file.read_text(encoding="utf-8").strip().lower()
