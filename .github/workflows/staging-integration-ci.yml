@@ -133,6 +133,8 @@ jobs:
             tests/test_resumable_upload.py \
             tests/test_direct_object_upload.py \
             tests/test_direct_upload_page_count.py \
+            tests/test_book_upload_admission.py \
+            tests/test_book_processing_admission.py \
             tests/test_federated_storage_provider.py \
             tests/test_s3_storage_provider.py
 
