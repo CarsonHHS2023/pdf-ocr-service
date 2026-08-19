@@ -34,6 +34,7 @@ from app.storage.base import StorageProvider
 from app.storage.dependencies import get_storage_provider
 from app.storage.errors import StorageError
 from app.storage.models import StorageReference
+from app.upload_policy import BookSourceTooLarge, validate_book_source_size
 
 # HF Spaces reliably surfaces Uvicorn's configured error logger. The stderr
 # fallback is intentionally flushed so diagnostics survive abrupt restarts.
@@ -85,6 +86,16 @@ def _convert_text_blocks_to_schema(text_blocks: list[TextBlock]) -> list[TextBlo
         )
         for block in text_blocks
     ]
+
+
+def _enforce_book_source_size(byte_size: int) -> None:
+    try:
+        validate_book_source_size(int(byte_size), settings)
+    except BookSourceTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
 
 
 def _retain_source_bytes(storage: StorageProvider, content: bytes) -> tuple[str, int, str]:
@@ -141,11 +152,15 @@ async def upload_file(
             detail="Unsupported file type. Only PDF and TXT files are accepted.",
         )
 
+    if isinstance(file.size, int) and not isinstance(file.size, bool):
+        _enforce_book_source_size(file.size)
+
     file_type = "pdf" if ext == ".pdf" else "txt"
     book_title = Path(filename).stem
     book_id = str(uuid.uuid4())
 
     content = await file.read()
+    _enforce_book_source_size(len(content))
     _upload_diagnostic(
         "PDF_UPLOAD_ACCEPTED" if file_type == "pdf" else "TXT_UPLOAD_ACCEPTED",
         document_id=book_id,
