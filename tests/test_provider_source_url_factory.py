@@ -15,8 +15,12 @@ from app.processing.integration import (
 )
 from app.processing.models import ProviderLifecycleStatus
 from app.processing.orchestration import OrchestrationOutcome, OrchestrationPhase
+from app.processing.provider_input_source_access import (
+    build_provider_input_source_url_factory,
+)
 from app.processing.transport.models import TransportGrantState
 from app.processing.transport.service import InMemoryTransportGrantService
+from app.storage.errors import ProviderUnavailable
 from app.storage.models import StorageReference
 
 
@@ -69,6 +73,18 @@ class FakeOrchestrator:
     async def run_once(self, orchestration_request, policy=None):
         self.calls.append((orchestration_request, policy))
         return success_outcome()
+
+
+class FakeProviderInputStorage:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.calls = []
+
+    def generate_provider_read_url(self, reference, *, expires_seconds):
+        self.calls.append((reference, expires_seconds))
+        if self.failure is not None:
+            raise self.failure
+        return PRESIGNED_URL
 
 
 def test_presigned_factory_bypasses_public_origin_and_receives_exact_ttl() -> None:
@@ -140,3 +156,45 @@ def test_source_access_ttl_must_be_positive() -> None:
             public_origin="https://atlas.example",
             source_access_ttl=timedelta(0),
         )
+
+
+def test_built_factory_logs_safe_route_without_presigned_query(caplog) -> None:
+    reference = StorageReference.generate()
+    storage = FakeProviderInputStorage()
+    factory = build_provider_input_source_url_factory(
+        storage=storage,
+        reference=reference,
+        byte_size=87_179_148,
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result = factory(timedelta(seconds=4200))
+
+    assert isinstance(result, TemporarySourceTransportUrl)
+    assert result.url == PRESIGNED_URL
+    assert storage.calls == [(reference, 4200)]
+    assert "route=presigned_object_get" in caplog.text
+    assert "host=s3.hf.co" in caplog.text
+    assert "byte_size=87179148" in caplog.text
+    assert PRESIGNED_URL not in caplog.text
+    assert "X-Amz-Signature" not in caplog.text
+
+
+def test_built_factory_fallback_logs_only_safe_error_type(caplog) -> None:
+    reference = StorageReference.generate()
+    storage = FakeProviderInputStorage(
+        failure=ProviderUnavailable("secret signed url must never be logged")
+    )
+    factory = build_provider_input_source_url_factory(
+        storage=storage,
+        reference=reference,
+        byte_size=87_179_148,
+    )
+
+    with caplog.at_level("WARNING", logger="uvicorn.error"):
+        result = factory(timedelta(seconds=4200))
+
+    assert result is None
+    assert "route=atlas_source_transport_fallback" in caplog.text
+    assert "reason=ProviderUnavailable" in caplog.text
+    assert "secret signed url" not in caplog.text
