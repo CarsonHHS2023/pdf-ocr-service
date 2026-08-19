@@ -32,7 +32,10 @@ async def _provider_wait_heartbeat_loop(
     provider_job_id: str,
     interval_seconds: float,
 ) -> None:
-    interval = max(1.0, float(interval_seconds))
+    # Production uses the 60-second default.  The small lower bound keeps the
+    # helper deterministic under focused tests without changing production
+    # cadence or allowing a busy-spin loop.
+    interval = max(0.01, float(interval_seconds))
     while True:
         await asyncio.sleep(interval)
         try:
