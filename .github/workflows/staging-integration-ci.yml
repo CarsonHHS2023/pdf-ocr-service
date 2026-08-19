@@ -121,6 +121,7 @@ jobs:
             tests/test_source_transport_endpoint.py \
             tests/test_end_to_end_processing_integration.py \
             tests/test_processing_orchestration.py \
+            tests/test_ingestion_dispatch.py \
             tests/test_paddle_vl_api_client.py \
             tests/test_paddle_vl_api_mapping.py \
             tests/test_production_pdf_modal_cutover.py \
@@ -204,6 +205,8 @@ jobs:
           python -m py_compile \
             /tmp/atlas-staging-verified/app/main.py \
             /tmp/atlas-staging-verified/app/routers/health.py \
+            /tmp/atlas-staging-verified/app/processing/ingestion_dispatch.py \
+            /tmp/atlas-staging-verified/app/processing/ingestion_dispatch_model.py \
             /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
             /tmp/atlas-staging-verified/app/processing/s0_provider_wait_lease.py \
             /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_analysis_compat.py \
