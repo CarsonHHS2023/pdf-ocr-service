@@ -10,6 +10,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.models import Document, DocumentType
+from app.processing.ingestion_dispatch_model import IngestionDispatch
 from app.storage.base import StorageProvider
 from app.storage.errors import ObjectNotFound
 from app.config import settings
@@ -17,6 +18,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _TERMINAL_PROCESSING_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
+_ACTIVE_INGESTION_DISPATCH_STATUSES = {"queued", "claimed", "running"}
 
 
 class BookDeletionConflict(RuntimeError):
@@ -130,7 +132,7 @@ class BookService:
     @staticmethod
     def get_book_content(db: Session, book_id: str) -> str | None:
         """
-        Get book content from processed file.
+        Get book content by ID.
 
         Args:
             db: Database session
@@ -171,8 +173,10 @@ class BookService:
         Delete book and associated files.
 
         ProcessingRun is durable provenance and therefore remains protected by
-        RESTRICT at the schema boundary. A user-initiated delete explicitly
-        purges only terminal runs; any active/non-terminal run blocks deletion.
+        RESTRICT at the schema boundary. IngestionDispatch is durable queue truth
+        and can exist before ProcessingRun has started. A user-initiated delete
+        therefore rejects either active processing representation; terminal rows
+        may be purged/cascaded with the aggregate.
 
         Args:
             db: Database session
@@ -198,6 +202,24 @@ class BookService:
                     "Refusing to delete book with active processing runs: book_id=%s active_run_count=%s",
                     book_id,
                     len(nonterminal_runs),
+                )
+                raise BookDeletionConflict(
+                    "Book is still being processed and cannot be deleted yet"
+                )
+
+            active_dispatch_count = (
+                db.query(IngestionDispatch)
+                .filter(
+                    IngestionDispatch.document_id == book_id,
+                    IngestionDispatch.status.in_(_ACTIVE_INGESTION_DISPATCH_STATUSES),
+                )
+                .count()
+            )
+            if active_dispatch_count:
+                logger.warning(
+                    "Refusing to delete book with active ingestion dispatches: book_id=%s active_dispatch_count=%s",
+                    book_id,
+                    active_dispatch_count,
                 )
                 raise BookDeletionConflict(
                     "Book is still being processed and cannot be deleted yet"
@@ -260,8 +282,9 @@ class BookService:
                         book_id,
                     )
 
-                # Delete database record (cascades to source files, images, pages,
-                # content blocks, and other aggregate-owned compatibility rows).
+                # Delete database record (cascades to source files, ingestion
+                # dispatches, images, pages, content blocks, and other
+                # aggregate-owned compatibility rows).
                 db.delete(book)
                 db.commit()
             except Exception:
