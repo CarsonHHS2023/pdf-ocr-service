@@ -1,4 +1,4 @@
-"""Real-PostgreSQL regression for terminal ProcessingRun book deletion."""
+"""Real-PostgreSQL regression for terminal processing-state book deletion."""
 from __future__ import annotations
 
 import os
@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.book_service import BookService
 from app.database import engine
 from app.models import Document, DocumentType, ProcessingRun, SourceFile
+from app.processing.ingestion_dispatch_model import IngestionDispatch
 from app.storage.local import LocalStorageProvider
 
 
@@ -19,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_failed_book_with_terminal_run_deletes_under_postgresql_restrict(tmp_path):
+def test_failed_book_with_terminal_processing_state_deletes_under_postgresql_constraints(tmp_path):
     assert engine.dialect.name == "postgresql"
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
@@ -27,6 +28,7 @@ def test_failed_book_with_terminal_run_deletes_under_postgresql_restrict(tmp_pat
     book_id = str(uuid.uuid4())
     source_id = str(uuid.uuid4())
     processing_run_id = f"ci-delete-{uuid.uuid4()}"
+    dispatch_id = str(uuid.uuid4())
     retained = b"%PDF-1.4\n% postgres-terminal-delete\n%%EOF\n"
     put_result = storage.put(retained)
     storage_reference = str(put_result.reference)
@@ -67,10 +69,24 @@ def test_failed_book_with_terminal_run_deletes_under_postgresql_restrict(tmp_pat
                 provider_ref="paddle-vl",
             )
         )
+        db.add(
+            IngestionDispatch(
+                id=dispatch_id,
+                acceptance_key=f"postgres-delete:{uuid.uuid4().hex}",
+                document_id=book_id,
+                source_file_id=source_id,
+                kind="pdf",
+                processing_attempt_id=f"pdf-ingest-{uuid.uuid4().hex}",
+                provider_job_id=f"pdf-job-{uuid.uuid4().hex}",
+                provider_request_id=f"pdf-request-{uuid.uuid4().hex}",
+                status="succeeded",
+            )
+        )
         db.commit()
 
         assert BookService.delete_book(db, book_id, storage) is True
         assert db.query(ProcessingRun).filter_by(processing_run_id=processing_run_id).count() == 0
+        assert db.query(IngestionDispatch).filter_by(id=dispatch_id).count() == 0
         assert db.query(SourceFile).filter_by(id=source_id).count() == 0
         assert db.query(Document).filter_by(id=book_id).count() == 0
         assert not storage.exists(storage_reference)
@@ -78,6 +94,7 @@ def test_failed_book_with_terminal_run_deletes_under_postgresql_restrict(tmp_pat
         db.rollback()
         # Best-effort cleanup if an assertion fails before the service completes.
         db.query(ProcessingRun).filter_by(processing_run_id=processing_run_id).delete(synchronize_session=False)
+        db.query(IngestionDispatch).filter_by(id=dispatch_id).delete(synchronize_session=False)
         db.query(SourceFile).filter_by(id=source_id).delete(synchronize_session=False)
         db.query(Document).filter_by(id=book_id).delete(synchronize_session=False)
         db.commit()
