@@ -117,12 +117,28 @@ class BookDetailSchema(BaseModel):
     pages_count: Optional[int] = None
     file_type: str = ""
     status: str = "completed"
+    processed_file_path: Optional[str] = None
+    original_file_path: Optional[str] = None
     error_message: Optional[str] = None
-    created_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class BookContentSchema(BaseModel):
+    """Response for book content endpoint."""
+    book_id: str
+    book_title: str
+    content: str
+
+
+class PDFUploadResponse(BaseModel):
+    """Response for PDF upload."""
+    book_id: str
+    book_title: str
+    message: str
 
 
 class UploadBookResponse(BaseModel):
-    """Response returned when a book upload is accepted."""
+    """Response for the unified PDF/TXT upload endpoint."""
     book_id: str
     book_title: str
     file_type: str
@@ -131,9 +147,3 @@ class UploadBookResponse(BaseModel):
     original_file_path: Optional[str] = None
     error_message: Optional[str] = None
     message: str
-
-
-class BookContentSchema(BaseModel):
-    """Response for book content."""
-    book_id: str
-    content: list[dict[str, Any]]
