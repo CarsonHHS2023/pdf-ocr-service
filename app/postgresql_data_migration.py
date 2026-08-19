@@ -25,13 +25,14 @@ from app.database import normalize_database_url
 from app.models import Base, Document
 import app.models_v2  # noqa: F401 - register v2 tables in Base.metadata
 import app.models_v2_selection  # noqa: F401 - register v2 selection table
+import app.processing.ingestion_dispatch_model  # noqa: F401 - register dispatch table
 from app.models_v2 import StructuredContentCandidateV2Record as CandidateRow
 from app.models_v2_selection import StructuredContentSelectionV2Record as SelectionRow
 from app.reader_v2.service import build_selected_reader_v2_document
 from app.structured_content_v2.repository import StructuredContentCandidateV2Repository
 from app.structured_content_v2.selection import StructuredContentV2SelectionRepository
 
-EXPECTED_ALEMBIC_HEAD = "0005_structured_content_v2_selection"
+EXPECTED_ALEMBIC_HEAD = "0006_ingestion_dispatches"
 _V2_PREFIX = "structured_content_v2_"
 
 
