@@ -103,13 +103,13 @@ class BookSchema(BaseModel):
 
 
 class BooksListSchema(BaseModel):
-    """Response for bookshelf list."""
+    """Response for books list endpoint."""
     books: list[BookSchema]
     total: int
 
 
 class BookDetailSchema(BaseModel):
-    """Response for book detail."""
+    """Response for book detail endpoint."""
     book_id: str
     book_title: str
     author: Optional[str] = None
