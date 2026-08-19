@@ -27,17 +27,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from starlette.datastructures import Headers, UploadFile
 
+from app.config import settings
 from app.database import get_db
 from app.routers.ocr import upload_file as _accept_upload_file
 from app.schemas import UploadBookResponse
 from app.storage.base import StorageProvider
 from app.storage.dependencies import get_storage_provider
+from app.upload_policy import BookSourceTooLarge, validate_book_source_size
 
 router = APIRouter(prefix="/api/v1/upload-sessions", tags=["uploads"])
 logger = logging.getLogger(__name__)
 
 # Keep each browser -> HF request deliberately small. This transport size is
-# independent of provider/OCR sharding.
+# independent of provider/OCR sharding and is only a protocol hard ceiling.
 CHUNK_SIZE_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 SESSION_TTL_SECONDS = 24 * 60 * 60
@@ -65,6 +67,16 @@ class CreateUploadSessionResponse(BaseModel):
     chunk_size_bytes: int
     chunk_count: int
     byte_size: int
+
+
+def _enforce_application_source_size(byte_size: int) -> None:
+    try:
+        validate_book_source_size(int(byte_size), settings)
+    except BookSourceTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
 
 
 def _root() -> Path:
@@ -146,6 +158,7 @@ def _cleanup_stale_sessions() -> None:
 @router.post("", response_model=CreateUploadSessionResponse)
 async def create_upload_session(request: CreateUploadSessionRequest) -> CreateUploadSessionResponse:
     filename = _validate_filename(request.filename)
+    _enforce_application_source_size(request.byte_size)
     _cleanup_stale_sessions()
     upload_id = uuid.uuid4().hex
     session_dir = _session_dir(upload_id)
@@ -379,6 +392,7 @@ async def complete_upload_session(
     storage: StorageProvider = Depends(get_storage_provider),
 ) -> UploadBookResponse:
     metadata = _load_metadata(upload_id)
+    _enforce_application_source_size(int(metadata["byte_size"]))
     session_dir = _session_dir(upload_id)
     lock_path = session_dir / ".complete.lock"
     try:
