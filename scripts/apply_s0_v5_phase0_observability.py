@@ -33,6 +33,20 @@ def patch_s0_v5_phase0_observability(
 
 
 def main() -> None:
+    # Staging executes this script after the heartbeat and provider-preflight
+    # overlays. Keep the reusable Phase0 patch function independent for focused
+    # tests, while the deployment entry point installs provider-input access
+    # immediately before the Phase0/Phase1 low-level wrappers capture delegates.
+    if __package__:
+        from scripts.apply_provider_input_presigned_read import (
+            patch_provider_input_presigned_read,
+        )
+    else:
+        from apply_provider_input_presigned_read import (
+            patch_provider_input_presigned_read,
+        )
+
+    patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
 
 
