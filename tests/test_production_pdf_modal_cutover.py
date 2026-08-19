@@ -210,7 +210,12 @@ def test_production_upload_source_contains_no_full_page_raster_or_local_page_ocr
     assert "PdfPage(" not in production_block
     assert "page_image_data" not in production_block
     assert "process_book_background" not in source
-    assert "process_pdf_document_background" in production_block
+    if "legacy_acceptance_key" in source:
+        assert "commit_retained_ingestion" in production_block
+        assert "run_ingestion_dispatch" in production_block
+        assert "process_pdf_document_background" not in production_block
+    else:
+        assert "process_pdf_document_background" in production_block
     assert 'fitz.open(stream=content, filetype="pdf")' in production_block
     assert "get_pixmap" not in production_block
 
