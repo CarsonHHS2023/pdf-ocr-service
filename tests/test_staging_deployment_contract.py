@@ -47,26 +47,27 @@ def test_shared_staging_space_has_one_authoritative_writer() -> None:
         if STAGING_SPACE in path.read_text(encoding="utf-8"):
             writers.append(path.name)
 
-    assert writers == ["deploy-staging-branch.yml"]
+    assert writers == ["staging-integration-ci.yml"]
 
 
-def test_staging_deploy_is_gated_by_exact_successful_integration_head() -> None:
-    source = (WORKFLOWS / "deploy-staging-branch.yml").read_text(encoding="utf-8")
+def test_staging_deploy_uses_same_artifact_that_passed_integration() -> None:
+    source = (WORKFLOWS / "staging-integration-ci.yml").read_text(encoding="utf-8")
 
-    assert "workflow_run:" in source
-    assert "workflows: [Staging Backend Integration CI]" in source
-    assert "branches: [staging]" in source
-    assert "types: [completed]" in source
-    assert "github.event.workflow_run.conclusion == 'success'" in source
-    assert "github.event.workflow_run.head_sha" in source
-    assert "refs/heads/staging" in source
+    assert "deploy:" in source
+    assert "needs: integration" in source
+    assert "github.event_name == 'push'" in source
+    assert "github.ref == 'refs/heads/staging'" in source
+    assert "actions/upload-artifact@v4" in source
+    assert "actions/download-artifact@v4" in source
+    assert "atlas-staging-tested-${{ github.sha }}" in source
     assert "staging-revision.txt" in source
-    assert "payload.get('revision')" in source
-    assert "payload.get('revision') != sha" in source
+    assert "refs/heads/staging" in source
+    assert "payload.get('revision') == sha" in source
+    assert "expected_revision={sha}" in source
 
 
-def test_legacy_main_candidate_workflow_cannot_write_shared_staging_space() -> None:
-    source = (WORKFLOWS / "deploy-staging.yml").read_text(encoding="utf-8")
-
-    assert STAGING_SPACE not in source
-    assert "DEPRECATED" in source
+def test_deprecated_staging_writers_cannot_write_shared_space() -> None:
+    for workflow_name in ("deploy-staging-branch.yml", "deploy-staging.yml"):
+        source = (WORKFLOWS / workflow_name).read_text(encoding="utf-8")
+        assert STAGING_SPACE not in source
+        assert "DEPRECATED" in source
