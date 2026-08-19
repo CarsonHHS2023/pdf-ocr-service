@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Document, ProcessingRun, SourceFile, decode_json_text
 from app.processing import s0_pdf_resource_heartbeat as heartbeat
+from app.processing import s0_provider_wait_lease as provider_lease
+from app.processing import s0_stale_processing_run_recovery as recovery
 
 
 def _session_factory(tmp_path):
@@ -182,6 +187,79 @@ def test_page_decision_updates_liveness_state_even_when_not_durable_cadence(monk
     assert events[1]["phase"] == "opencv_page_completed"
     assert events[1]["page_number"] == 10
     assert events[1]["last_completed_page"] == 10
+
+
+def test_provider_wait_lease_keeps_run_fresh_then_expires_after_worker_stops(
+    tmp_path,
+    monkeypatch,
+):
+    factory = _session_factory(tmp_path)
+    _seed(factory)
+    monkeypatch.setattr(heartbeat, "SessionLocal", factory)
+    monkeypatch.setattr(provider_lease, "record_pdf_processing_heartbeat", heartbeat.record_pdf_processing_heartbeat)
+
+    heartbeat.start_pdf_processing_run(
+        processing_run_id="pdf-ingest-provider-wait",
+        document_id="doc-1",
+        source_file_id="source-1",
+    )
+
+    async def provider_work():
+        await asyncio.sleep(0.045)
+        return "provider-result"
+
+    result = asyncio.run(
+        provider_lease.await_with_pdf_processing_lease(
+            provider_work(),
+            processing_run_id="pdf-ingest-provider-wait",
+            document_id="doc-1",
+            page_count=528,
+            provider_job_id="pdf-job-provider-wait",
+            heartbeat_interval_seconds=0.01,
+        )
+    )
+    assert result == "provider-result"
+
+    db = factory()
+    try:
+        run = db.query(ProcessingRun).filter_by(
+            processing_run_id="pdf-ingest-provider-wait"
+        ).one()
+        extensions = decode_json_text(run.extensions_json)
+        latest = extensions["s0_resource_heartbeat"]["latest"]
+        assert latest["phase"] == "provider_wait_liveness"
+        assert latest["page_number"] == 528
+        assert latest["provider_job_id"] == "pdf-job-provider-wait"
+        assert run.status == "running"
+    finally:
+        db.close()
+
+    lease_stopped_at = datetime.now(timezone.utc)
+    fresh_report = recovery.recover_stale_s0_pdf_processing_runs(
+        session_factory=factory,
+        now=lease_stopped_at + timedelta(seconds=120),
+        stale_after_seconds=300,
+    )
+    assert fresh_report.recovered == 0
+    assert fresh_report.skipped_fresh == 1
+
+    stale_report = recovery.recover_stale_s0_pdf_processing_runs(
+        session_factory=factory,
+        now=lease_stopped_at + timedelta(seconds=301),
+        stale_after_seconds=300,
+    )
+    assert stale_report.recovered == 1
+    db = factory()
+    try:
+        run = db.query(ProcessingRun).filter_by(
+            processing_run_id="pdf-ingest-provider-wait"
+        ).one()
+        document = db.get(Document, "doc-1")
+        assert run.status == "failed"
+        assert run.safe_error_code == recovery.PROCESSING_WORKER_LOST_CODE
+        assert document.status == "failed"
+    finally:
+        db.close()
 
 
 def test_resource_snapshot_shape_is_bounded():
