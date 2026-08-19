@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from fastapi import BackgroundTasks, HTTPException
 import pytest
 
-from app.routers import direct_upload, ocr, resumable_upload
+from app.routers import direct_upload, health, ocr, resumable_upload
 from app.upload_policy import (
     DEFAULT_BOOK_SOURCE_MAX_BYTES,
     BookSourceTooLarge,
@@ -25,6 +25,36 @@ def test_default_book_source_ceiling_matches_current_100_mib_processing_envelope
     )
     with pytest.raises(BookSourceTooLarge):
         validate_book_source_size(100 * 1024 * 1024 + 1, settings)
+
+
+def test_upload_capabilities_report_application_and_transport_contract(monkeypatch) -> None:
+    monkeypatch.setattr(health.settings, "book_source_max_bytes", 123)
+    monkeypatch.setattr(health.settings, "direct_upload_enabled", True)
+    monkeypatch.setattr(health.settings, "direct_upload_signing_secret", "s" * 32)
+    monkeypatch.setattr(health.settings, "direct_upload_single_put_max_bytes", 456)
+    monkeypatch.setattr(health, "object_storage_is_configured", lambda settings_obj: True)
+
+    response = asyncio.run(health.upload_capabilities())
+
+    assert response.schema_version == 1
+    assert response.application_max_bytes == 123
+    assert response.supported_file_types == ["pdf", "txt"]
+    assert response.direct_upload_available is True
+    assert response.direct_upload_file_types == ["pdf"]
+    assert response.direct_single_put_max_bytes == 456
+    assert response.resumable_upload_available is True
+    assert response.resumable_upload_file_types == ["pdf", "txt"]
+    assert response.resumable_transport_max_bytes == resumable_upload.MAX_UPLOAD_BYTES
+
+
+def test_upload_capabilities_fail_closed_on_incomplete_direct_configuration(monkeypatch) -> None:
+    monkeypatch.setattr(health.settings, "direct_upload_enabled", True)
+    monkeypatch.setattr(health.settings, "direct_upload_signing_secret", "short")
+    monkeypatch.setattr(health, "object_storage_is_configured", lambda settings_obj: True)
+
+    response = asyncio.run(health.upload_capabilities())
+
+    assert response.direct_upload_available is False
 
 
 def test_direct_oversize_rejects_before_runtime_or_presign(monkeypatch) -> None:
