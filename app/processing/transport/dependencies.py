@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import timedelta
 
-from app.processing.transport.service import InMemoryTransportGrantService
+from app.processing.provider_lifecycle_policy import (
+    PROVIDER_SOURCE_GRANT_MAX_TTL_SECONDS,
+)
+from app.processing.transport.service import (
+    InMemoryTransportGrantService,
+    TransportGrantServicePolicy,
+)
 from app.storage.base import StorageProvider
 from app.storage.dependencies import get_storage_provider
 
-_transport_grant_service = InMemoryTransportGrantService()
+_transport_grant_service = InMemoryTransportGrantService(
+    policy=TransportGrantServicePolicy(
+        maximum_ttl=timedelta(seconds=PROVIDER_SOURCE_GRANT_MAX_TTL_SECONDS),
+    )
+)
 
 
 def get_transport_grant_service() -> InMemoryTransportGrantService:
