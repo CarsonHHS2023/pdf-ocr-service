@@ -7,7 +7,9 @@ durable dispatch after commit and are never the source of queue truth.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
+import re
 import uuid
 
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +29,7 @@ from app.storage.base import StorageProvider
 from app.storage.models import StorageReference
 
 _ACCEPTANCE_NAMESPACE = uuid.UUID("aa72d292-b4f6-42aa-89b9-1b40f215dc95")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class IngestionAcceptanceError(RuntimeError):
@@ -180,7 +183,7 @@ def commit_retained_ingestion(
     if int(byte_size) <= 0:
         raise ValueError("byte_size must be positive")
     checksum = str(checksum_sha256).lower().strip()
-    if len(checksum) != 64:
+    if not _SHA256_RE.fullmatch(checksum):
         raise ValueError("checksum_sha256 must contain 64 hexadecimal characters")
     reference = str(StorageReference.parse(storage_reference))
 
@@ -277,7 +280,7 @@ def retain_and_commit_ingestion(
 ) -> AcceptedIngestion:
     """Retain bytes under a stable acceptance ref, then atomically accept metadata."""
     reference = stable_storage_reference(acceptance_key)
-    checksum = __import__("hashlib").sha256(content).hexdigest()
+    checksum = hashlib.sha256(content).hexdigest()
     result = storage.put(
         content,
         reference,
