@@ -17,6 +17,7 @@ from sqlalchemy import (
 from alembic import context
 from app.database import DATABASE_URL, normalize_database_url
 from app.models import Base
+import app.processing.ingestion_dispatch_model  # noqa: F401 - register dispatch table
 
 config = context.config
 
