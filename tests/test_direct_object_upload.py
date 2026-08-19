@@ -15,6 +15,7 @@ from app.database import get_db
 from app.main import app
 from app.models import Base, Document, SourceFile
 from app.processing.ingestion_dispatch_model import IngestionDispatch
+from app.storage.direct_upload import DirectUploadTokenError, verify_direct_upload_token
 from app.storage.models import PutResult
 
 
@@ -255,6 +256,24 @@ def test_direct_upload_rejects_over_single_put_limit(direct_upload_env):
     assert response.status_code == 413
     assert db.query(Document).count() == 0
     assert store.generated == []
+
+
+def test_direct_upload_token_rejects_noncanonical_signature_alias(direct_upload_env):
+    client, _, _, direct_upload = direct_upload_env
+    created, _ = _create(client)
+    token = created.json()["completion_token"]
+    payload, signature = token.split(".", 1)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last_index = alphabet.index(signature[-1])
+    assert last_index % 4 == 0  # 32-byte HMAC => two unused low bits
+    alias_signature = signature[:-1] + alphabet[last_index + 1]
+    alias = f"{payload}.{alias_signature}"
+
+    with pytest.raises(DirectUploadTokenError, match="encoding"):
+        verify_direct_upload_token(
+            alias,
+            direct_upload.settings.direct_upload_signing_secret,
+        )
 
 
 def test_direct_upload_token_tamper_fails_before_publish(direct_upload_env):
