@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import uuid
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
+from app.database import SessionLocal, engine as application_engine
 from app.models import Base, Document, SourceFile
 from app.processing.ingestion_acceptance import (
     IngestionAcceptanceError,
@@ -25,6 +28,11 @@ def _session_factory(tmp_path: Path):
         f"sqlite:///{tmp_path / 'acceptance.db'}",
         connect_args={"check_same_thread": False},
     )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(engine)
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -218,3 +226,47 @@ def test_checksum_validation_rejects_non_hex_identity_before_database_changes(tm
         db.close()
 
     assert _counts(session_factory) == (0, 0, 0)
+
+
+@pytest.mark.skipif(
+    os.getenv("ATLAS_POSTGRESQL_SCHEMA_TEST") != "1",
+    reason="requires the disposable PostgreSQL staging CI service",
+)
+def test_commit_retained_ingestion_orders_parent_rows_before_dispatch_on_postgresql():
+    assert application_engine.dialect.name == "postgresql"
+    acceptance_key = f"ci-postgres:{uuid.uuid4().hex}"
+    document_id = str(uuid.uuid4())
+    source_file_id = str(uuid.uuid4())
+    db = SessionLocal()
+    try:
+        accepted = commit_retained_ingestion(
+            db,
+            acceptance_key=acceptance_key,
+            filename="postgres-ordering.txt",
+            file_type="txt",
+            mime_type="text/plain",
+            byte_size=3,
+            checksum_sha256="b" * 64,
+            storage_reference=f"src_{uuid.uuid4().hex}",
+            document_id=document_id,
+            source_file_id=source_file_id,
+        )
+        assert accepted.created is True
+        assert accepted.document_id == document_id
+        assert accepted.source_file_id == source_file_id
+        dispatch = db.get(IngestionDispatch, accepted.dispatch_id)
+        assert dispatch is not None
+        assert dispatch.document_id == document_id
+        assert dispatch.source_file_id == source_file_id
+        assert dispatch.status == "queued"
+    finally:
+        try:
+            document = db.get(Document, document_id)
+            if document is not None:
+                db.delete(document)
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()

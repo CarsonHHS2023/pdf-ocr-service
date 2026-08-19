@@ -224,14 +224,22 @@ def commit_retained_ingestion(
     )
     db.add(document)
     db.add(source)
-    dispatch = create_ingestion_dispatch(
-        db,
-        acceptance_key=normalized_key,
-        document_id=document.id,
-        source_file_id=source.id,
-        payload=payload,
-    )
+    dispatch = None
     try:
+        # IngestionDispatch intentionally has only scalar FK identity, not ORM
+        # relationships to the staged parent objects. Without an explicit parent
+        # flush SQLAlchemy may emit the dispatch INSERT first; PostgreSQL then
+        # enforces its FKs before Document/SourceFile exist. Flush parents inside
+        # the same transaction before staging the dispatch, preserving one atomic
+        # commit while making insert ordering explicit across real FK-enforcing DBs.
+        db.flush([document, source])
+        dispatch = create_ingestion_dispatch(
+            db,
+            acceptance_key=normalized_key,
+            document_id=document.id,
+            source_file_id=source.id,
+            payload=payload,
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -251,6 +259,8 @@ def commit_retained_ingestion(
         db.rollback()
         raise
 
+    if dispatch is None:  # pragma: no cover - defensive invariant
+        raise RuntimeError("Durable ingestion dispatch was not staged")
     db.refresh(document)
     db.refresh(source)
     db.refresh(dispatch)
