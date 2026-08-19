@@ -14,6 +14,7 @@ from scripts.apply_s0_v5_phase0_observability import patch_s0_v5_phase0_observab
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_INGESTION = REPO_ROOT / "app" / "processing" / "pdf_ingestion.py"
+PHASE0_INSTALLER = REPO_ROOT / "scripts" / "apply_s0_v5_phase0_observability.py"
 
 
 def _copy_ingestion(tmp_path) -> Path:
@@ -89,3 +90,11 @@ def test_overlay_keeps_source_read_and_provider_output_storage_separate(tmp_path
     # Only the already-produced derived PDF is routed through remote-first output.
     assert "result = prepare_geometry_provider_input(" in source
     assert "storage=provider_input_storage" in source
+
+
+def test_staging_phase0_entrypoint_installs_provider_access_before_phase0_cache() -> None:
+    source = PHASE0_INSTALLER.read_text(encoding="utf-8")
+    provider_call = source.index("patch_provider_input_presigned_read()")
+    phase0_call = source.index("patch_s0_v5_phase0_observability()", provider_call + 1)
+
+    assert provider_call < phase0_call
