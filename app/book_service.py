@@ -26,7 +26,7 @@ class BookDeletionConflict(RuntimeError):
 
 
 class BookService:
-    """Service for managing bookshelf."""
+    """Service for managing books on bookshelf."""
 
     @staticmethod
     def create_book(
