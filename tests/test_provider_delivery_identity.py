@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.processing.orchestration import ProviderJobRequest, ProviderSourceDocumentRequest
 from app.processing.pdf_geometry_integration import (
     ProviderInputChecksumProvider,
@@ -81,6 +83,35 @@ def test_delivery_descriptor_preserves_legacy_single_pdf_identity() -> None:
     assert delivery.checksum_sha256 == RENDER_SHA
     assert delivery.byte_size == 7000
     assert delivery.filename == "book.opencv.pdf"
+
+
+@pytest.mark.parametrize(
+    "partial_fields",
+    [
+        {"provider_storage_reference": StorageReference.parse("src_" + "4" * 32)},
+        {
+            "provider_storage_reference": StorageReference.parse("src_" + "4" * 32),
+            "provider_checksum_sha256": PROVIDER_SHA,
+        },
+        {
+            "provider_storage_reference": StorageReference.parse("src_" + "4" * 32),
+            "provider_checksum_sha256": PROVIDER_SHA,
+            "provider_byte_size": 4000,
+        },
+    ],
+)
+def test_delivery_descriptor_rejects_partial_provider_subset_identity(partial_fields) -> None:
+    provider_input = SimpleNamespace(
+        storage_reference=StorageReference.parse("src_" + "3" * 32),
+        checksum_sha256=RENDER_SHA,
+        byte_size=7000,
+        media_type="application/pdf",
+        filename="book.opencv.pdf",
+        **partial_fields,
+    )
+
+    with pytest.raises(ValueError, match="subset identity is incomplete"):
+        provider_delivery_descriptor(provider_input)
 
 
 def test_grant_and_modal_checksum_use_the_same_provider_subset_identity() -> None:
