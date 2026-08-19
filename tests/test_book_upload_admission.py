@@ -92,10 +92,22 @@ def _oversize_direct_claims():
     )
 
 
+def _prepare_direct_durable_lookup(monkeypatch) -> None:
+    if not hasattr(direct_upload, "find_accepted_ingestion"):
+        return
+    monkeypatch.setattr(direct_upload.settings, "direct_upload_signing_secret", "s" * 64)
+    monkeypatch.setattr(
+        direct_upload,
+        "find_accepted_ingestion",
+        lambda _db, _acceptance_key, **_expected: None,
+    )
+
+
 def test_direct_complete_rechecks_application_ceiling_before_publish_and_cleans_ingress(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(direct_upload.settings, "book_source_max_bytes", 5)
+    _prepare_direct_durable_lookup(monkeypatch)
 
     class Provider:
         def __init__(self) -> None:
@@ -130,6 +142,7 @@ def test_direct_complete_rechecks_application_ceiling_before_publish_and_cleans_
 
 def test_direct_existing_commit_remains_idempotent_after_ceiling_is_lowered(monkeypatch) -> None:
     monkeypatch.setattr(direct_upload.settings, "book_source_max_bytes", 5)
+    _prepare_direct_durable_lookup(monkeypatch)
     claims = _oversize_direct_claims()
 
     class Provider:
@@ -217,11 +230,6 @@ def test_resumable_complete_rechecks_ceiling_if_policy_changed(monkeypatch, tmp_
 
     db_placeholder = None
     if hasattr(resumable_upload, "find_accepted_ingestion"):
-        # The durable overlay performs an authenticated DB acceptance lookup
-        # before consulting ephemeral spool metadata. This focused admission
-        # unit test supplies a sentinel DB and proves the "not yet accepted"
-        # branch without requiring a real session; runtime always receives a
-        # real FastAPI dependency.
         db_placeholder = object()
         monkeypatch.setattr(
             resumable_upload,
