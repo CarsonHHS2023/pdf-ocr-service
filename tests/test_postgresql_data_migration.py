@@ -91,7 +91,7 @@ def _build_source(path: Path) -> tuple[str, datetime, datetime]:
             text("CREATE TABLE alembic_version (version_num VARCHAR(255) NOT NULL PRIMARY KEY)")
         )
         connection.execute(
-            text("INSERT INTO alembic_version(version_num) VALUES ('0005_structured_content_v2_selection')")
+            text("INSERT INTO alembic_version(version_num) VALUES ('0006_ingestion_dispatches')")
         )
 
     candidate_created_at = datetime(2026, 8, 15, 12, 0, 0)
@@ -144,8 +144,8 @@ def test_replay_regenerates_v2_internal_ids_and_preserves_reader_content(tmp_pat
         target_database_url=target_url,
     )
 
-    assert report.source_alembic_head == "0005_structured_content_v2_selection"
-    assert report.target_alembic_head == "0005_structured_content_v2_selection"
+    assert report.source_alembic_head == "0006_ingestion_dispatches"
+    assert report.target_alembic_head == "0006_ingestion_dispatches"
     assert report.migrated_candidate_count == 1
     assert report.migrated_selection_count == 1
     assert report.reader_ready_count == 1

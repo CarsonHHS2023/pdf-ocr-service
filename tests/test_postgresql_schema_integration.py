@@ -10,13 +10,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.database import engine
 
-EXPECTED_HEAD = "0005_structured_content_v2_selection"
+EXPECTED_HEAD = "0006_ingestion_dispatches"
 EXPECTED_ALEMBIC_VERSION_LENGTH = 255
 EXPECTED_TABLES = {
     "alembic_version",
     "documents",
     "source_files",
     "processing_runs",
+    "ingestion_dispatches",
     "structured_content_candidates",
     "structured_content_selection",
     "structured_content_v2_candidates",
@@ -47,6 +48,125 @@ def test_alembic_head_and_required_tables_exist_on_postgresql():
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
     assert current == EXPECTED_HEAD
+
+
+def test_ingestion_dispatch_schema_has_durable_identity_and_lease_constraints():
+    inspector = inspect(engine)
+    checks = {item["name"] for item in inspector.get_check_constraints("ingestion_dispatches")}
+    assert {
+        "ck_ingestion_dispatch_kind",
+        "ck_ingestion_dispatch_status",
+        "ck_ingestion_dispatch_attempt_count_nonnegative",
+        "ck_ingestion_dispatch_payload",
+    } <= checks
+
+    unique_constraints = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspector.get_unique_constraints("ingestion_dispatches")
+    }
+    assert unique_constraints["uq_ingestion_dispatch_acceptance_key"] == ("acceptance_key",)
+
+    indexes = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspector.get_indexes("ingestion_dispatches")
+    }
+    assert indexes["ix_ingestion_dispatch_document_id"] == ("document_id",)
+    assert indexes["ix_ingestion_dispatch_status_lease"] == ("status", "claim_expires_at")
+
+    foreign_keys = {
+        item["name"]: item
+        for item in inspector.get_foreign_keys("ingestion_dispatches")
+    }
+    assert foreign_keys["fk_ingestion_dispatch_document"]["referred_table"] == "documents"
+    assert foreign_keys["fk_ingestion_dispatch_source_file"]["referred_table"] == "source_files"
+
+
+def test_ingestion_dispatch_payload_check_is_database_enforced():
+    document_id = str(uuid.uuid4())
+    source_file_id = str(uuid.uuid4())
+    dispatch_id = str(uuid.uuid4())
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO documents (
+                    id, document_type, title, file_type, status, created_at, updated_at
+                ) VALUES (
+                    :id, 'book', 'Dispatch CI', 'pdf', 'processing', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": document_id},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_files (
+                    id, document_id, original_filename, file_type, mime_type, byte_size,
+                    checksum_sha256, storage_reference, retained, is_primary, created_at
+                ) VALUES (
+                    :id, :document_id, 'dispatch.pdf', 'pdf', 'application/pdf', 3,
+                    :checksum, :storage_reference, 1, 1, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": source_file_id,
+                "document_id": document_id,
+                "checksum": "a" * 64,
+                "storage_reference": f"src_{uuid.uuid4().hex}",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingestion_dispatches (
+                    id, acceptance_key, document_id, source_file_id, kind,
+                    processing_attempt_id, provider_job_id, provider_request_id,
+                    txt_processing_run_ref, status, claim_token, claim_expires_at,
+                    attempt_count, error_message, created_at, updated_at, started_at, finished_at
+                ) VALUES (
+                    :id, :acceptance_key, :document_id, :source_file_id, 'pdf',
+                    'pdf-ingest-ci', 'pdf-job-ci', 'pdf-request-ci',
+                    NULL, 'queued', NULL, NULL,
+                    0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL
+                )
+                """
+            ),
+            {
+                "id": dispatch_id,
+                "acceptance_key": f"ci:{uuid.uuid4().hex}",
+                "document_id": document_id,
+                "source_file_id": source_file_id,
+            },
+        )
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO ingestion_dispatches (
+                        id, acceptance_key, document_id, source_file_id, kind,
+                        processing_attempt_id, provider_job_id, provider_request_id,
+                        txt_processing_run_ref, status, claim_token, claim_expires_at,
+                        attempt_count, error_message, created_at, updated_at, started_at, finished_at
+                    ) VALUES (
+                        :id, :acceptance_key, :document_id, :source_file_id, 'pdf',
+                        'pdf-ingest-only', NULL, NULL,
+                        NULL, 'queued', NULL, NULL,
+                        0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "acceptance_key": f"ci-invalid:{uuid.uuid4().hex}",
+                    "document_id": document_id,
+                    "source_file_id": source_file_id,
+                },
+            )
 
 
 def test_v2_selection_has_database_enforced_candidate_document_fk():
