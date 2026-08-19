@@ -89,14 +89,30 @@ def test_direct_overlay_installs_durable_acceptance_before_storage_runtime(tmp_p
     )
     complete = transformed[complete_start:]
     assert complete.index("claims = _claims_from_token") < complete.index(
-        "existing = find_accepted_ingestion"
+        "existing = _lookup_durable_acceptance()"
     )
-    assert complete.index("existing = find_accepted_ingestion") < complete.index(
+    assert complete.index("existing = _lookup_durable_acceptance()") < complete.index(
         "provider, _runtime_secret = _runtime()"
     )
     assert complete.index("commit_retained_ingestion") < complete.index(
         "background_tasks.add_task(run_ingestion_dispatch, accepted.dispatch_id)"
     )
+
+    object_missing = complete[
+        complete.index("except ObjectNotFound as exc:") : complete.index(
+            "except IntegrityMismatch as exc:"
+        )
+    ]
+    assert "winner = _lookup_durable_acceptance()" in object_missing
+    assert "return _return_durable_existing(winner)" in object_missing
+
+    storage_failure = complete[
+        complete.index("except StorageError as exc:") : complete.index(
+            "publish_ms = (time.perf_counter() - publish_started)"
+        )
+    ]
+    assert "winner = _lookup_durable_acceptance()" in storage_failure
+    assert "return _return_durable_existing(winner)" in storage_failure
 
     first = transformed
     patch_direct_durable_dispatch(path)
