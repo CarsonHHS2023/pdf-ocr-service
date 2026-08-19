@@ -59,7 +59,7 @@ class DispatchRecoveryReport:
     scanned: int
     ready_dispatch_ids: tuple[str, ...]
     failed_running: int
-    skipped_fresh: int
+    skipped_races: int
     errors: int
 
 
@@ -74,6 +74,29 @@ def stable_storage_reference(acceptance_key: str) -> StorageReference:
         raise ValueError("acceptance_key is required")
     token = hashlib.sha256(f"atlas-book-source:{normalized}".encode("utf-8")).hexdigest()[:32]
     return StorageReference.parse(f"src_{token}")
+
+
+def _validate_payload(payload: DispatchPayload) -> None:
+    if payload.kind == "pdf":
+        if not all(
+            (
+                payload.processing_attempt_id,
+                payload.provider_job_id,
+                payload.provider_request_id,
+            )
+        ) or payload.txt_processing_run_ref is not None:
+            raise ValueError("PDF dispatch requires exactly the PDF processing identifiers")
+        return
+    if payload.kind == "txt":
+        if (
+            not payload.txt_processing_run_ref
+            or payload.processing_attempt_id is not None
+            or payload.provider_job_id is not None
+            or payload.provider_request_id is not None
+        ):
+            raise ValueError("TXT dispatch requires exactly the TXT processing identifier")
+        return
+    raise ValueError("dispatch kind must be pdf or txt")
 
 
 def new_dispatch_payload(kind: str) -> DispatchPayload:
@@ -107,6 +130,7 @@ def create_ingestion_dispatch(
     normalized_key = str(acceptance_key).strip()
     if not normalized_key:
         raise ValueError("acceptance_key is required")
+    _validate_payload(payload)
     timestamp = now or utcnow()
     row = IngestionDispatch(
         id=dispatch_id or str(uuid.uuid4()),
@@ -144,13 +168,15 @@ def get_dispatch_by_acceptance_key(
 
 
 def _payload_from_row(row: IngestionDispatch) -> DispatchPayload:
-    return DispatchPayload(
+    payload = DispatchPayload(
         kind=row.kind,
         processing_attempt_id=row.processing_attempt_id,
         provider_job_id=row.provider_job_id,
         provider_request_id=row.provider_request_id,
         txt_processing_run_ref=row.txt_processing_run_ref,
     )
+    _validate_payload(payload)
+    return payload
 
 
 def claim_ingestion_dispatch(
@@ -174,8 +200,10 @@ def claim_ingestion_dispatch(
                     IngestionDispatch.status == "queued",
                     and_(
                         IngestionDispatch.status == "claimed",
-                        IngestionDispatch.claim_expires_at.is_not(None),
-                        IngestionDispatch.claim_expires_at < timestamp,
+                        or_(
+                            IngestionDispatch.claim_expires_at.is_(None),
+                            IngestionDispatch.claim_expires_at < timestamp,
+                        ),
                     ),
                 )
             )
@@ -372,6 +400,7 @@ def finalize_dispatch_from_document(
         if status is not None
         else "Accepted document disappeared during ingestion"
     )
+    timestamp = utcnow()
     db = session_factory()
     try:
         _set_processing_document_failed(db, claim.document_id, message)
@@ -386,8 +415,8 @@ def finalize_dispatch_from_document(
                 status="failed",
                 claim_token=None,
                 claim_expires_at=None,
-                finished_at=utcnow(),
-                updated_at=utcnow(),
+                finished_at=timestamp,
+                updated_at=timestamp,
                 error_message=message,
             )
         )
@@ -487,12 +516,12 @@ async def run_ingestion_dispatch(
     )
     try:
         if claim.payload.kind == "pdf":
+            from app.processing.pdf_ingestion import PdfIngestionIds
+
             if pdf_processor is None:
-                from app.processing.pdf_ingestion import PdfIngestionIds, process_pdf_document_background
+                from app.processing.pdf_ingestion import process_pdf_document_background
 
                 pdf_processor = process_pdf_document_background
-            else:
-                from app.processing.pdf_ingestion import PdfIngestionIds
             ids = PdfIngestionIds(
                 processing_attempt_id=str(claim.payload.processing_attempt_id),
                 provider_job_id=str(claim.payload.provider_job_id),
@@ -504,12 +533,12 @@ async def run_ingestion_dispatch(
                 ids,
             )
         elif claim.payload.kind == "txt":
+            from app.processing.txt.ingestion import TxtIngestionIds
+
             if txt_processor is None:
-                from app.processing.txt.ingestion import TxtIngestionIds, process_txt_document_background
+                from app.processing.txt.ingestion import process_txt_document_background
 
                 txt_processor = process_txt_document_background
-            else:
-                from app.processing.txt.ingestion import TxtIngestionIds
             ids = TxtIngestionIds(
                 processing_run_ref=str(claim.payload.txt_processing_run_ref),
             )
@@ -522,12 +551,10 @@ async def run_ingestion_dispatch(
         else:  # database check constraint should make this unreachable
             raise RuntimeError("Unsupported durable ingestion dispatch kind")
     except asyncio.CancelledError:
-        # Preserve running+lease state. If the process is actually disappearing,
-        # the lease will expire and recovery will fail it conservatively. If a
-        # caller merely cancels this coroutine while the process lives, it must
-        # not silently re-run potentially partial processing.
+        # Preserve running+lease state. The lease will expire and recovery will
+        # fail it conservatively instead of re-running potentially partial work.
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception(
             "Durable ingestion dispatch failed dispatch_id=%s document_id=%s",
             claim.dispatch_id,
@@ -582,52 +609,66 @@ def recover_ingestion_dispatches(
     ready: list[str] = []
     scanned = 0
     failed_running = 0
-    skipped_fresh = 0
+    skipped_races = 0
     errors = 0
+    actionable = or_(
+        IngestionDispatch.status == "queued",
+        and_(
+            IngestionDispatch.status == "claimed",
+            or_(
+                IngestionDispatch.claim_expires_at.is_(None),
+                IngestionDispatch.claim_expires_at < timestamp,
+            ),
+        ),
+        and_(
+            IngestionDispatch.status == "running",
+            or_(
+                IngestionDispatch.claim_expires_at.is_(None),
+                IngestionDispatch.claim_expires_at < timestamp,
+            ),
+        ),
+    )
     try:
         rows = db.execute(
             select(IngestionDispatch)
-            .where(IngestionDispatch.status.in_(("queued", "claimed", "running")))
+            .where(actionable)
             .order_by(IngestionDispatch.created_at.asc(), IngestionDispatch.id.asc())
             .limit(max(1, int(limit)))
         ).scalars().all()
         scanned = len(rows)
         for row in rows:
-            try:
-                if row.status == "queued":
-                    ready.append(row.id)
-                    continue
-                if row.claim_expires_at is None or row.claim_expires_at >= timestamp:
-                    skipped_fresh += 1
-                    continue
-                if row.status == "claimed":
-                    # Claim CAS itself knows how to reclaim expired pre-start work.
-                    ready.append(row.id)
-                    continue
+            if row.status in {"queued", "claimed"}:
+                ready.append(row.id)
+                continue
 
-                message = "Processing worker stopped after durable ingestion dispatch started"
-                result = db.execute(
-                    update(IngestionDispatch)
-                    .where(
+            try:
+                with db.begin_nested():
+                    message = "Processing worker stopped after durable ingestion dispatch started"
+                    stale_running = and_(
                         IngestionDispatch.id == row.id,
                         IngestionDispatch.status == "running",
-                        IngestionDispatch.claim_expires_at.is_not(None),
-                        IngestionDispatch.claim_expires_at < timestamp,
+                        or_(
+                            IngestionDispatch.claim_expires_at.is_(None),
+                            IngestionDispatch.claim_expires_at < timestamp,
+                        ),
                     )
-                    .values(
-                        status="failed",
-                        claim_token=None,
-                        claim_expires_at=None,
-                        finished_at=timestamp,
-                        updated_at=timestamp,
-                        error_message=message,
+                    result = db.execute(
+                        update(IngestionDispatch)
+                        .where(stale_running)
+                        .values(
+                            status="failed",
+                            claim_token=None,
+                            claim_expires_at=None,
+                            finished_at=timestamp,
+                            updated_at=timestamp,
+                            error_message=message,
+                        )
                     )
-                )
-                if result.rowcount == 1:
-                    _set_processing_document_failed(db, row.document_id, message)
-                    failed_running += 1
-                else:
-                    skipped_fresh += 1
+                    if result.rowcount == 1:
+                        _set_processing_document_failed(db, row.document_id, message)
+                        failed_running += 1
+                    else:
+                        skipped_races += 1
             except Exception:
                 errors += 1
                 logger.exception(
@@ -644,7 +685,7 @@ def recover_ingestion_dispatches(
         scanned=scanned,
         ready_dispatch_ids=tuple(ready),
         failed_running=failed_running,
-        skipped_fresh=skipped_fresh,
+        skipped_races=skipped_races,
         errors=errors,
     )
 
