@@ -10,34 +10,28 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 STAGING_SPACE = "carsonhhs/pdf-ocr-service-staging"
 
 
-def test_runtime_build_revision_prefers_valid_environment(monkeypatch, tmp_path) -> None:
-    revision = "a" * 40
-    monkeypatch.setattr(health, "_RUNTIME_ROOT", tmp_path)
-    monkeypatch.setenv("ATLAS_BUILD_REVISION", revision.upper())
-
-    assert health.runtime_build_revision() == revision
-
-
 def test_runtime_build_revision_reads_exact_staging_revision_file(
     monkeypatch,
     tmp_path,
 ) -> None:
     revision = "b" * 40
     monkeypatch.setattr(health, "_RUNTIME_ROOT", tmp_path)
-    monkeypatch.delenv("ATLAS_BUILD_REVISION", raising=False)
     (tmp_path / "staging-revision.txt").write_text(revision + "\n", encoding="utf-8")
 
     assert health.runtime_build_revision() == revision
 
 
-def test_runtime_build_revision_rejects_untrusted_text(monkeypatch, tmp_path) -> None:
+def test_runtime_build_revision_rejects_untrusted_or_missing_text(
+    monkeypatch,
+    tmp_path,
+) -> None:
     monkeypatch.setattr(health, "_RUNTIME_ROOT", tmp_path)
-    monkeypatch.setenv("ATLAS_BUILD_REVISION", "staging")
+    assert health.runtime_build_revision() is None
+
     (tmp_path / "staging-revision.txt").write_text(
         "revision=not-a-sha\nsecret=must-not-leak\n",
         encoding="utf-8",
     )
-
     assert health.runtime_build_revision() is None
 
 
