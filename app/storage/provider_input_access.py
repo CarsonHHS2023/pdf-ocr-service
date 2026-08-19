@@ -3,9 +3,9 @@
 The general StorageProvider contract deliberately stays bytes-first and keeps
 federated writes on the legacy primary. Provider-input PDFs are different: they
 are large, temporary execution artifacts that a remote OCR provider must read.
-This adapter attempts one durable S3-compatible secondary write using the bytes
-already produced by S0, but falls back to the existing storage placement for a
-recoverable remote outage without re-running preprocessing.
+This adapter attempts one durable S3-compatible write using the bytes already
+produced by S0, but falls back to the existing federated primary for a recoverable
+secondary outage without re-running preprocessing.
 """
 from __future__ import annotations
 
@@ -78,8 +78,11 @@ class ProviderInputStorageRouter:
 
     def __init__(self, storage: object) -> None:
         self.storage = storage
-        secondary = getattr(storage, "secondary", None)
-        self.remote = secondary if _presigned_get_capable(secondary) else None
+        if _presigned_get_capable(storage):
+            self.remote = storage
+        else:
+            secondary = getattr(storage, "secondary", None)
+            self.remote = secondary if _presigned_get_capable(secondary) else None
         self._remote_references: set[str] = set()
 
     @staticmethod
@@ -103,10 +106,14 @@ class ProviderInputStorageRouter:
                     expected_sha256=expected_sha256,
                 )
             except (ProviderUnavailable, WriteFailure):
-                # Recoverable object-store outages must not force S0 to run a
-                # second time. The exact already-produced bytes are placed by
-                # the existing StorageProvider instead.
-                pass
+                if self.remote is self.storage:
+                    # A direct S3 provider has no distinct local primary to fall
+                    # back to; retrying the same provider would only duplicate the
+                    # failing network operation.
+                    raise
+                # Recoverable federated-secondary outages must not force S0 to
+                # run a second time. The exact already-produced bytes are placed
+                # by the existing primary instead.
             else:
                 self._remote_references.add(self._key(result.reference))
                 return result
