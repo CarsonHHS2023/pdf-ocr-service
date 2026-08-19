@@ -189,6 +189,31 @@ def test_router_delete_resolves_remote_ref_through_federated_storage() -> None:
     assert router.placed_remotely(reference) is False
 
 
+def test_direct_s3_storage_is_presigned_without_federated_wrapper() -> None:
+    storage = FakeS3Provider()
+    router = select_provider_input_storage(storage)
+    reference = StorageReference.generate()
+
+    router.put(b"payload", reference)
+
+    assert storage.put_calls == 1
+    assert router.placed_remotely(reference) is True
+    assert router.generate_provider_read_url(reference, expires_seconds=4200).startswith(
+        "https://s3.hf.co/"
+    )
+
+
+def test_direct_s3_failure_is_not_retried_against_same_storage() -> None:
+    storage = FakeS3Provider()
+    storage.put_error = WriteFailure("direct s3 unavailable")
+    router = select_provider_input_storage(storage)
+
+    with pytest.raises(WriteFailure):
+        router.put(b"payload", StorageReference.generate())
+
+    assert storage.put_calls == 1
+
+
 def test_presigned_get_uses_exact_bucket_key_ttl_and_get_method() -> None:
     provider = FakeS3Provider()
     reference = StorageReference.generate()
