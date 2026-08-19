@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 from app.processing.integration import TemporarySourceTransportUrl
 from app.storage.errors import ProviderUnavailable
 from app.storage.models import StorageReference
-from app.storage.provider_input_access import generate_presigned_provider_get_url
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -25,12 +24,17 @@ def build_provider_input_source_url_factory(
 
     def factory(ttl: timedelta) -> TemporarySourceTransportUrl | None:
         expires_seconds = max(1, int(ttl.total_seconds()))
-        try:
-            url = generate_presigned_provider_get_url(
-                storage,
-                reference,
-                expires_seconds=expires_seconds,
+        generate = getattr(storage, "generate_provider_read_url", None)
+        if not callable(generate):
+            logger.warning(
+                "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
+                "byte_size=%s expires_seconds=%s reason=presigned_read_unavailable",
+                safe_size,
+                expires_seconds,
             )
+            return None
+        try:
+            url = generate(reference, expires_seconds=expires_seconds)
         except ProviderUnavailable as exc:
             logger.warning(
                 "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
