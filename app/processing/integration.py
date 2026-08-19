@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlparse, urlunparse
 
 from app.config import Settings, settings as default_settings
@@ -80,6 +80,9 @@ class TemporarySourceTransportUrl:
 
     def __repr__(self) -> str:
         return "TemporarySourceTransportUrl(url=<redacted>)"
+
+
+SourceTransportUrlFactory = Callable[[timedelta], TemporarySourceTransportUrl | None]
 
 
 @dataclass(frozen=True)
@@ -190,7 +193,11 @@ class EndToEndProcessingIntegrationService:
         app_settings: Settings | None = None,
         monotonic: Any | None = None,
         polling_policy: PollingPolicy | None = None,
+        source_transport_url_factory: SourceTransportUrlFactory | None = None,
+        source_access_ttl: timedelta = timedelta(minutes=20),
     ) -> None:
+        if not isinstance(source_access_ttl, timedelta) or source_access_ttl <= timedelta(0):
+            raise ValueError("source_access_ttl must be a positive timedelta")
         self.grant_service = grant_service
         self.orchestrator = orchestrator
         self.canonicalizer = canonicalizer
@@ -202,12 +209,18 @@ class EndToEndProcessingIntegrationService:
             max_interval_seconds=10,
             backoff_factor=1.5,
         )
+        self.source_transport_url_factory = source_transport_url_factory
+        self.source_access_ttl = source_access_ttl
 
     async def process(self, request: ProcessingIntegrationRequest) -> ProcessingIntegrationOutcome:
         start = self.monotonic()
         warnings: list[str] = []
         request.retained_source.validate()
-        origin = TrustedPublicSourceOrigin(self._origin_value)
+        origin = (
+            TrustedPublicSourceOrigin(self._origin_value)
+            if self.source_transport_url_factory is None
+            else None
+        )
         try:
             created = self.grant_service.create_grant(
                 storage_reference=request.retained_source.storage_reference,
@@ -217,7 +230,7 @@ class EndToEndProcessingIntegrationService:
                 source_sha256=request.retained_source.sha256,
                 source_byte_size=request.retained_source.byte_size,
                 media_type=request.retained_source.media_type,
-                ttl=timedelta(minutes=20),
+                ttl=self.source_access_ttl,
                 source_etag=request.retained_source.etag,
                 filename=request.retained_source.filename,
                 provider_job_id=request.provider_job_id,
@@ -228,12 +241,33 @@ class EndToEndProcessingIntegrationService:
             raise IntegrationError(IntegrationErrorCategory.GRANT_CREATION_FAILURE, "transport grant creation failed") from exc
 
         try:
-            transport_url = build_temporary_source_transport_url(origin, created.token)
+            transport_url = None
+            if self.source_transport_url_factory is not None:
+                transport_url = self.source_transport_url_factory(self.source_access_ttl)
+                if transport_url is not None and not isinstance(transport_url, TemporarySourceTransportUrl):
+                    raise IntegrationError(
+                        IntegrationErrorCategory.URL_CONSTRUCTION_FAILURE,
+                        "source transport URL factory returned an invalid value",
+                    )
+            if transport_url is None:
+                if origin is None:
+                    origin = TrustedPublicSourceOrigin(self._origin_value)
+                transport_url = build_temporary_source_transport_url(origin, created.token)
         except IntegrationError as exc:
             final = self._finalize(grant.grant_id, revoke=True, warnings=warnings)
             raise IntegrationError(
                 exc.category,
                 exc.safe_message,
+                warnings=tuple(warnings),
+                grant_id=grant.grant_id,
+                grant_final_state=_state(final.descriptor),
+                revocation_succeeded=final.revoked,
+            ) from None
+        except Exception:
+            final = self._finalize(grant.grant_id, revoke=True, warnings=warnings)
+            raise IntegrationError(
+                IntegrationErrorCategory.URL_CONSTRUCTION_FAILURE,
+                "source transport URL creation failed",
                 warnings=tuple(warnings),
                 grant_id=grant.grant_id,
                 grant_final_state=_state(final.descriptor),
