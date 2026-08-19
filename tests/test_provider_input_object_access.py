@@ -101,10 +101,11 @@ class FakeFederatedStorage:
         return self.secondary.delete(reference)
 
 
-def test_provider_input_remote_write_is_reused_for_presigned_get() -> None:
+def test_provider_input_remote_write_is_visible_to_stateless_presigned_resolver() -> None:
     primary = FakeStorage()
     secondary = FakeS3Provider()
-    router = select_provider_input_storage(FakeFederatedStorage(primary, secondary))
+    federated = FakeFederatedStorage(primary, secondary)
+    router = select_provider_input_storage(federated)
     reference = StorageReference.generate()
     payload = b"provider-input"
     digest = hashlib.sha256(payload).hexdigest()
@@ -120,9 +121,12 @@ def test_provider_input_remote_write_is_reused_for_presigned_get() -> None:
     assert primary.put_calls == 0
     assert secondary.put_calls == 1
     assert secondary.objects[reference.value] == payload
-    assert router.placed_remotely(reference) is True
 
-    url = router.generate_provider_read_url(reference, expires_seconds=4200)
+    url = generate_existing_provider_read_url(
+        federated,
+        reference,
+        expires_seconds=4200,
+    )
     assert url.startswith("https://s3.hf.co/")
     operation, kwargs = secondary.client.calls[-1]
     assert operation == "get_object"
@@ -189,7 +193,8 @@ def test_recoverable_remote_write_failure_falls_back_without_second_payload_buil
     primary = FakeStorage()
     secondary = FakeS3Provider()
     secondary.put_error = WriteFailure("remote unavailable")
-    router = select_provider_input_storage(FakeFederatedStorage(primary, secondary))
+    federated = FakeFederatedStorage(primary, secondary)
+    router = select_provider_input_storage(federated)
     reference = StorageReference.generate()
     payload = b"already-produced-s0-bytes"
 
@@ -199,9 +204,12 @@ def test_recoverable_remote_write_failure_falls_back_without_second_payload_buil
     assert secondary.put_calls == 1
     assert primary.put_calls == 1
     assert primary.objects[reference.value] == payload
-    assert router.placed_remotely(reference) is False
     with pytest.raises(ProviderUnavailable):
-        router.generate_provider_read_url(reference, expires_seconds=4200)
+        generate_existing_provider_read_url(
+            federated,
+            reference,
+            expires_seconds=4200,
+        )
 
 
 def test_integrity_failure_never_falls_back_to_primary() -> None:
@@ -220,16 +228,20 @@ def test_integrity_failure_never_falls_back_to_primary() -> None:
 def test_router_without_presign_capable_secondary_uses_existing_storage() -> None:
     primary = FakeStorage()
     secondary = FakeStorage()
-    router = select_provider_input_storage(FakeFederatedStorage(primary, secondary))
+    federated = FakeFederatedStorage(primary, secondary)
+    router = select_provider_input_storage(federated)
     reference = StorageReference.generate()
 
     router.put(b"payload", reference)
 
     assert primary.put_calls == 1
     assert secondary.put_calls == 0
-    assert router.placed_remotely(reference) is False
     with pytest.raises(ProviderUnavailable):
-        router.generate_provider_read_url(reference, expires_seconds=4200)
+        generate_existing_provider_read_url(
+            federated,
+            reference,
+            expires_seconds=4200,
+        )
 
 
 def test_router_delete_resolves_remote_ref_through_federated_storage() -> None:
@@ -242,7 +254,6 @@ def test_router_delete_resolves_remote_ref_through_federated_storage() -> None:
     router.delete(reference)
 
     assert secondary.exists(reference) is False
-    assert router.placed_remotely(reference) is False
 
 
 def test_direct_s3_storage_is_presigned_without_federated_wrapper() -> None:
@@ -253,10 +264,6 @@ def test_direct_s3_storage_is_presigned_without_federated_wrapper() -> None:
     router.put(b"payload", reference)
 
     assert storage.put_calls == 1
-    assert router.placed_remotely(reference) is True
-    assert router.generate_provider_read_url(reference, expires_seconds=4200).startswith(
-        "https://s3.hf.co/"
-    )
     assert generate_existing_provider_read_url(
         storage,
         reference,
