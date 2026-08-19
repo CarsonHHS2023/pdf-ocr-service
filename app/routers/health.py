@@ -1,5 +1,7 @@
 """Health and sanitized runtime configuration routes."""
 import logging
+from pathlib import Path
+import re
 
 from fastapi import APIRouter
 
@@ -14,13 +16,31 @@ from app.schemas import HealthCheckResponse, StructureRefinementConfigResponse
 router = APIRouter(prefix="/api/v1", tags=["health"])
 logger = logging.getLogger(__name__)
 
+_RUNTIME_ROOT = Path(__file__).resolve().parents[2]
+_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 
-@router.get("/health", response_model=HealthCheckResponse)
+
+def runtime_build_revision() -> str | None:
+    """Return the exact sanitized SHA embedded in the deployed Staging artifact."""
+    revision_file = _RUNTIME_ROOT / "staging-revision.txt"
+    try:
+        value = revision_file.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return None
+    return value if _REVISION_RE.fullmatch(value) else None
+
+
+@router.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    response_model_exclude_none=True,
+)
 async def health_check():
-    """Return the basic service liveness response."""
+    """Return liveness plus a sanitized deployment revision when available."""
     return HealthCheckResponse(
         status="healthy",
         service="pdf-ocr-service",
+        revision=runtime_build_revision(),
     )
 
 
