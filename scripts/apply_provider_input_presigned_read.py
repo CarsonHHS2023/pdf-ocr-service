@@ -78,6 +78,44 @@ _SERVICE_POLICY_ROUTED = '''            public_origin=settings.public_source_tra
                 timeout_seconds=ATLAS_PROVIDER_ORCHESTRATION_TIMEOUT_SECONDS,
 '''
 
+_DELIVERY_CLEANUP_ANCHOR = '''                except Exception:
+                    logger.exception(
+                        "Could not delete temporary geometry PDF document_id=%s processing_attempt_id=%s",
+                        document_id,
+                        ids.processing_attempt_id,
+                    )
+            else:
+'''
+_DELIVERY_CLEANUP_ROUTED = '''                except Exception:
+                    logger.exception(
+                        "Could not delete temporary geometry PDF document_id=%s processing_attempt_id=%s",
+                        document_id,
+                        ids.processing_attempt_id,
+                    )
+                try:
+                    provider_delivery = provider_delivery_descriptor(geometry_input)
+                    if (
+                        provider_delivery.storage_reference
+                        != geometry_input.storage_reference
+                        and storage.exists(provider_delivery.storage_reference)
+                    ):
+                        storage.delete(provider_delivery.storage_reference)
+                        _diagnostic(
+                            "PDF_PROVIDER_DELIVERY_INPUT_DELETED",
+                            document_id=document_id,
+                            processing_attempt_id=ids.processing_attempt_id,
+                            byte_size=provider_delivery.byte_size,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Could not delete temporary provider delivery PDF "
+                        "document_id=%s processing_attempt_id=%s",
+                        document_id,
+                        ids.processing_attempt_id,
+                    )
+            else:
+'''
+
 _DEFERRED_STORE_ANCHOR = '''    from app.storage.dependencies import get_storage_provider
 
     storage = get_storage_provider()
@@ -184,6 +222,12 @@ def patch_pdf_ingestion(path: Path = PDF_INGESTION_PATH) -> None:
         _SERVICE_POLICY_ANCHOR,
         _SERVICE_POLICY_ROUTED,
         "single-job provider lifecycle policy",
+    )
+    source = _replace_once(
+        source,
+        _DELIVERY_CLEANUP_ANCHOR,
+        _DELIVERY_CLEANUP_ROUTED,
+        "provider delivery cleanup",
     )
     path.write_text(source, encoding="utf-8")
 
