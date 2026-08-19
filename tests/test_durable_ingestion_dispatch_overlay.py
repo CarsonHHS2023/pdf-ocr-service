@@ -7,6 +7,7 @@ import pytest
 
 from scripts.apply_direct_durable_ingestion_dispatch import patch_direct_durable_dispatch
 from scripts.apply_durable_ingestion_dispatch import patch_resumable_durable_dispatch
+from scripts.apply_ingestion_dispatch_supervisor import patch_ingestion_dispatch_supervisor
 from scripts.apply_legacy_durable_ingestion_dispatch import patch_legacy_durable_dispatch
 
 
@@ -256,12 +257,91 @@ def test_legacy_txt_acceptance_survives_task_registration_crash(tmp_path: Path) 
         engine.dispose()
 
 
-def test_staging_workspace_installs_all_durable_upload_paths_from_one_entrypoint() -> None:
+def test_supervisor_overlay_reuses_single_recovery_loop_and_shutdown_cleanup(tmp_path: Path) -> None:
+    path = tmp_path / "main.py"
+    source = _raw_source("app/main.py")
+    assert "Durable ingestion dispatch startup recovery" not in source
+    path.write_text(source, encoding="utf-8")
+
+    patch_ingestion_dispatch_supervisor(path)
+    transformed = path.read_text(encoding="utf-8")
+
+    assert transformed.count("await asyncio.sleep(S0_STALE_RECOVERY_SWEEP_SECONDS)") == 1
+    assert "recover_ingestion_dispatches" in transformed
+    assert "run_ingestion_dispatch" in transformed
+    assert "_ingestion_dispatch_tasks: dict[str, asyncio.Task] = {}" in transformed
+    assert "await _recover_and_kick_ingestion_dispatches(" in transformed
+    assert "await asyncio.gather(*dispatch_tasks, return_exceptions=True)" in transformed
+
+    loop_start = transformed.index("async def _stale_processing_run_recovery_loop()")
+    loop_end = transformed.index('@app.get("/")', loop_start)
+    loop = transformed[loop_start:loop_end]
+    assert "_recover_and_kick_ingestion_dispatches" in loop
+    s0_error = loop[
+        loop.index('logger.exception("S0 stale ProcessingRun recovery sweep failed open")') :
+        loop.index("await _recover_and_kick_ingestion_dispatches")
+    ]
+    assert "continue" not in s0_error
+
+    startup_start = transformed.index("async def startup_event()")
+    shutdown_start = transformed.index("async def shutdown_event()", startup_start)
+    startup = transformed[startup_start:shutdown_start]
+    assert startup.index("init_db()") < startup.index(
+        '"Durable ingestion dispatch startup recovery"'
+    )
+
+    first = transformed
+    patch_ingestion_dispatch_supervisor(path)
+    assert path.read_text(encoding="utf-8") == first
+    compile(first, str(path), "exec")
+
+
+def test_staging_supervisor_deduplicates_local_dispatch_tasks(monkeypatch) -> None:
+    import asyncio
+
+    from app import main as app_main
+
+    if not hasattr(app_main, "_kick_ingestion_dispatch"):
+        pytest.skip("raw/unit environment has not installed durable dispatch supervisor")
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls: list[str] = []
+
+        async def runner(dispatch_id: str):
+            calls.append(dispatch_id)
+            started.set()
+            await release.wait()
+            return True
+
+        monkeypatch.setattr(app_main, "run_ingestion_dispatch", runner)
+        app_main._ingestion_dispatch_tasks.clear()
+
+        first = app_main._kick_ingestion_dispatch("dispatch-test-1")
+        second = app_main._kick_ingestion_dispatch("dispatch-test-1")
+        assert second is first
+        await started.wait()
+        assert calls == ["dispatch-test-1"]
+        assert app_main._ingestion_dispatch_tasks["dispatch-test-1"] is first
+
+        release.set()
+        await first
+        await asyncio.sleep(0)
+        assert "dispatch-test-1" not in app_main._ingestion_dispatch_tasks
+
+    asyncio.run(scenario())
+
+
+def test_staging_workspace_installs_all_durable_paths_and_supervisor_from_one_entrypoint() -> None:
     resumable = Path("app/routers/resumable_upload.py").read_text(encoding="utf-8")
     direct = Path("app/routers/direct_upload.py").read_text(encoding="utf-8")
     legacy = Path("app/routers/ocr.py").read_text(encoding="utf-8")
+    main = Path("app/main.py").read_text(encoding="utf-8")
     if "RESUMABLE_UPLOAD_COMPLETE_IDEMPOTENT" not in resumable:
         pytest.skip("raw/unit environment has not installed staging durable overlays")
     assert "DIRECT_UPLOAD_COMPLETE_IDEMPOTENT" in direct
     assert "legacy_acceptance_key" in legacy
     assert "background_tasks.add_task(run_ingestion_dispatch, accepted.dispatch_id)" in legacy
+    assert "Durable ingestion dispatch startup recovery" in main
+    assert main.count("await asyncio.sleep(S0_STALE_RECOVERY_SWEEP_SECONDS)") == 1
