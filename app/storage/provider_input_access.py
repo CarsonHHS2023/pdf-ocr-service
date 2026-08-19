@@ -108,16 +108,11 @@ def generate_existing_provider_read_url(
 
 
 class ProviderInputStorageRouter:
-    """Place one run's provider-input refs remotely when possible, otherwise locally."""
+    """Place provider-input refs remotely when possible, otherwise use existing storage."""
 
     def __init__(self, storage: object) -> None:
         self.storage = storage
         self.remote = presigned_provider_storage(storage)
-        self._remote_references: set[str] = set()
-
-    @staticmethod
-    def _key(reference: StorageReference | str) -> str:
-        return StorageReference.parse(str(reference)).value
 
     def put(
         self,
@@ -129,7 +124,7 @@ class ProviderInputStorageRouter:
     ) -> PutResult:
         if self.remote is not None:
             try:
-                result = self.remote.put(
+                return self.remote.put(
                     data,
                     reference,
                     expected_size=expected_size,
@@ -144,9 +139,6 @@ class ProviderInputStorageRouter:
                 # Recoverable federated-secondary outages must not force S0 to
                 # run a second time. The exact already-produced bytes are placed
                 # by the existing primary instead.
-            else:
-                self._remote_references.add(self._key(result.reference))
-                return result
         return self.storage.put(
             data,
             reference,
@@ -159,31 +151,13 @@ class ProviderInputStorageRouter:
 
     def delete(self, reference: StorageReference | str) -> None:
         self.storage.delete(reference)
-        self._remote_references.discard(self._key(reference))
 
     def exists(self, reference: StorageReference | str) -> bool:
         return bool(self.storage.exists(reference))
 
-    def placed_remotely(self, reference: StorageReference | str) -> bool:
-        return self._key(reference) in self._remote_references
-
-    def generate_provider_read_url(
-        self,
-        reference: StorageReference | str,
-        *,
-        expires_seconds: int,
-    ) -> str:
-        if self.remote is None or not self.placed_remotely(reference):
-            raise ProviderUnavailable("Provider input is not available from presigned storage")
-        return generate_presigned_provider_get_url(
-            self.remote,
-            reference,
-            expires_seconds=expires_seconds,
-        )
-
 
 def select_provider_input_storage(storage: object) -> ProviderInputStorageRouter:
-    """Return a run-local router that prefers durable remote provider-input placement."""
+    """Return a router that prefers durable remote provider-input placement."""
     return ProviderInputStorageRouter(storage)
 
 
