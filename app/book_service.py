@@ -47,7 +47,7 @@ class BookService:
             txt_content: Processed TXT content
             file_type: File type ("pdf" or "txt")
             author: Book author (optional)
-            publication_date: Publication date (optional)
+            publication_date: Book publication date (optional)
             pages_count: Number of pages (optional)
 
         Returns:
@@ -132,7 +132,7 @@ class BookService:
     @staticmethod
     def get_book_content(db: Session, book_id: str) -> str | None:
         """
-        Get book content by ID.
+        Get book content from processed file.
 
         Args:
             db: Database session
