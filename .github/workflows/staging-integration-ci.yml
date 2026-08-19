@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: staging-backend-ci-${{ github.workflow }}-${{ github.ref }}
+  group: staging-backend-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -40,6 +40,9 @@ jobs:
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -79,6 +82,7 @@ jobs:
           grep -q 'install_s0_bounded_v4_output_compat' app/processing/pdf_ingestion.py
           grep -q 'install_provider_transport_sharding_compat' app/processing/pdf_ingestion.py
           grep -q 'install_opencv_page_heartbeat_probe' app/processing/pdf_ingestion.py
+          grep -q 'await_with_pdf_processing_lease' app/processing/pdf_ingestion.py
           grep -q 'validate_provider_runtime_configuration(settings)' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase1_shared_analysis' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase0_observability' app/processing/pdf_ingestion.py
@@ -110,9 +114,6 @@ jobs:
             tests/test_postgresql_schema_integration.py \
             tests/test_postgresql_book_delete.py
 
-      # These tests exercise contracts that remain valid after the deployment
-      # overlay chain has been installed. Unit tests that intentionally construct
-      # pre-overlay compatibility types stay in Required Backend CI instead.
       - name: Run production-equivalent staging contracts
         run: |
           python -m pytest -q \
@@ -148,4 +149,221 @@ jobs:
             tests/test_s0_v5_phase0_observability.py \
             tests/test_s0_v5_phase1_shared_analysis.py \
             tests/test_provider_runtime_preflight.py \
-            tests/test_s0_stale_processing_run_recovery.py
+            tests/test_s0_stale_processing_run_recovery.py \
+            tests/test_staging_deployment_contract.py
+
+      - name: Prepare exact tested staging artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$GITHUB_SHA" > staging-revision.txt
+          test "$(cat staging-revision.txt)" = "$GITHUB_SHA"
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.pytest_cache' \
+            -czf /tmp/atlas-staging-tested.tar.gz .
+          sha256sum /tmp/atlas-staging-tested.tar.gz
+
+      - name: Retain exact tested staging artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-staging-tested-${{ github.sha }}
+          path: /tmp/atlas-staging-tested.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    needs: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact tested staging head for remote guard
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+
+      - name: Verify tested commit is still remote staging head
+        run: |
+          set -euo pipefail
+          local_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote origin refs/heads/staging | awk '{print $1}')"
+          if [[ "$local_sha" != "$GITHUB_SHA" || "$remote_sha" != "$GITHUB_SHA" ]]; then
+            echo "Refusing stale staging deploy: event=${GITHUB_SHA} local=${local_sha} remote=${remote_sha}" >&2
+            exit 1
+          fi
+
+      - name: Download exact tested staging artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-staging-tested-${{ github.sha }}
+          path: /tmp/atlas-staging-artifact
+
+      - name: Verify and unpack exact tested artifact
+        run: |
+          set -euo pipefail
+          test -f /tmp/atlas-staging-artifact/atlas-staging-tested.tar.gz
+          rm -rf /tmp/atlas-staging-deploy
+          mkdir -p /tmp/atlas-staging-deploy
+          tar -xzf /tmp/atlas-staging-artifact/atlas-staging-tested.tar.gz -C /tmp/atlas-staging-deploy
+          test "$(cat /tmp/atlas-staging-deploy/staging-revision.txt)" = "$GITHUB_SHA"
+          python -m py_compile \
+            /tmp/atlas-staging-deploy/app/main.py \
+            /tmp/atlas-staging-deploy/app/routers/health.py \
+            /tmp/atlas-staging-deploy/app/processing/pdf_ingestion.py \
+            /tmp/atlas-staging-deploy/app/processing/s0_provider_wait_lease.py \
+            /tmp/atlas-staging-deploy/app/processing/s0_v5_phase1_shared_analysis_compat.py \
+            /tmp/atlas-staging-deploy/app/processing/s0_v5_phase1_shared_cache.py \
+            /tmp/atlas-staging-deploy/app/processing/s0_v5_phase1_shared_v4.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Hugging Face client
+        run: python -m pip install --disable-pip-version-check -q huggingface-hub
+
+      - name: Recheck remote staging head immediately before upload
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin refs/heads/staging | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Upload tested artifact and verify exact HF runtime revision
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          STAGING_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          from huggingface_hub import HfApi
+
+          token = os.environ['HF_TOKEN']
+          sha = os.environ['STAGING_SHA']
+          repo_id = 'carsonhhs/pdf-ocr-service-staging'
+          health_url = 'https://carsonhhs-pdf-ocr-service-staging.hf.space/api/v1/health'
+          api = HfApi(token=token)
+          intermediate_stages = {
+              'BUILDING',
+              'RUNNING_BUILDING',
+              'APP_STARTING',
+              'RUNNING_APP_STARTING',
+          }
+
+          def describe(label, runtime):
+              print(
+                  f'{label}: stage={runtime.stage} '
+                  f'hardware={runtime.hardware} '
+                  f'requested_hardware={runtime.requested_hardware}'
+              )
+
+          def dump_log_tail():
+              for build in (False, True):
+                  kind = 'build' if build else 'run'
+                  try:
+                      lines = [
+                          str(line).rstrip('\n')[:2000]
+                          for line in api.fetch_space_logs(
+                              repo_id,
+                              build=build,
+                              follow=False,
+                          )
+                      ]
+                  except Exception as exc:
+                      print(f'Unable to fetch HF {kind} logs: {exc!r}')
+                      continue
+                  print(f'--- HF {kind} log tail ({min(len(lines), 120)} lines) ---')
+                  for line in lines[-120:]:
+                      print(line)
+
+          before = api.get_space_runtime(repo_id)
+          describe('HF runtime before upload', before)
+
+          print(f'Uploading tested staging artifact for exact head {sha} to {repo_id}...')
+          info = api.upload_folder(
+              folder_path='/tmp/atlas-staging-deploy',
+              repo_id=repo_id,
+              repo_type='space',
+              commit_message=f'Deploy tested staging {sha}',
+          )
+          print(info)
+
+          after_upload = api.get_space_runtime(repo_id)
+          describe('HF runtime after upload', after_upload)
+          if after_upload.stage not in intermediate_stages:
+              print(
+                  'No active HF build/start transition observed after upload; '
+                  f'forcing a restart from the latest Space revision (stage={after_upload.stage}).'
+              )
+              restarted = api.restart_space(repo_id)
+              describe('HF runtime after restart request', restarted)
+
+          try:
+              final = api.wait_for_space(repo_id, timeout=600, poll_interval=5)
+          except TimeoutError:
+              print('Timed out waiting for HF staging Space to reach a terminal runtime stage.')
+              dump_log_tail()
+              raise
+
+          describe('HF runtime final', final)
+          if final.stage != 'RUNNING':
+              dump_log_tail()
+              raise RuntimeError(
+                  f'HF staging Space did not become RUNNING; final stage={final.stage}'
+              )
+
+          deadline = time.monotonic() + 90
+          last_health_error = None
+          while time.monotonic() < deadline:
+              try:
+                  with urllib.request.urlopen(health_url, timeout=10) as response:
+                      payload = json.loads(response.read(4096).decode('utf-8'))
+                      if (
+                          response.status == 200
+                          and payload.get('status') == 'healthy'
+                          and payload.get('service') == 'pdf-ocr-service'
+                          and payload.get('revision') == sha
+                      ):
+                          print(
+                              f'HF staging exact runtime revision verified: {sha} '
+                              f'at {health_url}'
+                          )
+                          break
+                      last_health_error = RuntimeError(
+                          f'unexpected health/revision response: '
+                          f'status={response.status} payload={payload!r} expected_revision={sha}'
+                      )
+              except Exception as exc:
+                  last_health_error = exc
+              print(f'HF staging exact revision is not ready yet: {last_health_error!r}')
+              time.sleep(5)
+          else:
+              dump_log_tail()
+              raise RuntimeError(
+                  f'HF staging runtime is RUNNING but exact revision verification failed: '
+                  f'{last_health_error!r}'
+              )
+          PY
+
+      - name: Verify staging head remained current after deployment
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin refs/heads/staging | awk '{print $1}')"
+          if [[ "$remote_sha" != "$GITHUB_SHA" ]]; then
+            echo "Staging advanced during deployment; this run is not authoritative: event=${GITHUB_SHA} remote=${remote_sha}" >&2
+            exit 1
+          fi
+          echo "HF Staging is running exact tested revision $GITHUB_SHA"
