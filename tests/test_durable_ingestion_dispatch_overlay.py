@@ -33,10 +33,17 @@ def test_resumable_overlay_installs_durable_acceptance_before_spool_lookup(tmp_p
     assert "retain_and_commit_ingestion" in transformed
     assert "run_ingestion_dispatch" in transformed
     assert "RESUMABLE_UPLOAD_COMPLETE_IDEMPOTENT" in transformed
-    assert transformed.index("existing = find_accepted_ingestion") < transformed.index("metadata = _load_metadata")
-    assert "background_tasks.add_task(run_ingestion_dispatch, existing.dispatch_id)" in transformed
-    assert "background_tasks.add_task(run_ingestion_dispatch, accepted.dispatch_id)" in transformed
-    assert "cleanup_on_db_failure=False" in transformed
+
+    complete_start = transformed.index(
+        '@router.post("/{upload_id}/complete", response_model=UploadBookResponse)'
+    )
+    complete_source = transformed[complete_start:]
+    assert complete_source.index("existing = find_accepted_ingestion") < complete_source.index(
+        "metadata = _load_metadata"
+    )
+    assert "background_tasks.add_task(run_ingestion_dispatch, existing.dispatch_id)" in complete_source
+    assert "background_tasks.add_task(run_ingestion_dispatch, accepted.dispatch_id)" in complete_source
+    assert "cleanup_on_db_failure=False" in complete_source
 
     first = transformed
     patch_resumable_durable_dispatch(path)
