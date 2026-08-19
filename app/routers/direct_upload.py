@@ -69,19 +69,23 @@ def _runtime():
     return provider, secret
 
 
+def _enforce_application_source_size(byte_size: int) -> None:
+    try:
+        validate_book_source_size(int(byte_size), settings)
+    except BookSourceTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
+
+
 def _validate_pdf_request(request: DirectUploadCreateRequest) -> tuple[str, str]:
     filename = request.filename.strip()
     if not filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     if Path(filename).suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="Direct upload currently supports PDF files only")
-    try:
-        validate_book_source_size(int(request.byte_size), settings)
-    except BookSourceTooLarge as exc:
-        raise HTTPException(
-            status_code=413,
-            detail="Book source exceeds the current application upload limit",
-        ) from exc
+    _enforce_application_source_size(request.byte_size)
     if request.byte_size > int(settings.direct_upload_single_put_max_bytes):
         raise HTTPException(
             status_code=413,
@@ -126,8 +130,8 @@ def _response_for_existing(document: Document, source: SourceFile, claims: Direc
 
 @router.post("", response_model=DirectUploadCreateResponse)
 def create_direct_upload_session(request: DirectUploadCreateRequest) -> DirectUploadCreateResponse:
-    provider, secret = _runtime()
     filename, checksum = _validate_pdf_request(request)
+    provider, secret = _runtime()
     upload_id = uuid.uuid4().hex
     document_id = str(uuid.uuid4())
     source_file_id = str(uuid.uuid4())
@@ -185,6 +189,7 @@ def complete_direct_upload_session(
     complete_started = time.perf_counter()
     provider, secret = _runtime()
     claims = _claims_from_token(upload_id, request.completion_token, secret)
+    _enforce_application_source_size(claims.byte_size)
     reference = StorageReference.parse(claims.storage_reference)
 
     existing_document = db.get(Document, claims.document_id)
