@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     processing_operator_enabled: bool = Field(default=False, validation_alias="ATLAS_PROCESSING_OPERATOR_ENABLED")
     processing_operator_token: str | None = Field(default=None, validation_alias="ATLAS_PROCESSING_OPERATOR_TOKEN", repr=False)
 
+    # Application-level retained-source admission. Current PDF/TXT processing
+    # materializes retained sources as bytes, so transport layers must not imply
+    # support for sources larger than this ceiling.
+    book_source_max_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        validation_alias="ATLAS_BOOK_SOURCE_MAX_BYTES",
+    )
+
     # Browser -> S3-compatible object storage direct upload. This is opt-in so
     # Production and existing Staging deployments retain current behavior until
     # a private bucket, credentials, CORS, and a signing secret are configured.
