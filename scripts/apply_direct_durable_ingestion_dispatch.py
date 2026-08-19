@@ -45,20 +45,21 @@ def complete_direct_upload_session(
     claims = _claims_from_token(upload_id, request.completion_token, secret)
     acceptance_key = direct_acceptance_key(claims.upload_id)
 
-    try:
-        existing = find_accepted_ingestion(
-            db,
-            acceptance_key,
-            expected_document_id=claims.document_id,
-            expected_source_file_id=claims.source_file_id,
-            expected_storage_reference=claims.storage_reference,
-            expected_byte_size=claims.byte_size,
-            expected_checksum_sha256=claims.checksum_sha256,
-        )
-    except IngestionAcceptanceError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    def _lookup_durable_acceptance():
+        try:
+            return find_accepted_ingestion(
+                db,
+                acceptance_key,
+                expected_document_id=claims.document_id,
+                expected_source_file_id=claims.source_file_id,
+                expected_storage_reference=claims.storage_reference,
+                expected_byte_size=claims.byte_size,
+                expected_checksum_sha256=claims.checksum_sha256,
+            )
+        except IngestionAcceptanceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    if existing is not None:
+    def _return_durable_existing(existing):
         background_tasks.add_task(run_ingestion_dispatch, existing.dispatch_id)
         existing_document = db.get(Document, existing.document_id)
         existing_source = db.get(SourceFile, existing.source_file_id)
@@ -72,6 +73,10 @@ def complete_direct_upload_session(
             existing.response.status,
         )
         return _response_for_existing(existing_document, existing_source, claims)
+
+    existing = _lookup_durable_acceptance()
+    if existing is not None:
+        return _return_durable_existing(existing)
 
     # Rollout compatibility: direct uploads committed before durable dispatch
     # existed have deterministic Document/Source ids from their signed claims but
@@ -106,10 +111,20 @@ def complete_direct_upload_session(
             expected_content_type=claims.content_type,
         )
     except ObjectNotFound as exc:
+        # A concurrent completion may have committed the same deterministic
+        # acceptance and deleted the shared ingress between our initial lookup
+        # and publish attempt. Re-check durable business state before reporting
+        # an upload failure.
+        winner = _lookup_durable_acceptance()
+        if winner is not None:
+            return _return_durable_existing(winner)
         raise HTTPException(status_code=409, detail="Direct upload object has not completed") from exc
     except IntegrityMismatch as exc:
         raise HTTPException(status_code=409, detail="Direct upload object failed integrity validation") from exc
     except StorageError as exc:
+        winner = _lookup_durable_acceptance()
+        if winner is not None:
+            return _return_durable_existing(winner)
         logger.exception("Direct upload publish failed upload_id=%s", claims.upload_id)
         raise HTTPException(status_code=503, detail="Direct object upload could not be committed") from exc
     publish_ms = (time.perf_counter() - publish_started) * 1000.0
