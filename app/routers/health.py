@@ -30,7 +30,11 @@ def runtime_build_revision() -> str | None:
     return value if _REVISION_RE.fullmatch(value) else None
 
 
-@router.get("/health", response_model=HealthCheckResponse)
+@router.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    response_model_exclude_none=True,
+)
 async def health_check():
     """Return liveness plus a sanitized deployment revision when available."""
     return HealthCheckResponse(
