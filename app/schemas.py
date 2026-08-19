@@ -9,6 +9,7 @@ from pydantic import BaseModel
 class HealthCheckResponse(BaseModel):
     status: str
     service: str
+    revision: Optional[str] = None
 
 
 class StructureRefinementImagePolicyResponse(BaseModel):
@@ -102,13 +103,13 @@ class BookSchema(BaseModel):
 
 
 class BooksListSchema(BaseModel):
-    """Response for books list endpoint."""
+    """Response for bookshelf list."""
     books: list[BookSchema]
     total: int
 
 
 class BookDetailSchema(BaseModel):
-    """Response for book detail endpoint."""
+    """Response for book detail."""
     book_id: str
     book_title: str
     author: Optional[str] = None
@@ -116,28 +117,12 @@ class BookDetailSchema(BaseModel):
     pages_count: Optional[int] = None
     file_type: str = ""
     status: str = "completed"
-    processed_file_path: Optional[str] = None
-    original_file_path: Optional[str] = None
     error_message: Optional[str] = None
-    created_at: datetime
-
-
-class BookContentSchema(BaseModel):
-    """Response for book content endpoint."""
-    book_id: str
-    book_title: str
-    content: str
-
-
-class PDFUploadResponse(BaseModel):
-    """Response for PDF upload."""
-    book_id: str
-    book_title: str
-    message: str
+    created_at: Optional[datetime] = None
 
 
 class UploadBookResponse(BaseModel):
-    """Response for the unified PDF/TXT upload endpoint."""
+    """Response returned when a book upload is accepted."""
     book_id: str
     book_title: str
     file_type: str
@@ -146,3 +131,9 @@ class UploadBookResponse(BaseModel):
     original_file_path: Optional[str] = None
     error_message: Optional[str] = None
     message: str
+
+
+class BookContentSchema(BaseModel):
+    """Response for book content."""
+    book_id: str
+    content: list[dict[str, Any]]
