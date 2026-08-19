@@ -44,15 +44,17 @@ def test_shared_staging_space_has_one_authoritative_writer() -> None:
     assert writers == ["staging-integration-ci.yml"]
 
 
-def test_staging_deploy_uses_same_artifact_that_passed_integration() -> None:
+def test_staging_deploy_uses_verified_artifact_from_integration() -> None:
     source = (WORKFLOWS / "staging-integration-ci.yml").read_text(encoding="utf-8")
 
-    assert "deploy:" in source
+    assert "artifact_verification:" in source
     assert "needs: integration" in source
+    assert "deploy:" in source
+    assert "needs: artifact_verification" in source
     assert "github.event_name == 'push'" in source
     assert "github.ref == 'refs/heads/staging'" in source
     assert "actions/upload-artifact@v4" in source
-    assert "actions/download-artifact@v4" in source
+    assert source.count("actions/download-artifact@v4") >= 2
     assert "atlas-staging-tested-${{ github.sha }}" in source
     assert "staging-revision.txt" in source
     assert "refs/heads/staging" in source
