@@ -189,7 +189,6 @@ def complete_direct_upload_session(
     complete_started = time.perf_counter()
     provider, secret = _runtime()
     claims = _claims_from_token(upload_id, request.completion_token, secret)
-    _enforce_application_source_size(claims.byte_size)
     reference = StorageReference.parse(claims.storage_reference)
 
     existing_document = db.get(Document, claims.document_id)
@@ -198,6 +197,8 @@ def complete_direct_upload_session(
         if existing_source is None:
             raise HTTPException(status_code=409, detail="Existing direct upload source metadata is incomplete")
         return _response_for_existing(existing_document, existing_source, claims)
+
+    _enforce_application_source_size(claims.byte_size)
 
     publish_started = time.perf_counter()
     try:
