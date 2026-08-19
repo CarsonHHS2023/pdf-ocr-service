@@ -3,9 +3,9 @@
 The general StorageProvider contract deliberately stays bytes-first and keeps
 federated writes on the legacy primary. Provider-input PDFs are different: they
 are large, temporary execution artifacts that a remote OCR provider must read.
-When a federated durable S3-compatible secondary is available, this module makes
-that placement explicit and can issue a short-lived HTTPS GetObject URL without
-routing the object bytes back through the Atlas web process.
+This adapter attempts one durable S3-compatible secondary write using the bytes
+already produced by S0, but falls back to the existing storage placement for a
+recoverable remote outage without re-running preprocessing.
 """
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import math
 import re
 from urllib.parse import urlparse
 
-from app.storage.errors import ProviderUnavailable
-from app.storage.models import StorageReference
+from app.storage.errors import ProviderUnavailable, WriteFailure
+from app.storage.models import PutResult, StorageReference
 
 
 _CONTROL_OR_WHITESPACE_RE = re.compile(r"[\x00-\x20\x7f]")
@@ -31,14 +31,6 @@ def _presigned_get_capable(provider: object) -> bool:
         and bool(str(getattr(provider, "bucket", "")).strip())
         and callable(getattr(provider, "object_key", None))
     )
-
-
-def select_provider_input_storage(storage: object) -> object:
-    """Prefer a presign-capable federated secondary for provider-input writes."""
-    secondary = getattr(storage, "secondary", None)
-    if secondary is not None and _presigned_get_capable(secondary):
-        return secondary
-    return storage
 
 
 def generate_presigned_provider_get_url(
@@ -81,7 +73,85 @@ def generate_presigned_provider_get_url(
     return text
 
 
+class ProviderInputStorageRouter:
+    """Place one run's provider-input refs remotely when possible, otherwise locally."""
+
+    def __init__(self, storage: object) -> None:
+        self.storage = storage
+        secondary = getattr(storage, "secondary", None)
+        self.remote = secondary if _presigned_get_capable(secondary) else None
+        self._remote_references: set[str] = set()
+
+    @staticmethod
+    def _key(reference: StorageReference | str) -> str:
+        return StorageReference.parse(str(reference)).value
+
+    def put(
+        self,
+        data: bytes,
+        reference: StorageReference | str | None = None,
+        *,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
+    ) -> PutResult:
+        if self.remote is not None:
+            try:
+                result = self.remote.put(
+                    data,
+                    reference,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                )
+            except (ProviderUnavailable, WriteFailure):
+                # Recoverable object-store outages must not force S0 to run a
+                # second time. The exact already-produced bytes are placed by
+                # the existing StorageProvider instead.
+                pass
+            else:
+                self._remote_references.add(self._key(result.reference))
+                return result
+        return self.storage.put(
+            data,
+            reference,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
+
+    def get(self, reference: StorageReference | str) -> bytes:
+        return self.storage.get(reference)
+
+    def delete(self, reference: StorageReference | str) -> None:
+        self.storage.delete(reference)
+        self._remote_references.discard(self._key(reference))
+
+    def exists(self, reference: StorageReference | str) -> bool:
+        return bool(self.storage.exists(reference))
+
+    def placed_remotely(self, reference: StorageReference | str) -> bool:
+        return self._key(reference) in self._remote_references
+
+    def generate_provider_read_url(
+        self,
+        reference: StorageReference | str,
+        *,
+        expires_seconds: int,
+    ) -> str:
+        if self.remote is None or not self.placed_remotely(reference):
+            raise ProviderUnavailable("Provider input is not available from presigned storage")
+        return generate_presigned_provider_get_url(
+            self.remote,
+            reference,
+            expires_seconds=expires_seconds,
+        )
+
+
+def select_provider_input_storage(storage: object) -> ProviderInputStorageRouter:
+    """Return a run-local router that prefers durable remote provider-input placement."""
+    return ProviderInputStorageRouter(storage)
+
+
 __all__ = [
+    "ProviderInputStorageRouter",
     "generate_presigned_provider_get_url",
     "select_provider_input_storage",
 ]
