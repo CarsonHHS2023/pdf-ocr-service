@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -150,14 +151,27 @@ def test_txt_processing_rejects_oversize_before_storage_get(monkeypatch) -> None
     assert session.closed is True
 
 
-def _copy(tmp_path: Path, source: Path) -> Path:
+def _committed_text(source: Path) -> str:
+    """Read the checked-out commit, not the CI workspace after overlays mutate it."""
+    relative = source.relative_to(REPO_ROOT).as_posix()
+    completed = subprocess.run(
+        ["git", "show", f"HEAD:{relative}"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
+def _copy_committed(tmp_path: Path, source: Path) -> Path:
     target = tmp_path / source.name
-    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    target.write_text(_committed_text(source), encoding="utf-8")
     return target
 
 
 def test_pdf_admission_preserves_heartbeat_overlay_preprocessing_anchor(tmp_path) -> None:
-    candidate = _copy(tmp_path, BASE_PDF_INGESTION)
+    candidate = _copy_committed(tmp_path, BASE_PDF_INGESTION)
 
     patch_s0_pdf_resource_heartbeat(candidate)
     transformed = candidate.read_text(encoding="utf-8")
@@ -170,9 +184,9 @@ def test_pdf_admission_preserves_heartbeat_overlay_preprocessing_anchor(tmp_path
 def test_pdf_admission_composes_with_full_staging_provider_and_s0_overlay_chain(
     tmp_path,
 ) -> None:
-    ingestion = _copy(tmp_path, BASE_PDF_INGESTION)
-    lifecycle = _copy(tmp_path, BASE_PRESENTATION_LIFECYCLE)
-    sharding = _copy(tmp_path, BASE_PROVIDER_SHARDING)
+    ingestion = _copy_committed(tmp_path, BASE_PDF_INGESTION)
+    lifecycle = _copy_committed(tmp_path, BASE_PRESENTATION_LIFECYCLE)
+    sharding = _copy_committed(tmp_path, BASE_PROVIDER_SHARDING)
 
     patch_s0_pdf_resource_heartbeat(ingestion)
     patch_provider_runtime_preflight(ingestion)
