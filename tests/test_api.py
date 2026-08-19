@@ -19,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import get_db
 from app.main import app
 from app.models import Base
+from app.routers import ocr as ocr_router
 
 # ---------------------------------------------------------------------------
 # Test database fixture: in-memory SQLite, one DB per test
@@ -39,7 +40,7 @@ def _make_test_db():
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
     """TestClient with a fresh in-memory DB for every test."""
     TestingSessionLocal = _make_test_db()
 
@@ -49,6 +50,30 @@ def client():
             yield db
         finally:
             db.close()
+
+    # In the durable Staging overlay, BackgroundTasks kicks the real dispatch
+    # runner rather than importing a worker directly from this router. Keep that
+    # runner on the same in-memory database as the request, while deliberately
+    # suppressing terminal reconciliation because these API tests mock the
+    # worker as an immediate return and assert the upload response remains
+    # ``processing``. Focused dispatch tests cover real terminal/fencing logic.
+    if hasattr(ocr_router, "run_ingestion_dispatch"):
+        from app.processing import ingestion_dispatch as dispatch_module
+
+        durable_runner = ocr_router.run_ingestion_dispatch
+
+        async def run_test_dispatch(dispatch_id: str):
+            return await durable_runner(
+                dispatch_id,
+                session_factory=TestingSessionLocal,
+            )
+
+        monkeypatch.setattr(ocr_router, "run_ingestion_dispatch", run_test_dispatch)
+        monkeypatch.setattr(
+            dispatch_module,
+            "finalize_dispatch_from_document",
+            lambda _claim, *, session_factory: True,
+        )
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
@@ -68,13 +93,25 @@ def _txt_file_bytes(content: bytes, name: str = "test.txt"):
     return ("file", (name, io.BytesIO(content), "text/plain"))
 
 
+def _txt_runner_target() -> str:
+    if hasattr(ocr_router, "process_txt_document_background"):
+        return "app.routers.ocr.process_txt_document_background"
+    return "app.processing.txt.ingestion.process_txt_document_background"
+
+
+def _pdf_runner_target() -> str:
+    if hasattr(ocr_router, "process_pdf_document_background"):
+        return "app.routers.ocr.process_pdf_document_background"
+    return "app.processing.pdf_ingestion.process_pdf_document_background"
+
+
 def _upload_txt(client, content: str = "这是测试文本。\n第二行内容。", name: str = "test.txt"):
-    with patch("app.routers.ocr.process_txt_document_background"):
+    with patch(_txt_runner_target()):
         return client.post("/api/v1/upload", files=[_txt_file(content, name)])
 
 
 def _upload_txt_bytes(client, content: bytes, name: str = "test.txt"):
-    with patch("app.routers.ocr.process_txt_document_background"):
+    with patch(_txt_runner_target()):
         return client.post("/api/v1/upload", files=[_txt_file_bytes(content, name)])
 
 
@@ -115,7 +152,7 @@ class TestTXTUpload:
         assert resp.json()["original_file_path"] is None
 
     def test_txt_upload_queues_canonical_background_runner(self, client):
-        with patch("app.routers.ocr.process_txt_document_background") as runner:
+        with patch(_txt_runner_target()) as runner:
             resp = client.post("/api/v1/upload", files=[_txt_file("Book\nBody")])
         assert resp.status_code == 200
         assert resp.json()["status"] == "processing"
@@ -181,7 +218,7 @@ class TestPDFUploadMocked:
             return b"%PDF-1.4 fake"
 
     def test_pdf_upload_returns_processing(self, client):
-        with patch("app.routers.ocr.process_pdf_document_background"):
+        with patch(_pdf_runner_target()):
             pdf_bytes = self._make_minimal_pdf()
             resp = client.post(
                 "/api/v1/upload",
@@ -194,7 +231,7 @@ class TestPDFUploadMocked:
         assert data["status"] in ("processing", "failed")
 
     def test_pdf_upload_has_no_legacy_original_file_path(self, client):
-        with patch("app.routers.ocr.process_pdf_document_background"):
+        with patch(_pdf_runner_target()):
             pdf_bytes = self._make_minimal_pdf()
             resp = client.post(
                 "/api/v1/upload",
