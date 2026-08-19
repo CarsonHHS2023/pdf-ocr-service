@@ -22,7 +22,7 @@ async def upload_file(
 _NEXT_ROUTE = '''@router.post("/ocr/{task_id}", response_model=OCRProcessResponse)
 '''
 
-_UPLOAD_REPLACEMENT = '''@router.post("/upload", response_model=UploadBookResponse)
+_UPLOAD_REPLACEMENT = r'''@router.post("/upload", response_model=UploadBookResponse)
 async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
