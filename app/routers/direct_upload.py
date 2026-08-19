@@ -79,6 +79,27 @@ def _enforce_application_source_size(byte_size: int) -> None:
         ) from exc
 
 
+def _enforce_direct_completion_source_size(provider, claims: DirectUploadClaims) -> None:
+    try:
+        validate_book_source_size(int(claims.byte_size), settings)
+    except BookSourceTooLarge as exc:
+        # The browser may already have completed the ingress PUT before the
+        # application ceiling changed. This session is no longer admissible, so
+        # remove the otherwise-orphaned temporary ingress object. Cleanup is
+        # best-effort and must not turn a bounded 413 into an infrastructure 5xx.
+        try:
+            provider.delete_ingress(claims.upload_id)
+        except Exception:
+            logger.exception(
+                "Direct upload ingress cleanup failed after application admission rejection upload_id=%s",
+                claims.upload_id,
+            )
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
+
+
 def _validate_pdf_request(request: DirectUploadCreateRequest) -> tuple[str, str]:
     filename = request.filename.strip()
     if not filename or "/" in filename or "\\" in filename:
@@ -198,7 +219,7 @@ def complete_direct_upload_session(
             raise HTTPException(status_code=409, detail="Existing direct upload source metadata is incomplete")
         return _response_for_existing(existing_document, existing_source, claims)
 
-    _enforce_application_source_size(claims.byte_size)
+    _enforce_direct_completion_source_size(provider, claims)
 
     publish_started = time.perf_counter()
     try:
