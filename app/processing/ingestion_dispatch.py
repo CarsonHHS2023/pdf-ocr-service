@@ -305,6 +305,22 @@ def heartbeat_ingestion_dispatch(
         db.close()
 
 
+def _apply_failed_dispatch_fence(db: Session, claim: DispatchClaim) -> None:
+    current = db.get(IngestionDispatch, claim.dispatch_id)
+    if current is None or current.status != "failed":
+        return
+    document = db.get(Document, claim.document_id)
+    if document is None or document.status == "failed":
+        return
+    document.status = "failed"
+    document.error_message = (
+        current.error_message
+        or "Processing result was ignored because the durable ingestion claim was lost"
+    )
+    document.original_file_path = None
+    document.processed_file_path = None
+
+
 def _finish_claim(
     claim: DispatchClaim,
     *,
@@ -334,8 +350,17 @@ def _finish_claim(
                 error_message=error_message,
             )
         )
+        if result.rowcount == 1:
+            db.commit()
+            return True
+
+        # A stale-running recovery may have fenced this worker while it was
+        # stalled. The late worker is not allowed to make Document successful
+        # after losing its durable claim. Only an already-failed dispatch fences
+        # the document; an already-succeeded dispatch is left untouched.
+        _apply_failed_dispatch_fence(db, claim)
         db.commit()
-        return result.rowcount == 1
+        return False
     except Exception:
         db.rollback()
         raise
@@ -420,6 +445,8 @@ def finalize_dispatch_from_document(
                 error_message=message,
             )
         )
+        if result.rowcount == 0:
+            _apply_failed_dispatch_fence(db, claim)
         db.commit()
         return result.rowcount == 1
     except Exception:
