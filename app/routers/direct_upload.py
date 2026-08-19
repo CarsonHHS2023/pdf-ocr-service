@@ -25,6 +25,7 @@ from app.storage.direct_upload import (
 from app.storage.errors import IntegrityMismatch, ObjectNotFound, StorageError
 from app.storage.factory import create_object_storage_provider, object_storage_is_configured
 from app.storage.models import StorageReference
+from app.upload_policy import BookSourceTooLarge, validate_book_source_size
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/v1/direct-upload-sessions", tags=["direct-upload"])
@@ -74,6 +75,13 @@ def _validate_pdf_request(request: DirectUploadCreateRequest) -> tuple[str, str]
         raise HTTPException(status_code=400, detail="Invalid filename")
     if Path(filename).suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="Direct upload currently supports PDF files only")
+    try:
+        validate_book_source_size(int(request.byte_size), settings)
+    except BookSourceTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
     if request.byte_size > int(settings.direct_upload_single_put_max_bytes):
         raise HTTPException(
             status_code=413,
