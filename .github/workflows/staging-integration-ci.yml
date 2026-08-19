@@ -153,7 +153,6 @@ jobs:
             tests/test_staging_deployment_contract.py
 
       - name: Prepare exact tested staging artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
         run: |
           set -euo pipefail
           printf '%s\n' "$GITHUB_SHA" > staging-revision.txt
@@ -168,7 +167,6 @@ jobs:
           sha256sum /tmp/atlas-staging-tested.tar.gz
 
       - name: Retain exact tested staging artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
         uses: actions/upload-artifact@v4
         with:
           name: atlas-staging-tested-${{ github.sha }}
@@ -176,9 +174,43 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  artifact_verification:
+    needs: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Download exact tested staging artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-staging-tested-${{ github.sha }}
+          path: /tmp/atlas-staging-artifact
+
+      - name: Set up verification Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify artifact identity and deploy-critical modules
+        run: |
+          set -euo pipefail
+          test -f /tmp/atlas-staging-artifact/atlas-staging-tested.tar.gz
+          rm -rf /tmp/atlas-staging-verified
+          mkdir -p /tmp/atlas-staging-verified
+          tar -xzf /tmp/atlas-staging-artifact/atlas-staging-tested.tar.gz -C /tmp/atlas-staging-verified
+          test "$(cat /tmp/atlas-staging-verified/staging-revision.txt)" = "$GITHUB_SHA"
+          python -m py_compile \
+            /tmp/atlas-staging-verified/app/main.py \
+            /tmp/atlas-staging-verified/app/routers/health.py \
+            /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
+            /tmp/atlas-staging-verified/app/processing/s0_provider_wait_lease.py \
+            /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_analysis_compat.py \
+            /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_cache.py \
+            /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_v4.py
+
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
-    needs: integration
+    needs: artifact_verification
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -199,13 +231,13 @@ jobs:
             exit 1
           fi
 
-      - name: Download exact tested staging artifact
+      - name: Download verified staging artifact
         uses: actions/download-artifact@v4
         with:
           name: atlas-staging-tested-${{ github.sha }}
           path: /tmp/atlas-staging-artifact
 
-      - name: Verify and unpack exact tested artifact
+      - name: Unpack verified staging artifact
         run: |
           set -euo pipefail
           test -f /tmp/atlas-staging-artifact/atlas-staging-tested.tar.gz
@@ -213,14 +245,6 @@ jobs:
           mkdir -p /tmp/atlas-staging-deploy
           tar -xzf /tmp/atlas-staging-artifact/atlas-staging-tested.tar.gz -C /tmp/atlas-staging-deploy
           test "$(cat /tmp/atlas-staging-deploy/staging-revision.txt)" = "$GITHUB_SHA"
-          python -m py_compile \
-            /tmp/atlas-staging-deploy/app/main.py \
-            /tmp/atlas-staging-deploy/app/routers/health.py \
-            /tmp/atlas-staging-deploy/app/processing/pdf_ingestion.py \
-            /tmp/atlas-staging-deploy/app/processing/s0_provider_wait_lease.py \
-            /tmp/atlas-staging-deploy/app/processing/s0_v5_phase1_shared_analysis_compat.py \
-            /tmp/atlas-staging-deploy/app/processing/s0_v5_phase1_shared_cache.py \
-            /tmp/atlas-staging-deploy/app/processing/s0_v5_phase1_shared_v4.py
 
       - name: Set up Python
         uses: actions/setup-python@v5
