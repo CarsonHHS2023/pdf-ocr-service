@@ -91,6 +91,48 @@ def test_overlay_routes_exact_delivery_and_lifecycle_without_touching_provider_w
     assert "validate_provider_runtime_configuration(settings)" in source
 
 
+def test_overlay_cleanup_deletes_distinct_provider_delivery_only_when_safe(tmp_path) -> None:
+    ingestion, lifecycle, sharding = _targets(tmp_path)
+    _apply_required_predecessors(ingestion)
+    _apply_provider_overlay(ingestion, lifecycle, sharding)
+    source = ingestion.read_text(encoding="utf-8")
+
+    full_render_delete = source.index(
+        "storage.delete(geometry_input.storage_reference)"
+    )
+    delivery_descriptor = source.index(
+        "provider_delivery = provider_delivery_descriptor(geometry_input)",
+        full_render_delete,
+    )
+    distinct_guard = source.index(
+        "provider_delivery.storage_reference\n                        != geometry_input.storage_reference",
+        delivery_descriptor,
+    )
+    exists_guard = source.index(
+        "storage.exists(provider_delivery.storage_reference)",
+        distinct_guard,
+    )
+    delivery_delete = source.index(
+        "storage.delete(provider_delivery.storage_reference)",
+        exists_guard,
+    )
+    deleted_diagnostic = source.index(
+        '"PDF_PROVIDER_DELIVERY_INPUT_DELETED"',
+        delivery_delete,
+    )
+    retained_branch = source.index(
+        '"PDF_GEOMETRY_PROVIDER_INPUT_RETAINED"',
+        deleted_diagnostic,
+    )
+
+    # Both temporary objects are cleaned only inside the cleanup-safe branch.
+    # The provider delivery must be distinct from the full render and must
+    # actually exist before deletion, which keeps sharded/unmaterialized refs safe.
+    assert full_render_delete < delivery_descriptor < distinct_guard
+    assert distinct_guard < exists_guard < delivery_delete < deleted_diagnostic
+    assert deleted_diagnostic < retained_branch
+
+
 def test_overlay_remote_first_materializes_deferred_subset_and_each_shard(tmp_path) -> None:
     ingestion, lifecycle, sharding = _targets(tmp_path)
     _apply_required_predecessors(ingestion)
