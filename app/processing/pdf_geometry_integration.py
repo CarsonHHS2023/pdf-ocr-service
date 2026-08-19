@@ -43,32 +43,38 @@ class ProviderDeliveryDescriptor:
 
 
 def provider_delivery_descriptor(provider_input: Any) -> ProviderDeliveryDescriptor:
-    """Resolve provider subset fields when present, otherwise preserve legacy input."""
-    reference = getattr(provider_input, "provider_storage_reference", None)
-    if reference is None:
+    """Resolve one complete provider subset identity or the complete legacy identity."""
+    provider_field_names = (
+        "provider_storage_reference",
+        "provider_checksum_sha256",
+        "provider_byte_size",
+        "provider_filename",
+    )
+    provider_values = tuple(
+        getattr(provider_input, name, None) for name in provider_field_names
+    )
+    provider_present = tuple(value is not None for value in provider_values)
+    if any(provider_present) and not all(provider_present):
+        raise ValueError("provider delivery subset identity is incomplete")
+
+    if all(provider_present):
+        reference, checksum, byte_size, filename = provider_values
+    else:
         reference = getattr(provider_input, "storage_reference", None)
+        checksum = getattr(provider_input, "checksum_sha256", None)
+        byte_size = getattr(provider_input, "byte_size", None)
+        filename = getattr(provider_input, "filename", None)
+
     if not isinstance(reference, StorageReference):
         raise ValueError("provider delivery storage reference is invalid")
-
-    checksum = getattr(provider_input, "provider_checksum_sha256", None)
-    if checksum is None:
-        checksum = getattr(provider_input, "checksum_sha256", None)
     if not is_valid_sha256(checksum):
         raise ValueError("provider delivery checksum is invalid")
-
-    byte_size = getattr(provider_input, "provider_byte_size", None)
-    if byte_size is None:
-        byte_size = getattr(provider_input, "byte_size", None)
     if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 0:
         raise ValueError("provider delivery byte size is invalid")
 
     media_type = getattr(provider_input, "media_type", None)
     if not isinstance(media_type, str) or not media_type.strip():
         raise ValueError("provider delivery media type is invalid")
-
-    filename = getattr(provider_input, "provider_filename", None)
-    if filename is None:
-        filename = getattr(provider_input, "filename", None)
     if not isinstance(filename, str) or not filename.strip():
         raise ValueError("provider delivery filename is invalid")
 
