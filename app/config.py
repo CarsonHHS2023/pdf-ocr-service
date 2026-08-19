@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # support for sources larger than this ceiling.
     book_source_max_bytes: int = Field(
         default=100 * 1024 * 1024,
+        gt=0,
         validation_alias="ATLAS_BOOK_SOURCE_MAX_BYTES",
     )
 
