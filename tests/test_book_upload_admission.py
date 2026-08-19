@@ -215,13 +215,27 @@ def test_resumable_complete_rechecks_ceiling_if_policy_changed(monkeypatch, tmp_
     session_dir = resumable_upload._session_dir(created.upload_id)
     assert session_dir.is_dir()
 
+    db_placeholder = None
+    if hasattr(resumable_upload, "find_accepted_ingestion"):
+        # The durable overlay performs an authenticated DB acceptance lookup
+        # before consulting ephemeral spool metadata. This focused admission
+        # unit test supplies a sentinel DB and proves the "not yet accepted"
+        # branch without requiring a real session; runtime always receives a
+        # real FastAPI dependency.
+        db_placeholder = object()
+        monkeypatch.setattr(
+            resumable_upload,
+            "find_accepted_ingestion",
+            lambda _db, _acceptance_key: None,
+        )
+
     monkeypatch.setattr(resumable_upload.settings, "book_source_max_bytes", 5)
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
             resumable_upload.complete_upload_session(
                 created.upload_id,
                 BackgroundTasks(),
-                None,
+                db_placeholder,
                 None,
             )
         )
