@@ -7,6 +7,7 @@ focused Structured Content tests cover deterministic TXT decoding/recovery/runti
 
 from __future__ import annotations
 
+from datetime import datetime
 import io
 from unittest.mock import patch
 
@@ -18,7 +19,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
 from app.main import app
-from app.models import Base
+from app.models import Base, Document
+from app.processing.ingestion_dispatch_model import IngestionDispatch
 from app.routers import ocr as ocr_router
 
 # ---------------------------------------------------------------------------
@@ -77,6 +79,7 @@ def client(monkeypatch):
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
+        c._atlas_testing_session_factory = TestingSessionLocal
         yield c
     app.dependency_overrides.clear()
 
@@ -113,6 +116,26 @@ def _upload_txt(client, content: str = "这是测试文本。\n第二行内容�
 def _upload_txt_bytes(client, content: bytes, name: str = "test.txt"):
     with patch(_txt_runner_target()):
         return client.post("/api/v1/upload", files=[_txt_file_bytes(content, name)])
+
+
+def _mark_book_terminal_for_delete(client, book_id: str) -> None:
+    """Finish mocked processing so delete-success tests reflect production semantics."""
+    SessionLocal = client._atlas_testing_session_factory
+    db = SessionLocal()
+    try:
+        document = db.get(Document, book_id)
+        assert document is not None
+        document.status = "completed"
+        dispatch = db.query(IngestionDispatch).filter_by(document_id=book_id).one_or_none()
+        if dispatch is not None:
+            dispatch.status = "succeeded"
+            dispatch.claim_token = None
+            dispatch.claim_expires_at = None
+            dispatch.error_message = None
+            dispatch.finished_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -333,15 +356,24 @@ class TestGetBookContent:
 # ---------------------------------------------------------------------------
 
 class TestDeleteBook:
-    def test_delete_existing_book(self, client):
+    def test_delete_processing_book_returns_409(self, client):
         book_id = _upload_txt(client).json()["book_id"]
+        resp = client.delete(f"/api/v1/books/{book_id}")
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Book is still being processed and cannot be deleted yet"
+
+    def test_delete_existing_terminal_book(self, client):
+        book_id = _upload_txt(client).json()["book_id"]
+        _mark_book_terminal_for_delete(client, book_id)
         resp = client.delete(f"/api/v1/books/{book_id}")
         assert resp.status_code == 200
         assert book_id in resp.json()["message"]
 
-    def test_delete_removes_from_list(self, client):
+    def test_delete_terminal_book_removes_from_list(self, client):
         book_id = _upload_txt(client, name="to_delete.txt").json()["book_id"]
-        client.delete(f"/api/v1/books/{book_id}")
+        _mark_book_terminal_for_delete(client, book_id)
+        resp = client.delete(f"/api/v1/books/{book_id}")
+        assert resp.status_code == 200
         data = client.get("/api/v1/books").json()
         ids = [b["book_id"] for b in data["books"]]
         assert book_id not in ids
