@@ -8,7 +8,9 @@ import pytest
 from app.storage.errors import IntegrityMismatch, ProviderUnavailable, WriteFailure
 from app.storage.models import PutResult, StorageReference
 from app.storage.provider_input_access import (
+    generate_existing_provider_read_url,
     generate_presigned_provider_get_url,
+    presigned_provider_storage,
     select_provider_input_storage,
 )
 
@@ -29,6 +31,7 @@ class FakeStorage:
         self.put_calls = 0
         self.delete_calls = 0
         self.put_error: Exception | None = None
+        self.exists_error: Exception | None = None
 
     @staticmethod
     def _ref(reference) -> StorageReference:
@@ -56,6 +59,8 @@ class FakeStorage:
         return self.objects[StorageReference.parse(str(reference)).value]
 
     def exists(self, reference):
+        if self.exists_error is not None:
+            raise self.exists_error
         return StorageReference.parse(str(reference)).value in self.objects
 
     def delete(self, reference):
@@ -127,6 +132,57 @@ def test_provider_input_remote_write_is_reused_for_presigned_get() -> None:
     }
     assert kwargs["ExpiresIn"] == 4200
     assert kwargs["HttpMethod"] == "GET"
+
+
+def test_fresh_resolver_finds_remote_object_without_router_memory_state() -> None:
+    primary = FakeStorage()
+    secondary = FakeS3Provider()
+    federated = FakeFederatedStorage(primary, secondary)
+    reference = StorageReference.generate()
+    secondary.put(b"remote-provider-pdf", reference)
+
+    assert presigned_provider_storage(federated) is secondary
+    url = generate_existing_provider_read_url(
+        federated,
+        reference,
+        expires_seconds=4200,
+    )
+
+    assert url.startswith("https://s3.hf.co/")
+    assert secondary.client.calls[-1][0] == "get_object"
+
+
+def test_fresh_resolver_never_presigns_local_only_object() -> None:
+    primary = FakeStorage()
+    secondary = FakeS3Provider()
+    federated = FakeFederatedStorage(primary, secondary)
+    reference = StorageReference.generate()
+    primary.put(b"local-fallback", reference)
+
+    with pytest.raises(ProviderUnavailable):
+        generate_existing_provider_read_url(
+            federated,
+            reference,
+            expires_seconds=4200,
+        )
+
+    assert secondary.client.calls == []
+
+
+def test_fresh_resolver_fails_open_to_caller_on_remote_head_failure() -> None:
+    primary = FakeStorage()
+    secondary = FakeS3Provider()
+    secondary.exists_error = ProviderUnavailable("HEAD unavailable")
+    federated = FakeFederatedStorage(primary, secondary)
+
+    with pytest.raises(ProviderUnavailable):
+        generate_existing_provider_read_url(
+            federated,
+            StorageReference.generate(),
+            expires_seconds=4200,
+        )
+
+    assert secondary.client.calls == []
 
 
 def test_recoverable_remote_write_failure_falls_back_without_second_payload_build() -> None:
@@ -201,6 +257,11 @@ def test_direct_s3_storage_is_presigned_without_federated_wrapper() -> None:
     assert router.generate_provider_read_url(reference, expires_seconds=4200).startswith(
         "https://s3.hf.co/"
     )
+    assert generate_existing_provider_read_url(
+        storage,
+        reference,
+        expires_seconds=4200,
+    ).startswith("https://s3.hf.co/")
 
 
 def test_direct_s3_failure_is_not_retried_against_same_storage() -> None:
