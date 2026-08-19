@@ -33,11 +33,21 @@ def _b64encode(data: bytes) -> str:
 
 
 def _b64decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
+    # Tokens are emitted as canonical, unpadded base64url. Python's permissive
+    # urlsafe_b64decode accepts alternate final characters whose unused padding
+    # bits differ but decode to the same bytes. Reject those aliases so one
+    # signed token has exactly one accepted textual representation.
+    if not isinstance(value, str) or not value or "=" in value:
+        raise DirectUploadTokenError("Invalid direct upload token encoding")
     try:
-        return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+        encoded = value.encode("ascii")
+        padding = b"=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
     except Exception as exc:
         raise DirectUploadTokenError("Invalid direct upload token encoding") from exc
+    if _b64encode(decoded) != value:
+        raise DirectUploadTokenError("Invalid direct upload token encoding")
+    return decoded
 
 
 def sign_direct_upload_claims(claims: DirectUploadClaims, secret: str) -> str:
