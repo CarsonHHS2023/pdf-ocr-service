@@ -1,9 +1,11 @@
-"""Install Staging provider-input object placement and presigned reads.
+"""Install Staging provider-delivery placement and presigned reads.
 
 Ordering matters: the S0 heartbeat overlay must first instrument preprocessing
 and provider wait, and provider runtime preflight must then guard configuration
-before expensive S0 work. This overlay only changes where the already-produced
-provider-input PDF is placed and how the remote provider receives its source URL.
+before expensive S0 work. This overlay does not move the full render PDF. It
+routes only the exact deferred provider subset/shards to remote-first storage,
+then gives both single-job and sharded provider services a safe source URL
+factory for that exact delivery identity.
 """
 from __future__ import annotations
 
@@ -11,6 +13,10 @@ from pathlib import Path
 
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
+PRESENTATION_LIFECYCLE_PATH = Path(
+    "app/processing/pdf_page_presentation_lifecycle_compat.py"
+)
+PROVIDER_SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
 
 _DATACLASS_ANCHOR = "from dataclasses import dataclass\n"
 _DATACLASS_WITH_TTL = "from dataclasses import dataclass\nfrom datetime import timedelta\n"
@@ -27,79 +33,18 @@ from app.processing.provider_lifecycle_policy import (
 from app.processing.orchestration import PollingPolicy
 '''
 
-_STORAGE_IMPORT_ANCHOR = "from app.storage.models import StorageReference\n"
-_STORAGE_IMPORTS = '''from app.storage.models import StorageReference
-from app.storage.provider_input_access import select_provider_input_storage
+_GEOMETRY_IMPORT_ANCHOR = '''    ProviderInputGrantService,
+    prepare_geometry_provider_input,
+)
+'''
+_GEOMETRY_IMPORTS = '''    ProviderInputGrantService,
+    prepare_geometry_provider_input,
+    provider_delivery_descriptor,
+)
 '''
 
 _PROVIDER_TTL_ANCHOR = '    "ttl_seconds": 3600,\n'
 _PROVIDER_TTL_POLICY = '    "ttl_seconds": PROVIDER_JOB_TTL_SECONDS,\n'
-
-_PREP_SYNC_SIGNATURE = '''def _prepare_geometry_provider_input_from_storage(
-    *,
-    storage,
-    descriptor: RetainedSourceDescriptor,
-'''
-_PREP_SYNC_WITH_OUTPUT_STORAGE = '''def _prepare_geometry_provider_input_from_storage(
-    *,
-    storage,
-    provider_input_storage,
-    descriptor: RetainedSourceDescriptor,
-'''
-
-_PREP_OUTPUT_ANCHOR = '''        result = prepare_geometry_provider_input(
-            storage=storage,
-'''
-_PREP_OUTPUT_ROUTED = '''        result = prepare_geometry_provider_input(
-            storage=provider_input_storage,
-'''
-
-_PREP_ASYNC_SIGNATURE = '''async def _prepare_geometry_provider_input_async(
-    *,
-    storage,
-    descriptor: RetainedSourceDescriptor,
-'''
-_PREP_ASYNC_WITH_OUTPUT_STORAGE = '''async def _prepare_geometry_provider_input_async(
-    *,
-    storage,
-    provider_input_storage,
-    descriptor: RetainedSourceDescriptor,
-'''
-
-_JOB_STATE_ANCHOR = '''    job_state = _PreprocessingJobState(
-        storage=storage,
-'''
-_JOB_STATE_ROUTED = '''    job_state = _PreprocessingJobState(
-        storage=provider_input_storage,
-'''
-
-_EXECUTOR_ANCHOR = '''                _prepare_geometry_provider_input_from_storage,
-                storage=storage,
-                descriptor=descriptor,
-'''
-_EXECUTOR_ROUTED = '''                _prepare_geometry_provider_input_from_storage,
-                storage=storage,
-                provider_input_storage=provider_input_storage,
-                descriptor=descriptor,
-'''
-
-_RUNTIME_STORAGE_ANCHOR = '''    storage = get_storage_provider()
-    client: PaddleVLClient | None = None
-'''
-_RUNTIME_STORAGE_ROUTED = '''    storage = get_storage_provider()
-    provider_input_storage = select_provider_input_storage(storage)
-    client: PaddleVLClient | None = None
-'''
-
-_ASYNC_CALL_ANCHOR = '''        geometry_input = await _prepare_geometry_provider_input_async(
-            storage=storage,
-            descriptor=descriptor,
-'''
-_ASYNC_CALL_ROUTED = '''        geometry_input = await _prepare_geometry_provider_input_async(
-            storage=storage,
-            provider_input_storage=provider_input_storage,
-            descriptor=descriptor,
-'''
 
 _GRANT_SERVICE_ANCHOR = '''        grant_service = ProviderInputGrantService(
             get_transport_grant_service(),
@@ -111,10 +56,11 @@ _GRANT_SERVICE_WITH_SOURCE_FACTORY = '''        grant_service = ProviderInputGra
             get_transport_grant_service(),
             geometry_input,
         )
+        provider_delivery = provider_delivery_descriptor(geometry_input)
         provider_source_url_factory = build_provider_input_source_url_factory(
-            storage=provider_input_storage,
-            reference=geometry_input.storage_reference,
-            byte_size=geometry_input.byte_size,
+            storage=storage,
+            reference=provider_delivery.storage_reference,
+            byte_size=provider_delivery.byte_size,
         )
         service = EndToEndProcessingIntegrationService(
 '''
@@ -132,10 +78,66 @@ _SERVICE_POLICY_ROUTED = '''            public_origin=settings.public_source_tra
                 timeout_seconds=ATLAS_PROVIDER_ORCHESTRATION_TIMEOUT_SECONDS,
 '''
 
-_FINAL_DELETE_ANCHOR = "                    storage.delete(geometry_input.storage_reference)\n"
-_FINAL_DELETE_ROUTED = (
-    "                    provider_input_storage.delete(geometry_input.storage_reference)\n"
+_DEFERRED_STORE_ANCHOR = '''    from app.storage.dependencies import get_storage_provider
+
+    storage = get_storage_provider()
+    put = storage.put(
+'''
+_DEFERRED_STORE_REMOTE_FIRST = '''    from app.storage.dependencies import get_storage_provider
+    from app.storage.provider_input_access import select_provider_input_storage
+
+    storage = select_provider_input_storage(get_storage_provider())
+    put = storage.put(
+'''
+
+_SHARD_DATACLASS_ANCHOR = "from dataclasses import dataclass, field, fields, replace\n"
+_SHARD_DATACLASS_WITH_TTL = (
+    "from dataclasses import dataclass, field, fields, replace\n"
+    "from datetime import timedelta\n"
 )
+_SHARD_POLICY_IMPORT_ANCHOR = "from app.processing.orchestration import PollingPolicy\n"
+_SHARD_POLICY_IMPORTS = '''from app.processing.provider_input_source_access import (
+    build_provider_input_source_url_factory,
+)
+from app.processing.provider_lifecycle_policy import (
+    PROVIDER_SOURCE_ACCESS_TTL_SECONDS,
+)
+from app.processing.orchestration import PollingPolicy
+'''
+_SHARD_GRANT_ANCHOR = '''        grant_service = integration.ProviderInputGrantService(
+            get_transport_grant_service(),
+            shard_input,
+        )
+        service = EndToEndProcessingIntegrationService(
+            grant_service=grant_service,
+            orchestrator=orchestrator,
+            canonicalizer=None,
+            public_origin=public_origin,
+            polling_policy=polling_policy,
+        )
+'''
+_SHARD_GRANT_WITH_SOURCE_FACTORY = '''        grant_service = integration.ProviderInputGrantService(
+            get_transport_grant_service(),
+            shard_input,
+        )
+        shard_delivery = integration.provider_delivery_descriptor(shard_input)
+        shard_source_url_factory = build_provider_input_source_url_factory(
+            storage=storage,
+            reference=shard_delivery.storage_reference,
+            byte_size=shard_delivery.byte_size,
+        )
+        service = EndToEndProcessingIntegrationService(
+            grant_service=grant_service,
+            orchestrator=orchestrator,
+            canonicalizer=None,
+            public_origin=public_origin,
+            source_transport_url_factory=shard_source_url_factory,
+            source_access_ttl=timedelta(
+                seconds=PROVIDER_SOURCE_ACCESS_TTL_SECONDS,
+            ),
+            polling_policy=polling_policy,
+        )
+'''
 
 
 def _replace_once(source: str, old: str, new: str, label: str) -> str:
@@ -146,8 +148,7 @@ def _replace_once(source: str, old: str, new: str, label: str) -> str:
     return source.replace(old, new, 1)
 
 
-def patch_provider_input_presigned_read(path: Path = PDF_INGESTION_PATH) -> None:
-    """Route one computed provider input through remote-first storage and safe URL access."""
+def patch_pdf_ingestion(path: Path = PDF_INGESTION_PATH) -> None:
     source = path.read_text(encoding="utf-8")
     if "await_with_pdf_processing_lease" not in source:
         raise RuntimeError(
@@ -167,57 +168,72 @@ def patch_provider_input_presigned_read(path: Path = PDF_INGESTION_PATH) -> None
     )
     source = _replace_once(
         source,
-        _STORAGE_IMPORT_ANCHOR,
-        _STORAGE_IMPORTS,
-        "provider input storage import",
+        _GEOMETRY_IMPORT_ANCHOR,
+        _GEOMETRY_IMPORTS,
+        "provider delivery import",
     )
     source = _replace_once(source, _PROVIDER_TTL_ANCHOR, _PROVIDER_TTL_POLICY, "provider job ttl")
     source = _replace_once(
         source,
-        _PREP_SYNC_SIGNATURE,
-        _PREP_SYNC_WITH_OUTPUT_STORAGE,
-        "sync preprocessing storage parameter",
-    )
-    source = _replace_once(
-        source,
-        _PREP_OUTPUT_ANCHOR,
-        _PREP_OUTPUT_ROUTED,
-        "provider input output storage",
-    )
-    source = _replace_once(
-        source,
-        _PREP_ASYNC_SIGNATURE,
-        _PREP_ASYNC_WITH_OUTPUT_STORAGE,
-        "async preprocessing storage parameter",
-    )
-    source = _replace_once(source, _JOB_STATE_ANCHOR, _JOB_STATE_ROUTED, "cancel cleanup storage")
-    source = _replace_once(source, _EXECUTOR_ANCHOR, _EXECUTOR_ROUTED, "executor output storage")
-    source = _replace_once(
-        source,
-        _RUNTIME_STORAGE_ANCHOR,
-        _RUNTIME_STORAGE_ROUTED,
-        "runtime provider input router",
-    )
-    source = _replace_once(source, _ASYNC_CALL_ANCHOR, _ASYNC_CALL_ROUTED, "async output storage")
-    source = _replace_once(
-        source,
         _GRANT_SERVICE_ANCHOR,
         _GRANT_SERVICE_WITH_SOURCE_FACTORY,
-        "provider source URL factory",
+        "single-job provider source URL factory",
     )
     source = _replace_once(
         source,
         _SERVICE_POLICY_ANCHOR,
         _SERVICE_POLICY_ROUTED,
-        "provider lifecycle policy",
+        "single-job provider lifecycle policy",
+    )
+    path.write_text(source, encoding="utf-8")
+
+
+def patch_deferred_provider_materialization(
+    path: Path = PRESENTATION_LIFECYCLE_PATH,
+) -> None:
+    source = path.read_text(encoding="utf-8")
+    source = _replace_once(
+        source,
+        _DEFERRED_STORE_ANCHOR,
+        _DEFERRED_STORE_REMOTE_FIRST,
+        "deferred provider subset remote-first materialization",
+    )
+    path.write_text(source, encoding="utf-8")
+
+
+def patch_provider_sharding(path: Path = PROVIDER_SHARDING_PATH) -> None:
+    source = path.read_text(encoding="utf-8")
+    source = _replace_once(
+        source,
+        _SHARD_DATACLASS_ANCHOR,
+        _SHARD_DATACLASS_WITH_TTL,
+        "sharding timedelta import",
     )
     source = _replace_once(
         source,
-        _FINAL_DELETE_ANCHOR,
-        _FINAL_DELETE_ROUTED,
-        "provider input final cleanup",
+        _SHARD_POLICY_IMPORT_ANCHOR,
+        _SHARD_POLICY_IMPORTS,
+        "sharding source-access imports",
+    )
+    source = _replace_once(
+        source,
+        _SHARD_GRANT_ANCHOR,
+        _SHARD_GRANT_WITH_SOURCE_FACTORY,
+        "per-shard provider source URL factory",
     )
     path.write_text(source, encoding="utf-8")
+
+
+def patch_provider_input_presigned_read(
+    path: Path = PDF_INGESTION_PATH,
+    *,
+    presentation_lifecycle_path: Path = PRESENTATION_LIFECYCLE_PATH,
+    provider_sharding_path: Path = PROVIDER_SHARDING_PATH,
+) -> None:
+    """Install exact provider-delivery source access for single and sharded jobs."""
+    patch_pdf_ingestion(path)
+    patch_deferred_provider_materialization(presentation_lifecycle_path)
+    patch_provider_sharding(provider_sharding_path)
 
 
 def main() -> None:
