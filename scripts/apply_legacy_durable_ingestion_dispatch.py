@@ -106,6 +106,7 @@ async def upload_file(
         )
         return accepted.response
 
+    # ── PDF: retain original source ───────────────────────────────────────────
     _upload_diagnostic(
         "PDF_SOURCE_RETAINED",
         document_id=book_id,
