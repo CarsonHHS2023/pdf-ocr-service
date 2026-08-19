@@ -15,7 +15,7 @@ from app.processing.pdf_opencv_quality_pipeline import (
     preprocess_pdf_geometry_opencv as preprocess_pdf_geometry,
     retain_opencv_diagnostics,
 )
-from app.processing.raw_result import RawResultProviderProvenance
+from app.processing.raw_result import RawResultProviderProvenance, is_valid_sha256
 from app.storage.base import StorageProvider
 from app.storage.models import StorageReference
 
@@ -29,6 +29,56 @@ class GeometryProviderInput:
     media_type: str
     filename: str
     preprocessing: GeometryPreprocessedPdf
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderDeliveryDescriptor:
+    """Exact PDF identity handed to the remote OCR provider."""
+
+    storage_reference: StorageReference
+    checksum_sha256: str
+    byte_size: int
+    media_type: str
+    filename: str
+
+
+def provider_delivery_descriptor(provider_input: Any) -> ProviderDeliveryDescriptor:
+    """Resolve provider subset fields when present, otherwise preserve legacy input."""
+    reference = getattr(provider_input, "provider_storage_reference", None)
+    if reference is None:
+        reference = getattr(provider_input, "storage_reference", None)
+    if not isinstance(reference, StorageReference):
+        raise ValueError("provider delivery storage reference is invalid")
+
+    checksum = getattr(provider_input, "provider_checksum_sha256", None)
+    if checksum is None:
+        checksum = getattr(provider_input, "checksum_sha256", None)
+    if not is_valid_sha256(checksum):
+        raise ValueError("provider delivery checksum is invalid")
+
+    byte_size = getattr(provider_input, "provider_byte_size", None)
+    if byte_size is None:
+        byte_size = getattr(provider_input, "byte_size", None)
+    if not isinstance(byte_size, int) or isinstance(byte_size, bool) or byte_size < 0:
+        raise ValueError("provider delivery byte size is invalid")
+
+    media_type = getattr(provider_input, "media_type", None)
+    if not isinstance(media_type, str) or not media_type.strip():
+        raise ValueError("provider delivery media type is invalid")
+
+    filename = getattr(provider_input, "provider_filename", None)
+    if filename is None:
+        filename = getattr(provider_input, "filename", None)
+    if not isinstance(filename, str) or not filename.strip():
+        raise ValueError("provider delivery filename is invalid")
+
+    return ProviderDeliveryDescriptor(
+        storage_reference=reference,
+        checksum_sha256=str(checksum).lower(),
+        byte_size=byte_size,
+        media_type=media_type,
+        filename=filename,
+    )
 
 
 def prepare_geometry_provider_input(
@@ -87,22 +137,23 @@ def _geometry_pdf_reference(
 
 
 class ProviderInputGrantService:
-    """Serve the derived PDF while preserving original Source provenance."""
+    """Serve the exact derived PDF selected for the remote provider."""
 
     def __init__(self, delegate: Any, provider_input: GeometryProviderInput) -> None:
         self._delegate = delegate
         self._provider_input = provider_input
 
     def create_grant(self, **kwargs):
+        delivery = provider_delivery_descriptor(self._provider_input)
         kwargs = dict(kwargs)
         kwargs.update(
             {
-                "storage_reference": self._provider_input.storage_reference,
-                "source_sha256": self._provider_input.checksum_sha256,
-                "source_byte_size": self._provider_input.byte_size,
-                "media_type": self._provider_input.media_type,
+                "storage_reference": delivery.storage_reference,
+                "source_sha256": delivery.checksum_sha256,
+                "source_byte_size": delivery.byte_size,
+                "media_type": delivery.media_type,
                 "source_etag": None,
-                "filename": self._provider_input.filename,
+                "filename": delivery.filename,
             }
         )
         return self._delegate.create_grant(**kwargs)
@@ -115,18 +166,19 @@ class ProviderInputGrantService:
 
 
 class ProviderInputChecksumProvider:
-    """Send the derived PDF checksum to Modal without changing its protocol."""
+    """Send the exact provider-delivery PDF checksum to Modal."""
 
     def __init__(self, delegate: DocumentProcessingProvider, provider_input: GeometryProviderInput) -> None:
         self._delegate = delegate
         self._provider_input = provider_input
 
     async def submit_job(self, request):
+        delivery = provider_delivery_descriptor(self._provider_input)
         documents = [
             replace(
                 document,
                 pdf_source_etag=None,
-                pdf_source_sha256=self._provider_input.checksum_sha256,
+                pdf_source_sha256=delivery.checksum_sha256,
             )
             for document in request.documents
         ]
@@ -147,7 +199,7 @@ class ProviderInputChecksumProvider:
 
 
 class ProviderInputAwareProcessingOrchestrator(ProcessingOrchestrator):
-    """Record both original Source and derived provider-input provenance."""
+    """Record both original Source and exact provider-input provenance."""
 
     def __init__(self, *, provider_input: GeometryProviderInput, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -155,14 +207,15 @@ class ProviderInputAwareProcessingOrchestrator(ProcessingOrchestrator):
 
     async def _ingest(self, request, result, page_summary):
         envelope = await super()._ingest(request, result, page_summary)
+        delivery = provider_delivery_descriptor(self.provider_input)
         configuration = _thaw_metadata(envelope.provider.configuration)
         configuration.update(
             {
                 "source_checksum_sha256": request.source_checksum_sha256,
                 "provider_input_kind": "geometry_preprocessed_pdf",
-                "provider_input_checksum_sha256": self.provider_input.checksum_sha256,
-                "provider_input_size_bytes": self.provider_input.byte_size,
-                "provider_input_media_type": self.provider_input.media_type,
+                "provider_input_checksum_sha256": delivery.checksum_sha256,
+                "provider_input_size_bytes": delivery.byte_size,
+                "provider_input_media_type": delivery.media_type,
                 "geometry_preprocessing_version": self.provider_input.preprocessing.version,
                 "geometry_page_count": self.provider_input.preprocessing.page_count,
                 "geometry_changed_page_count": self.provider_input.preprocessing.changed_page_count,
@@ -194,8 +247,10 @@ def _thaw_metadata(value: Any) -> Any:
 
 __all__ = [
     "GeometryProviderInput",
+    "ProviderDeliveryDescriptor",
     "ProviderInputAwareProcessingOrchestrator",
     "ProviderInputChecksumProvider",
     "ProviderInputGrantService",
     "prepare_geometry_provider_input",
+    "provider_delivery_descriptor",
 ]
