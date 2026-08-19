@@ -49,18 +49,8 @@ def test_direct_oversize_rejects_before_runtime_or_presign(monkeypatch) -> None:
     assert "application upload limit" in str(exc_info.value.detail)
 
 
-def test_direct_complete_rechecks_application_ceiling_before_publish(monkeypatch) -> None:
-    monkeypatch.setattr(direct_upload.settings, "book_source_max_bytes", 5)
-
-    class Provider:
-        def publish_ingress(self, **kwargs):
-            raise AssertionError("oversize completion must not publish ingress")
-
-    class Db:
-        def get(self, *args, **kwargs):
-            raise AssertionError("oversize completion must fail before DB ownership")
-
-    claims = SimpleNamespace(
+def _oversize_direct_claims():
+    return SimpleNamespace(
         upload_id="a" * 32,
         document_id="doc",
         source_file_id="source",
@@ -70,6 +60,20 @@ def test_direct_complete_rechecks_application_ceiling_before_publish(monkeypatch
         checksum_sha256="b" * 64,
         content_type="application/pdf",
     )
+
+
+def test_direct_complete_rechecks_application_ceiling_before_publish(monkeypatch) -> None:
+    monkeypatch.setattr(direct_upload.settings, "book_source_max_bytes", 5)
+
+    class Provider:
+        def publish_ingress(self, **kwargs):
+            raise AssertionError("oversize completion must not publish ingress")
+
+    class Db:
+        def get(self, *args, **kwargs):
+            return None
+
+    claims = _oversize_direct_claims()
     monkeypatch.setattr(direct_upload, "_runtime", lambda: (Provider(), "s" * 64))
     monkeypatch.setattr(direct_upload, "_claims_from_token", lambda *args: claims)
 
@@ -82,6 +86,53 @@ def test_direct_complete_rechecks_application_ceiling_before_publish(monkeypatch
         )
 
     assert exc_info.value.status_code == 413
+
+
+def test_direct_existing_commit_remains_idempotent_after_ceiling_is_lowered(monkeypatch) -> None:
+    monkeypatch.setattr(direct_upload.settings, "book_source_max_bytes", 5)
+    claims = _oversize_direct_claims()
+
+    class Provider:
+        def publish_ingress(self, **kwargs):
+            raise AssertionError("existing commit must not publish again")
+
+    document = SimpleNamespace(
+        id=claims.document_id,
+        title="book",
+        file_type="pdf",
+        status="processing",
+        processed_file_path=None,
+        original_file_path=None,
+        error_message=None,
+    )
+    source = SimpleNamespace(
+        document_id=claims.document_id,
+        storage_reference=claims.storage_reference,
+        byte_size=claims.byte_size,
+        checksum_sha256=claims.checksum_sha256,
+        retained=1,
+    )
+
+    class Db:
+        def get(self, model, key):
+            if model is direct_upload.Document:
+                return document
+            if model is direct_upload.SourceFile:
+                return source
+            raise AssertionError("unexpected model lookup")
+
+    monkeypatch.setattr(direct_upload, "_runtime", lambda: (Provider(), "s" * 64))
+    monkeypatch.setattr(direct_upload, "_claims_from_token", lambda *args: claims)
+
+    response = direct_upload.complete_direct_upload_session(
+        claims.upload_id,
+        direct_upload.DirectUploadCompleteRequest(completion_token="x" * 20),
+        BackgroundTasks(),
+        Db(),
+    )
+
+    assert response.book_id == claims.document_id
+    assert "already committed" in response.message
 
 
 def test_resumable_oversize_rejects_before_spool_session(monkeypatch, tmp_path) -> None:
