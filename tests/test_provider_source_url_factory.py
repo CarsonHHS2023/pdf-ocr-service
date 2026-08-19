@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.processing import provider_input_source_access as source_access
 from app.processing.integration import (
     EndToEndProcessingIntegrationService,
     IntegrationError,
@@ -15,9 +16,6 @@ from app.processing.integration import (
 )
 from app.processing.models import ProviderLifecycleStatus
 from app.processing.orchestration import OrchestrationOutcome, OrchestrationPhase
-from app.processing.provider_input_source_access import (
-    build_provider_input_source_url_factory,
-)
 from app.processing.transport.models import TransportGrantState
 from app.processing.transport.service import InMemoryTransportGrantService
 from app.storage.errors import ProviderUnavailable
@@ -73,18 +71,6 @@ class FakeOrchestrator:
     async def run_once(self, orchestration_request, policy=None):
         self.calls.append((orchestration_request, policy))
         return success_outcome()
-
-
-class FakeProviderInputStorage:
-    def __init__(self, *, failure: Exception | None = None) -> None:
-        self.failure = failure
-        self.calls = []
-
-    def generate_provider_read_url(self, reference, *, expires_seconds):
-        self.calls.append((reference, expires_seconds))
-        if self.failure is not None:
-            raise self.failure
-        return PRESIGNED_URL
 
 
 def test_presigned_factory_bypasses_public_origin_and_receives_exact_ttl() -> None:
@@ -158,10 +144,20 @@ def test_source_access_ttl_must_be_positive() -> None:
         )
 
 
-def test_built_factory_logs_safe_route_without_presigned_query(caplog) -> None:
+def test_built_factory_logs_safe_route_without_presigned_query(
+    monkeypatch,
+    caplog,
+) -> None:
     reference = StorageReference.generate()
-    storage = FakeProviderInputStorage()
-    factory = build_provider_input_source_url_factory(
+    storage = object()
+    observed = []
+
+    def resolve(storage_value, reference_value, *, expires_seconds):
+        observed.append((storage_value, reference_value, expires_seconds))
+        return PRESIGNED_URL
+
+    monkeypatch.setattr(source_access, "generate_existing_provider_read_url", resolve)
+    factory = source_access.build_provider_input_source_url_factory(
         storage=storage,
         reference=reference,
         byte_size=87_179_148,
@@ -172,7 +168,7 @@ def test_built_factory_logs_safe_route_without_presigned_query(caplog) -> None:
 
     assert isinstance(result, TemporarySourceTransportUrl)
     assert result.url == PRESIGNED_URL
-    assert storage.calls == [(reference, 4200)]
+    assert observed == [(storage, reference, 4200)]
     assert "route=presigned_object_get" in caplog.text
     assert "host=s3.hf.co" in caplog.text
     assert "byte_size=87179148" in caplog.text
@@ -180,12 +176,18 @@ def test_built_factory_logs_safe_route_without_presigned_query(caplog) -> None:
     assert "X-Amz-Signature" not in caplog.text
 
 
-def test_built_factory_fallback_logs_only_safe_error_type(caplog) -> None:
+def test_built_factory_fallback_logs_only_safe_error_type(
+    monkeypatch,
+    caplog,
+) -> None:
     reference = StorageReference.generate()
-    storage = FakeProviderInputStorage(
-        failure=ProviderUnavailable("secret signed url must never be logged")
-    )
-    factory = build_provider_input_source_url_factory(
+    storage = object()
+
+    def resolve(storage_value, reference_value, *, expires_seconds):
+        raise ProviderUnavailable("secret signed url must never be logged")
+
+    monkeypatch.setattr(source_access, "generate_existing_provider_read_url", resolve)
+    factory = source_access.build_provider_input_source_url_factory(
         storage=storage,
         reference=reference,
         byte_size=87_179_148,
