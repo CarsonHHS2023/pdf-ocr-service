@@ -26,7 +26,7 @@ class BookDeletionConflict(RuntimeError):
 
 
 class BookService:
-    """Service for managing books on bookshelf."""
+    """Service for managing bookshelf."""
 
     @staticmethod
     def create_book(
@@ -47,7 +47,7 @@ class BookService:
             txt_content: Processed TXT content
             file_type: File type ("pdf" or "txt")
             author: Book author (optional)
-            publication_date: Book publication date (optional)
+            publication_date: Publication date (optional)
             pages_count: Number of pages (optional)
 
         Returns:
