@@ -40,6 +40,7 @@ from app.processing.transport.dependencies import get_transport_grant_service
 from app.processing.transport.models import TransportGrantState
 from app.storage.dependencies import get_storage_provider
 from app.storage.models import StorageReference
+from app.upload_policy import BookSourceTooLarge, validate_book_source_size
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -177,6 +178,8 @@ def _safe_failure_message(exc: BaseException | None = None) -> str:
         return exc.safe_message
     if isinstance(exc, PdfPreprocessingCapacityError):
         return "PDF preprocessing capacity is temporarily full; retry later"
+    if isinstance(exc, BookSourceTooLarge):
+        return "PDF source exceeds the current application processing limit"
     return "PDF processing failed before Reader v2 content became ready"
 
 
@@ -290,6 +293,7 @@ def _set_document_page_count_if_missing(document_id: str, page_count: int) -> No
 
 
 def _read_verified_source_pdf(storage, descriptor: RetainedSourceDescriptor) -> bytes:
+    validate_book_source_size(descriptor.byte_size, settings)
     source_pdf = storage.get(descriptor.storage_reference)
     if not isinstance(source_pdf, bytes) or not source_pdf.startswith(b"%PDF-"):
         raise RuntimeError("Retained PDF source bytes are unavailable")
@@ -343,6 +347,7 @@ async def _prepare_geometry_provider_input_async(
     expected_page_count: int | None,
 ) -> GeometryProviderInput:
     """Submit bounded preprocessing and make cancellation cleanup task-independent."""
+    validate_book_source_size(descriptor.byte_size, settings)
     if not _PDF_PREPROCESSING_CAPACITY.acquire(blocking=False):
         raise PdfPreprocessingCapacityError("pdf_preprocessing_capacity_full")
 

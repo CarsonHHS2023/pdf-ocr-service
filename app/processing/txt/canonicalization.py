@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.models import Document, ProcessingRun, SourceFile
 from app.processing.structured_result_v2.model import normalize_spr_v2
 from app.processing.txt.normalization import normalize_txt_bytes
@@ -32,6 +33,7 @@ from app.structured_content_v2.selection import (
     StructuredContentV2SelectionRepository,
 )
 from app.structured_content_v2.transformation import TransformationContextV2, transform_spr_v2_to_candidate
+from app.upload_policy import BookSourceTooLarge, validate_book_source_size
 
 
 class TxtCanonicalizationError(RuntimeError):
@@ -117,6 +119,25 @@ def _source_matches_snapshot(source: SourceFile, snapshot: _RetainedTxtSourceSna
     )
 
 
+def _validate_source_admission(source: _RetainedTxtSourceSnapshot) -> None:
+    if (
+        not isinstance(source.byte_size, int)
+        or isinstance(source.byte_size, bool)
+        or source.byte_size < 0
+    ):
+        raise TxtCanonicalizationError(
+            "retained TXT source byte size is unavailable",
+            stage="source_validation",
+        )
+    try:
+        validate_book_source_size(source.byte_size, settings)
+    except BookSourceTooLarge as exc:
+        raise TxtCanonicalizationError(
+            "TXT source exceeds the current application processing limit",
+            stage="source_validation",
+        ) from exc
+
+
 class TxtCanonicalizationService:
     def __init__(
         self,
@@ -177,6 +198,9 @@ class TxtCanonicalizationService:
                 if session is not None:
                     session.close()
                     session = None
+
+            stage = "source_validation"
+            _validate_source_admission(source_snapshot)
 
             stage = "source_read"
             storage_ref = StorageReference.parse(source_snapshot.storage_reference)

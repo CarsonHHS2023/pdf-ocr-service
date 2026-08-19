@@ -25,6 +25,7 @@ from app.storage.direct_upload import (
 from app.storage.errors import IntegrityMismatch, ObjectNotFound, StorageError
 from app.storage.factory import create_object_storage_provider, object_storage_is_configured
 from app.storage.models import StorageReference
+from app.upload_policy import BookSourceTooLarge, validate_book_source_size
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/v1/direct-upload-sessions", tags=["direct-upload"])
@@ -68,12 +69,44 @@ def _runtime():
     return provider, secret
 
 
+def _enforce_application_source_size(byte_size: int) -> None:
+    try:
+        validate_book_source_size(int(byte_size), settings)
+    except BookSourceTooLarge as exc:
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
+
+
+def _enforce_direct_completion_source_size(provider, claims: DirectUploadClaims) -> None:
+    try:
+        validate_book_source_size(int(claims.byte_size), settings)
+    except BookSourceTooLarge as exc:
+        # The browser may already have completed the ingress PUT before the
+        # application ceiling changed. This session is no longer admissible, so
+        # remove the otherwise-orphaned temporary ingress object. Cleanup is
+        # best-effort and must not turn a bounded 413 into an infrastructure 5xx.
+        try:
+            provider.delete_ingress(claims.upload_id)
+        except Exception:
+            logger.exception(
+                "Direct upload ingress cleanup failed after application admission rejection upload_id=%s",
+                claims.upload_id,
+            )
+        raise HTTPException(
+            status_code=413,
+            detail="Book source exceeds the current application upload limit",
+        ) from exc
+
+
 def _validate_pdf_request(request: DirectUploadCreateRequest) -> tuple[str, str]:
     filename = request.filename.strip()
     if not filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     if Path(filename).suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="Direct upload currently supports PDF files only")
+    _enforce_application_source_size(request.byte_size)
     if request.byte_size > int(settings.direct_upload_single_put_max_bytes):
         raise HTTPException(
             status_code=413,
@@ -118,8 +151,8 @@ def _response_for_existing(document: Document, source: SourceFile, claims: Direc
 
 @router.post("", response_model=DirectUploadCreateResponse)
 def create_direct_upload_session(request: DirectUploadCreateRequest) -> DirectUploadCreateResponse:
-    provider, secret = _runtime()
     filename, checksum = _validate_pdf_request(request)
+    provider, secret = _runtime()
     upload_id = uuid.uuid4().hex
     document_id = str(uuid.uuid4())
     source_file_id = str(uuid.uuid4())
@@ -185,6 +218,8 @@ def complete_direct_upload_session(
         if existing_source is None:
             raise HTTPException(status_code=409, detail="Existing direct upload source metadata is incomplete")
         return _response_for_existing(existing_document, existing_source, claims)
+
+    _enforce_direct_completion_source_size(provider, claims)
 
     publish_started = time.perf_counter()
     try:
