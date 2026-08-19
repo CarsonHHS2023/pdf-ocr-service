@@ -15,6 +15,7 @@ from app.processing.s0_pdf_resource_heartbeat import (
     start_pdf_processing_run,
     sync_pdf_processing_run_terminal,
 )
+from app.processing.s0_provider_wait_lease import await_with_pdf_processing_lease
 
 install_opencv_page_heartbeat_probe()
 
@@ -134,6 +135,19 @@ _PROVIDER_START_INSTRUMENTED = '''        record_pdf_processing_heartbeat(
             "PDF_PROVIDER_REQUEST_STARTED",
 '''
 
+_PROVIDER_AWAIT_ANCHOR = '''        provider_submission_started = True
+        outcome = await service.process(request)
+'''
+_PROVIDER_AWAIT_INSTRUMENTED = '''        provider_submission_started = True
+        outcome = await await_with_pdf_processing_lease(
+            service.process(request),
+            processing_run_id=ids.processing_attempt_id,
+            document_id=document_id,
+            page_count=geometry_input.preprocessing.page_count,
+            provider_job_id=ids.provider_job_id,
+        )
+'''
+
 _PROVIDER_TERMINAL_ANCHOR = '''        _diagnostic(
             "PDF_PROVIDER_TERMINAL",
 '''
@@ -202,6 +216,12 @@ def patch_s0_pdf_resource_heartbeat(path: Path = PDF_INGESTION_PATH) -> None:
         _PROVIDER_START_ANCHOR,
         _PROVIDER_START_INSTRUMENTED,
         "provider start",
+    )
+    source = _replace_once(
+        source,
+        _PROVIDER_AWAIT_ANCHOR,
+        _PROVIDER_AWAIT_INSTRUMENTED,
+        "provider wait lease",
     )
     source = _replace_once(
         source,
