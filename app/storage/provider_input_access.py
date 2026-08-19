@@ -30,7 +30,16 @@ def _presigned_get_capable(provider: object) -> bool:
         and isinstance(getattr(provider, "bucket", None), str)
         and bool(str(getattr(provider, "bucket", "")).strip())
         and callable(getattr(provider, "object_key", None))
+        and callable(getattr(provider, "exists", None))
     )
+
+
+def presigned_provider_storage(storage: object) -> object | None:
+    """Return the direct or federated remote storage capable of safe presigned reads."""
+    if _presigned_get_capable(storage):
+        return storage
+    secondary = getattr(storage, "secondary", None)
+    return secondary if _presigned_get_capable(secondary) else None
 
 
 def generate_presigned_provider_get_url(
@@ -73,16 +82,37 @@ def generate_presigned_provider_get_url(
     return text
 
 
+def generate_existing_provider_read_url(
+    storage: object,
+    reference: StorageReference | str,
+    *,
+    expires_seconds: int,
+) -> str:
+    """Presign only when the exact provider reference already exists remotely."""
+    remote = presigned_provider_storage(storage)
+    if remote is None:
+        raise ProviderUnavailable("No presign-capable provider-input storage is configured")
+    try:
+        exists = bool(remote.exists(reference))
+    except ProviderUnavailable:
+        raise
+    except Exception as exc:
+        raise ProviderUnavailable("Could not verify remote provider-input object") from exc
+    if not exists:
+        raise ProviderUnavailable("Provider input is not present in presigned storage")
+    return generate_presigned_provider_get_url(
+        remote,
+        reference,
+        expires_seconds=expires_seconds,
+    )
+
+
 class ProviderInputStorageRouter:
     """Place one run's provider-input refs remotely when possible, otherwise locally."""
 
     def __init__(self, storage: object) -> None:
         self.storage = storage
-        if _presigned_get_capable(storage):
-            self.remote = storage
-        else:
-            secondary = getattr(storage, "secondary", None)
-            self.remote = secondary if _presigned_get_capable(secondary) else None
+        self.remote = presigned_provider_storage(storage)
         self._remote_references: set[str] = set()
 
     @staticmethod
@@ -159,6 +189,8 @@ def select_provider_input_storage(storage: object) -> ProviderInputStorageRouter
 
 __all__ = [
     "ProviderInputStorageRouter",
+    "generate_existing_provider_read_url",
     "generate_presigned_provider_get_url",
+    "presigned_provider_storage",
     "select_provider_input_storage",
 ]
