@@ -57,18 +57,29 @@ jobs:
           grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 80' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 95' app/processing/pdf_provider_sharding.py
 
-      - name: Compile sharding production path
+      - name: Compile provider transport and source-access paths
         run: |
           python -m py_compile \
+            app/processing/integration.py \
             app/processing/pdf_provider_sharding.py \
             app/processing/pdf_provider_sharding_compat.py \
+            app/processing/provider_input_source_access.py \
+            app/processing/provider_lifecycle_policy.py \
+            app/processing/transport/dependencies.py \
+            app/storage/provider_input_access.py \
             app/processing/pdf_ingestion.py \
+            scripts/apply_provider_input_presigned_read.py \
             scripts/apply_provider_transport_sharding.py \
             scripts/apply_native_pdf_text_recovery.py
 
-      - name: Run focused sharding tests
+      - name: Run focused provider transport tests
         run: |
           python -m pytest -q \
             tests/test_pdf_provider_sharding.py \
             tests/test_pdf_provider_sharding_compat.py \
-            tests/test_production_pdf_modal_cutover.py
+            tests/test_production_pdf_modal_cutover.py \
+            tests/test_end_to_end_processing_integration.py \
+            tests/test_provider_input_object_access.py \
+            tests/test_provider_input_presigned_read_overlay.py \
+            tests/test_provider_lifecycle_policy.py \
+            tests/test_provider_source_url_factory.py
