@@ -1,8 +1,8 @@
 """Install durable ingestion acceptance/dispatch into staging upload paths.
 
-The overlay is deliberately fail-closed and is expanded path-by-path. The first
-integration step covers resumable completion; direct/legacy/supervisor wiring is
-added only after this crash window is proven by exact-head tests.
+The overlay is deliberately fail-closed and is expanded path-by-path. Resumable
+and direct completion are installed from the same authoritative staging entrypoint
+so tested-artifact assembly cannot drift between the two transport paths.
 """
 from __future__ import annotations
 
@@ -171,6 +171,11 @@ def patch_resumable_durable_dispatch(path: Path = RESUMABLE_PATH) -> None:
 
 def main() -> None:
     patch_resumable_durable_dispatch()
+    # Keep the per-path transforms independent for unit testing, but install
+    # them together from the one authoritative Staging assembly entrypoint.
+    from apply_direct_durable_ingestion_dispatch import patch_direct_durable_dispatch
+
+    patch_direct_durable_dispatch()
 
 
 if __name__ == "__main__":
