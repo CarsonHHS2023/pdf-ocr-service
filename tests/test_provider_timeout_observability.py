@@ -190,7 +190,7 @@ def test_status_poll_client_failure_uses_provider_phase_and_last_snapshot(tmp_pa
             ProviderErrorDetail(
                 ProviderErrorCategory.UNAVAILABLE,
                 "provider temporarily unavailable",
-                retryable=True,
+                retryable=False,
             )
         ),
     ]
@@ -226,7 +226,7 @@ def test_result_poll_client_failure_preserves_terminal_provider_snapshot(tmp_pat
             ProviderErrorDetail(
                 ProviderErrorCategory.UNAVAILABLE,
                 "provider result endpoint unavailable",
-                retryable=True,
+                retryable=False,
             )
         )
     ]
