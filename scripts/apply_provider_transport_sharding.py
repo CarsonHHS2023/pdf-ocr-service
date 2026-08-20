@@ -3,6 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+try:
+    from scripts.apply_provider_shard_resilience import patch_provider_shard_resilience
+except ModuleNotFoundError:  # direct script execution uses scripts/ as sys.path[0]
+    from apply_provider_shard_resilience import patch_provider_shard_resilience
+
 
 _INSTALL = (
     "from app.processing.pdf_provider_sharding_compat import (\n"
@@ -67,6 +72,7 @@ def patch_provider_transport_sharding_installation(
 
 def main() -> None:
     patch_provider_transport_sharding_installation()
+    patch_provider_shard_resilience()
 
 
 if __name__ == "__main__":
