@@ -306,6 +306,46 @@ def test_materialized_shard_localizes_map_and_rechecks_actual_serialized_bytes()
         shard_document.close()
 
 
+def test_materialized_single_shard_is_valid_for_compacted_oversized_input() -> None:
+    storage = _MemoryStorage()
+    provider_pdf = _pdf(3)
+    provider_input = _provider_input(provider_pdf)
+    plan = ProviderInputShardPlan(
+        shard_index=0,
+        provider_page_start=0,
+        provider_page_end=2,
+        provider_page_count=3,
+        serialized_size_bytes=len(provider_pdf),
+    )
+
+    shard = materialize_provider_input_shard(
+        storage,
+        provider_input,
+        plan,
+        shard_count=1,
+        max_bytes=len(provider_pdf) * 2,
+    )
+
+    assert shard.provider_page_count == 3
+    assert len(shard.provider_page_map) == 3
+    assert shard.presentation_manifest["provider_transport_shard"]["shard_count"] == 1
+    assert shard.provider_filename.endswith(".transport-001-of-001.pdf")
+    shard_document = fitz.open(stream=shard.provider_pdf_bytes, filetype="pdf")
+    try:
+        assert shard_document.page_count == 3
+    finally:
+        shard_document.close()
+
+    with pytest.raises(ProviderTransportShardError, match="index/count"):
+        materialize_provider_input_shard(
+            storage,
+            provider_input,
+            plan,
+            shard_count=0,
+            max_bytes=len(provider_pdf) * 2,
+        )
+
+
 def test_merge_provider_shards_restores_original_pages_and_presentation_pages() -> None:
     storage = _MemoryStorage()
     provider_input = _provider_input(
