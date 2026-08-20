@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -30,11 +31,33 @@ def _copy_target(tmp_path, source: Path) -> Path:
     return path
 
 
+def _copy_raw_head_target(tmp_path, relative_path: str) -> Path:
+    content = subprocess.check_output(
+        ["git", "show", f"HEAD:{relative_path}"],
+        cwd=REPO_ROOT,
+        text=True,
+    )
+    path = tmp_path / Path(relative_path).name
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def _targets(tmp_path) -> tuple[Path, Path, Path]:
     return (
         _copy_target(tmp_path, BASE_INGESTION),
         _copy_target(tmp_path, BASE_LIFECYCLE),
         _copy_target(tmp_path, BASE_SHARDING),
+    )
+
+
+def _raw_head_targets(tmp_path) -> tuple[Path, Path, Path]:
+    return (
+        _copy_raw_head_target(tmp_path, "app/processing/pdf_ingestion.py"),
+        _copy_raw_head_target(
+            tmp_path,
+            "app/processing/pdf_page_presentation_lifecycle_compat.py",
+        ),
+        _copy_raw_head_target(tmp_path, "app/processing/pdf_provider_sharding.py"),
     )
 
 
@@ -94,8 +117,8 @@ def test_overlay_routes_exact_delivery_and_lifecycle_without_touching_provider_w
     assert "validate_provider_runtime_configuration(settings)" in source
 
 
-def test_presigned_overlay_composes_after_explicit_sharding_service(tmp_path) -> None:
-    ingestion, lifecycle, sharding = _targets(tmp_path)
+def test_staging_overlay_order_composes_sharding_and_presigned_access(tmp_path) -> None:
+    ingestion, lifecycle, sharding = _raw_head_targets(tmp_path)
     patch_provider_transport_sharding_installation(ingestion)
     _apply_required_predecessors(ingestion)
     _apply_provider_overlay(ingestion, lifecycle, sharding)
