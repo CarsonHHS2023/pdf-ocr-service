@@ -78,8 +78,9 @@ def test_staging_provider_runtime_installer_includes_presigned_delivery() -> Non
     assert workflow.index(sharding) < workflow.index(preflight)
     assert workflow.index(heartbeat) < workflow.index(preflight)
     assert "patch_provider_input_presigned_read" in installer
+    assert "_presigned_lifecycle_installer" in installer
     assert installer.index("patch_provider_runtime_preflight()") < installer.index(
-        "patch_provider_input_presigned_read()"
+        "_presigned_lifecycle_installer()()"
     )
 
 
