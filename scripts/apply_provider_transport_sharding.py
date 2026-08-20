@@ -4,6 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 
 
+PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
+PROVIDER_SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
+
 _INSTALL = (
     "from app.processing.pdf_provider_sharding_compat import (\n"
     "    ShardingAwareEndToEndProcessingIntegrationService,\n"
@@ -21,10 +24,16 @@ _SERVICE_ANCHOR = "        service = EndToEndProcessingIntegrationService(\n"
 _SERVICE_SHARDING_AWARE = (
     "        service = ShardingAwareEndToEndProcessingIntegrationService(\n"
 )
+_SINGLE_SHARD_GUARD = (
+    "    if shard_count <= 1 or not 0 <= plan.shard_index < shard_count:\n"
+)
+_SINGLE_SHARD_GUARD_FIXED = (
+    "    if shard_count < 1 or not 0 <= plan.shard_index < shard_count:\n"
+)
 
 
 def patch_provider_transport_sharding_installation(
-    path: Path = Path("app/processing/pdf_ingestion.py"),
+    path: Path = PDF_INGESTION_PATH,
 ) -> None:
     """Install sharding and make the production service choice explicit."""
     source = path.read_text(encoding="utf-8")
@@ -65,8 +74,24 @@ def patch_provider_transport_sharding_installation(
     path.write_text(source, encoding="utf-8")
 
 
+def patch_provider_single_shard_boundary(
+    path: Path = PROVIDER_SHARDING_PATH,
+) -> None:
+    """Allow a valid one-plan compacted delivery while still rejecting zero shards."""
+    source = path.read_text(encoding="utf-8")
+    if _SINGLE_SHARD_GUARD_FIXED in source:
+        return
+    if source.count(_SINGLE_SHARD_GUARD) != 1:
+        raise RuntimeError("Could not find unique provider single-shard guard")
+    path.write_text(
+        source.replace(_SINGLE_SHARD_GUARD, _SINGLE_SHARD_GUARD_FIXED, 1),
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     patch_provider_transport_sharding_installation()
+    patch_provider_single_shard_boundary()
 
 
 if __name__ == "__main__":
