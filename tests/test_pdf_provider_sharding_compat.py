@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,19 +10,21 @@ import pytest
 
 from app.processing.integration import ProcessingIntegrationRequest, RetainedSourceDescriptor
 from app.processing.pdf_geometry_integration import GeometryProviderInput
+from app.processing.pdf_geometry_preprocessing import GeometryPreprocessedPdf
 from app.processing.pdf_ingestion import PRODUCTION_PROVIDER_OPTIONS
+from app.processing.pdf_page_presentation_bridge import PresentationProviderInput
 from app.processing.pdf_provider_sharding import (
     ProviderTransportShardError,
     ProviderTransportShardRunResult,
 )
 from app.processing import pdf_provider_sharding_compat as compat
-from app.processing.pdf_page_presentation_lifecycle_compat import (
-    DeferredPresentationProviderInput,
-)
 from app.storage.models import StorageReference
 from scripts.apply_provider_transport_sharding import (
     patch_provider_transport_sharding_installation,
 )
+
+
+_MIB = 1024 * 1024
 
 
 class _RawClient:
@@ -59,7 +62,43 @@ class _Canonicalizer:
         raise AssertionError("stubbed sharding runner should intercept")
 
 
-def _large_provider_input() -> DeferredPresentationProviderInput:
+def _preprocessing(page_count: int) -> GeometryPreprocessedPdf:
+    pdf_bytes = b"%PDF-1.4\n% production-type sharding test\n%%EOF\n"
+    checksum = hashlib.sha256(pdf_bytes).hexdigest()
+    return GeometryPreprocessedPdf(
+        pdf_bytes=pdf_bytes,
+        checksum_sha256=checksum,
+        byte_size=len(pdf_bytes),
+        page_count=page_count,
+        changed_page_count=0,
+        pages=(),
+        version="test-production-presentation-input",
+    )
+
+
+def _presentation_provider_input(
+    *,
+    full_size: int = 81 * _MIB,
+    provider_size: int = 81 * _MIB,
+    full_page_count: int = 101,
+    provider_page_count: int = 101,
+    delivery_is_full_render: bool = True,
+) -> PresentationProviderInput:
+    if not 0 <= provider_page_count <= full_page_count:
+        raise ValueError("provider page count must fit within the full document")
+
+    full_reference = StorageReference.parse("src_" + "2" * 32)
+    provider_reference = (
+        full_reference
+        if delivery_is_full_render
+        else StorageReference.parse("src_" + "3" * 32)
+    )
+    full_checksum = "a" * 64
+    provider_checksum = full_checksum if delivery_is_full_render else "b" * 64
+    if delivery_is_full_render:
+        provider_size = full_size
+        provider_page_count = full_page_count
+
     page_map = tuple(
         {
             "provider_page_index": index,
@@ -67,24 +106,39 @@ def _large_provider_input() -> DeferredPresentationProviderInput:
             "original_page_number": index + 1,
             "source_unit_id": f"pdf-page:{index + 1:06d}",
         }
-        for index in range(101)
+        for index in range(provider_page_count)
     )
-    return DeferredPresentationProviderInput(
+    presentation_page_count = full_page_count - provider_page_count
+    return PresentationProviderInput(
         processing_attempt_id="attempt-sharding-compat",
-        storage_reference=StorageReference.parse("src_" + "2" * 32),
-        checksum_sha256="a" * 64,
-        byte_size=81 * 1024 * 1024,
+        storage_reference=full_reference,
+        checksum_sha256=full_checksum,
+        byte_size=full_size,
         media_type="application/pdf",
-        filename="render.pdf",
-        preprocessing=SimpleNamespace(page_count=101),
-        provider_storage_reference=StorageReference.parse("src_" + "3" * 32),
-        provider_checksum_sha256="b" * 64,
-        provider_byte_size=81 * 1024 * 1024,
-        provider_filename="ordinary-pages.pdf",
-        provider_page_count=101,
+        filename="render.presentation-render.pdf",
+        preprocessing=_preprocessing(full_page_count),
+        provider_storage_reference=provider_reference,
+        provider_checksum_sha256=provider_checksum,
+        provider_byte_size=provider_size,
+        provider_filename="render.ordinary-pages.pdf",
+        provider_page_count=provider_page_count,
         provider_page_map=page_map,
-        presentation_manifest={"provider_page_map": list(page_map)},
-        provider_pdf_bytes=None,
+        presentation_manifest={
+            "page_count": full_page_count,
+            "provider_page_count": provider_page_count,
+            "presentation_page_count": presentation_page_count,
+            "provider_page_map": list(page_map),
+        },
+    )
+
+
+def _large_provider_input() -> PresentationProviderInput:
+    return _presentation_provider_input(
+        full_size=81 * _MIB,
+        provider_size=81 * _MIB,
+        full_page_count=101,
+        provider_page_count=101,
+        delivery_is_full_render=True,
     )
 
 
@@ -110,7 +164,7 @@ def _request() -> ProcessingIntegrationRequest:
             storage_reference=StorageReference.parse("src_" + "1" * 32),
             retained=True,
             sha256="a" * 64,
-            byte_size=60 * 1024 * 1024,
+            byte_size=60 * _MIB,
             media_type="application/pdf",
             filename="book.pdf",
         ),
@@ -173,15 +227,158 @@ def test_sharding_integration_preserves_modal_batch_and_worker_options(monkeypat
     assert outcome.revocation_succeeded is True
     assert outcome.elapsed_seconds == 5.5
     assert outcome.grant_id == "provider-transport-shards:3"
+
+    delivery = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_DELIVERY_READY"
+    )
+    assert delivery["full_render_byte_size"] == 81 * _MIB
+    assert delivery["provider_byte_size"] == 81 * _MIB
+    assert delivery["provider_page_count"] == 101
+    assert delivery["presentation_page_count"] == 0
+    assert delivery["delivery_is_full_render"] is True
+    assert delivery["sharding_required"] is True
+
     decision = next(
         fields
         for event, fields in diagnostics
         if event == "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION"
     )
     assert decision["recognized_provider_input"] is True
-    assert decision["provider_input_size_bytes"] == 81 * 1024 * 1024
+    assert decision["provider_input_size_bytes"] == 81 * _MIB
     assert decision["provider_input_page_count"] == 101
     assert decision["sharding_required"] is True
+
+    concise_decision = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARDING_DECISION"
+    )
+    assert concise_decision["provider_byte_size"] == 81 * _MIB
+    assert concise_decision["route"] == "sharded"
+
+
+def test_production_presentation_full_render_above_target_enters_sharding(monkeypatch) -> None:
+    captured = {}
+    canonical = SimpleNamespace(candidate_id="candidate-full-render")
+
+    async def fake_run_provider_transport_shards(**kwargs):
+        captured.update(kwargs)
+        return ProviderTransportShardRunResult(
+            canonicalization=canonical,
+            raw_result=None,
+            error=None,
+            cleanup_safe=True,
+            submission_started=True,
+            shard_count=2,
+        )
+
+    monkeypatch.setattr(
+        compat,
+        "run_provider_transport_shards",
+        fake_run_provider_transport_shards,
+    )
+    provider_input = _presentation_provider_input(
+        full_size=81 * _MIB,
+        full_page_count=100,
+        delivery_is_full_render=True,
+    )
+    service = compat.ShardingAwareEndToEndProcessingIntegrationService(
+        grant_service=_GrantService(),
+        orchestrator=_Orchestrator(provider_input),
+        canonicalizer=_Canonicalizer(),
+        public_origin="https://reader.example",
+    )
+
+    outcome = asyncio.run(service.process(_request()))
+
+    assert captured["provider_input"] is provider_input
+    assert outcome.error is None
+    assert outcome.canonicalization is canonical
+
+
+def test_production_presentation_full_render_large_but_provider_subset_small_uses_single_path(
+    monkeypatch,
+) -> None:
+    diagnostics = []
+    provider_input = _presentation_provider_input(
+        full_size=90 * _MIB,
+        provider_size=70 * _MIB,
+        full_page_count=100,
+        provider_page_count=90,
+        delivery_is_full_render=False,
+    )
+    service = compat.ShardingAwareEndToEndProcessingIntegrationService(
+        grant_service=_GrantService(),
+        orchestrator=_Orchestrator(provider_input),
+        canonicalizer=_Canonicalizer(),
+        public_origin="https://reader.example",
+    )
+
+    async def fake_base_process(self, request):
+        return "base-path"
+
+    monkeypatch.setattr(compat._BaseIntegrationService, "process", fake_base_process)
+    monkeypatch.setattr(
+        compat,
+        "_diagnostic",
+        lambda event, **fields: diagnostics.append((event, fields)),
+    )
+
+    assert asyncio.run(service.process(_request())) == "base-path"
+    delivery = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_DELIVERY_READY"
+    )
+    assert delivery["full_render_byte_size"] == 90 * _MIB
+    assert delivery["provider_byte_size"] == 70 * _MIB
+    assert delivery["provider_page_count"] == 90
+    assert delivery["presentation_page_count"] == 10
+    assert delivery["delivery_is_full_render"] is False
+    assert delivery["sharding_required"] is False
+
+
+def test_production_presentation_provider_subset_above_target_enters_sharding(monkeypatch) -> None:
+    captured = {}
+    canonical = SimpleNamespace(candidate_id="candidate-subset")
+    provider_input = _presentation_provider_input(
+        full_size=92 * _MIB,
+        provider_size=81 * _MIB,
+        full_page_count=100,
+        provider_page_count=95,
+        delivery_is_full_render=False,
+    )
+
+    async def fake_run_provider_transport_shards(**kwargs):
+        captured.update(kwargs)
+        return ProviderTransportShardRunResult(
+            canonicalization=canonical,
+            raw_result=None,
+            error=None,
+            cleanup_safe=True,
+            submission_started=True,
+            shard_count=2,
+        )
+
+    monkeypatch.setattr(
+        compat,
+        "run_provider_transport_shards",
+        fake_run_provider_transport_shards,
+    )
+    service = compat.ShardingAwareEndToEndProcessingIntegrationService(
+        grant_service=_GrantService(),
+        orchestrator=_Orchestrator(provider_input),
+        canonicalizer=_Canonicalizer(),
+        public_origin="https://reader.example",
+    )
+
+    outcome = asyncio.run(service.process(_request()))
+
+    assert captured["provider_input"] is provider_input
+    assert outcome.error is None
+    assert outcome.canonicalization is canonical
 
 
 def test_real_geometry_provider_input_above_target_enters_sharding(monkeypatch) -> None:
@@ -211,7 +408,7 @@ def test_real_geometry_provider_input_above_target_enters_sharding(monkeypatch) 
         lambda event, **fields: diagnostics.append((event, fields)),
     )
     geometry_input = _geometry_provider_input(
-        byte_size=81 * 1024 * 1024,
+        byte_size=81 * _MIB,
         page_count=100,
     )
     service = compat.ShardingAwareEndToEndProcessingIntegrationService(
@@ -244,17 +441,18 @@ def test_real_geometry_provider_input_above_target_enters_sharding(monkeypatch) 
         if event == "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION"
     )
     assert decision["recognized_provider_input"] is True
-    assert decision["provider_input_size_bytes"] == 81 * 1024 * 1024
+    assert decision["provider_input_size_bytes"] == 81 * _MIB
     assert decision["provider_input_page_count"] == 100
     assert decision["sharding_required"] is True
     assert outcome.error is None
     assert outcome.canonicalization is canonical
 
 
-def test_sharding_integration_falls_back_for_provider_input_at_target(monkeypatch) -> None:
-    provider_input = replace(
-        _large_provider_input(),
-        provider_byte_size=80 * 1024 * 1024,
+def test_sharding_integration_falls_back_for_production_input_at_target(monkeypatch) -> None:
+    provider_input = _presentation_provider_input(
+        full_size=80 * _MIB,
+        full_page_count=100,
+        delivery_is_full_render=True,
     )
     service = compat.ShardingAwareEndToEndProcessingIntegrationService(
         grant_service=_GrantService(),
@@ -281,7 +479,7 @@ def test_real_geometry_provider_input_at_target_uses_base_path(monkeypatch) -> N
         grant_service=_GrantService(),
         orchestrator=_Orchestrator(
             _geometry_provider_input(
-                byte_size=80 * 1024 * 1024,
+                byte_size=80 * _MIB,
                 page_count=100,
             )
         ),
@@ -302,12 +500,32 @@ def test_real_geometry_provider_input_at_target_uses_base_path(monkeypatch) -> N
     assert called is True
 
 
+def test_production_presentation_input_with_partial_delivery_identity_fails_closed() -> None:
+    provider_input = replace(
+        _presentation_provider_input(
+            full_size=90 * _MIB,
+            provider_size=81 * _MIB,
+            full_page_count=100,
+            provider_page_count=95,
+            delivery_is_full_render=False,
+        ),
+        provider_checksum_sha256=None,
+    )
+    service = SimpleNamespace(orchestrator=_Orchestrator(provider_input))
+
+    with pytest.raises(
+        ProviderTransportShardError,
+        match="invalid delivery identity",
+    ):
+        compat._provider_input_for(service)
+
+
 def test_sharding_input_with_partial_page_mapping_fails_closed() -> None:
     provider_input = SimpleNamespace(
         processing_attempt_id="attempt-partial-mapping",
         storage_reference=StorageReference.parse("src_" + "6" * 32),
         checksum_sha256="e" * 64,
-        byte_size=81 * 1024 * 1024,
+        byte_size=81 * _MIB,
         media_type="application/pdf",
         filename="partial-mapping.pdf",
         preprocessing=SimpleNamespace(page_count=100),
@@ -326,7 +544,7 @@ def test_sharding_input_without_processing_attempt_id_fails_closed() -> None:
     provider_input = SimpleNamespace(
         storage_reference=StorageReference.parse("src_" + "7" * 32),
         checksum_sha256="f" * 64,
-        byte_size=81 * 1024 * 1024,
+        byte_size=81 * _MIB,
         media_type="application/pdf",
         filename="missing-attempt.pdf",
         preprocessing=SimpleNamespace(page_count=100),
