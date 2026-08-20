@@ -48,6 +48,7 @@ jobs:
           python scripts/apply_page_role_scope_alignment.py
           python scripts/apply_high_resolution_page_confirmation.py
           python scripts/apply_native_pdf_text_recovery.py
+          python scripts/apply_provider_transport_sharding.py
 
       - name: Apply focused provider-delivery runtime overlays
         run: |
@@ -67,6 +68,7 @@ jobs:
           grep -q 'PRODUCTION_MAX_CONCURRENT_WORKERS = 5' app/processing/pdf_ingestion.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 80' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 95' app/processing/pdf_provider_sharding.py
+          grep -q 'if shard_count < 1 or not 0 <= plan.shard_index < shard_count' app/processing/pdf_provider_sharding.py
           grep -q 'shard_delivery = integration.provider_delivery_descriptor(shard_input)' app/processing/pdf_provider_sharding.py
           grep -q 'storage = select_provider_input_storage(get_storage_provider())' app/processing/pdf_page_presentation_lifecycle_compat.py
 
