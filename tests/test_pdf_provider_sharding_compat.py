@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +11,13 @@ from app.processing.integration import ProcessingIntegrationRequest, RetainedSou
 from app.processing.pdf_ingestion import PRODUCTION_PROVIDER_OPTIONS
 from app.processing.pdf_provider_sharding import ProviderTransportShardRunResult
 from app.processing import pdf_provider_sharding_compat as compat
+from app.processing.pdf_page_presentation_lifecycle_compat import (
+    DeferredPresentationProviderInput,
+)
 from app.storage.models import StorageReference
+from scripts.apply_provider_transport_sharding import (
+    patch_provider_transport_sharding_installation,
+)
 
 
 class _RawClient:
@@ -47,12 +55,32 @@ class _Canonicalizer:
         raise AssertionError("stubbed sharding runner should intercept")
 
 
-def _large_provider_input():
-    return SimpleNamespace(
-        provider_byte_size=81 * 1024 * 1024,
-        provider_page_count=101,
-        provider_page_map=tuple(range(101)),
+def _large_provider_input() -> DeferredPresentationProviderInput:
+    page_map = tuple(
+        {
+            "provider_page_index": index,
+            "original_page_index": index,
+            "original_page_number": index + 1,
+            "source_unit_id": f"pdf-page:{index + 1:06d}",
+        }
+        for index in range(101)
+    )
+    return DeferredPresentationProviderInput(
+        processing_attempt_id="attempt-sharding-compat",
+        storage_reference=StorageReference.parse("src_" + "2" * 32),
+        checksum_sha256="a" * 64,
+        byte_size=81 * 1024 * 1024,
+        media_type="application/pdf",
+        filename="render.pdf",
+        preprocessing=SimpleNamespace(page_count=101),
+        provider_storage_reference=StorageReference.parse("src_" + "3" * 32),
         provider_checksum_sha256="b" * 64,
+        provider_byte_size=81 * 1024 * 1024,
+        provider_filename="ordinary-pages.pdf",
+        provider_page_count=101,
+        provider_page_map=page_map,
+        presentation_manifest={"provider_page_map": list(page_map)},
+        provider_pdf_bytes=None,
     )
 
 
@@ -80,7 +108,14 @@ def _request() -> ProcessingIntegrationRequest:
 
 def test_sharding_integration_preserves_modal_batch_and_worker_options(monkeypatch) -> None:
     captured = {}
+    diagnostics = []
     canonical = SimpleNamespace(candidate_id="candidate-sharded")
+
+    monkeypatch.setattr(
+        compat,
+        "_diagnostic",
+        lambda event, **fields: diagnostics.append((event, fields)),
+    )
 
     async def fake_run_provider_transport_shards(**kwargs):
         captured.update(kwargs)
@@ -122,11 +157,22 @@ def test_sharding_integration_preserves_modal_batch_and_worker_options(monkeypat
     assert outcome.revocation_succeeded is True
     assert outcome.elapsed_seconds == 5.5
     assert outcome.grant_id == "provider-transport-shards:3"
+    decision = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION"
+    )
+    assert decision["recognized_provider_input"] is True
+    assert decision["provider_input_size_bytes"] == 81 * 1024 * 1024
+    assert decision["provider_input_page_count"] == 101
+    assert decision["sharding_required"] is True
 
 
 def test_sharding_integration_falls_back_for_provider_input_at_target(monkeypatch) -> None:
-    provider_input = _large_provider_input()
-    provider_input.provider_byte_size = 80 * 1024 * 1024
+    provider_input = replace(
+        _large_provider_input(),
+        provider_byte_size=80 * 1024 * 1024,
+    )
     service = compat.ShardingAwareEndToEndProcessingIntegrationService(
         grant_service=_GrantService(),
         orchestrator=_Orchestrator(provider_input),
@@ -180,3 +226,21 @@ def test_sharding_install_rejects_unexpected_existing_constructor(monkeypatch) -
 
     with pytest.raises(RuntimeError, match="unexpected base"):
         compat.install_provider_transport_sharding_compat()
+
+
+def test_sharding_overlay_makes_production_service_explicit(tmp_path) -> None:
+    from app.processing import pdf_ingestion
+
+    source_path = Path(pdf_ingestion.__file__)
+    target = tmp_path / "pdf_ingestion.py"
+    target.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    patch_provider_transport_sharding_installation(target)
+    source = target.read_text(encoding="utf-8")
+
+    assert "ShardingAwareEndToEndProcessingIntegrationService" in source
+    assert (
+        "service = ShardingAwareEndToEndProcessingIntegrationService("
+        in source
+    )
+    assert "install_provider_transport_sharding_compat()" in source
