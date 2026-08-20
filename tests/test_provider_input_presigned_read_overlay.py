@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -8,6 +9,9 @@ from scripts.apply_provider_input_presigned_read import (
     patch_provider_input_presigned_read,
 )
 from scripts.apply_provider_runtime_preflight import patch_provider_runtime_preflight
+from scripts.apply_provider_transport_sharding import (
+    patch_provider_transport_sharding_installation,
+)
 from scripts.apply_s0_pdf_resource_heartbeat import patch_s0_pdf_resource_heartbeat
 from scripts.apply_s0_v5_phase0_observability import patch_s0_v5_phase0_observability
 
@@ -27,11 +31,33 @@ def _copy_target(tmp_path, source: Path) -> Path:
     return path
 
 
+def _copy_raw_head_target(tmp_path, relative_path: str) -> Path:
+    content = subprocess.check_output(
+        ["git", "show", f"HEAD:{relative_path}"],
+        cwd=REPO_ROOT,
+        text=True,
+    )
+    path = tmp_path / Path(relative_path).name
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def _targets(tmp_path) -> tuple[Path, Path, Path]:
     return (
         _copy_target(tmp_path, BASE_INGESTION),
         _copy_target(tmp_path, BASE_LIFECYCLE),
         _copy_target(tmp_path, BASE_SHARDING),
+    )
+
+
+def _raw_head_targets(tmp_path) -> tuple[Path, Path, Path]:
+    return (
+        _copy_raw_head_target(tmp_path, "app/processing/pdf_ingestion.py"),
+        _copy_raw_head_target(
+            tmp_path,
+            "app/processing/pdf_page_presentation_lifecycle_compat.py",
+        ),
+        _copy_raw_head_target(tmp_path, "app/processing/pdf_provider_sharding.py"),
     )
 
 
@@ -89,6 +115,20 @@ def test_overlay_routes_exact_delivery_and_lifecycle_without_touching_provider_w
     # Existing reliability overlays remain authoritative around provider work.
     assert "await_with_pdf_processing_lease(" in source
     assert "validate_provider_runtime_configuration(settings)" in source
+
+
+def test_staging_overlay_order_composes_sharding_and_presigned_access(tmp_path) -> None:
+    ingestion, lifecycle, sharding = _raw_head_targets(tmp_path)
+    patch_provider_transport_sharding_installation(ingestion)
+    _apply_required_predecessors(ingestion)
+    _apply_provider_overlay(ingestion, lifecycle, sharding)
+    source = ingestion.read_text(encoding="utf-8")
+
+    assert "service = ShardingAwareEndToEndProcessingIntegrationService(" in source
+    assert "provider_delivery = provider_delivery_descriptor(geometry_input)" in source
+    assert "source_transport_url_factory=provider_source_url_factory" in source
+    assert "seconds=PROVIDER_SOURCE_ACCESS_TTL_SECONDS" in source
+    assert "timeout_seconds=ATLAS_PROVIDER_ORCHESTRATION_TIMEOUT_SECONDS" in source
 
 
 def test_overlay_cleanup_deletes_distinct_provider_delivery_only_when_safe(tmp_path) -> None:

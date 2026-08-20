@@ -20,6 +20,7 @@ from app.processing.integration import (
 from app.processing.models import ProviderLifecycleStatus
 from app.processing.orchestration import OrchestrationPhase
 from app.processing.pdf_provider_sharding import (
+    PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
     ProviderTransportShardError,
     ProviderTransportShardRunResult,
     provider_transport_sharding_required,
@@ -154,9 +155,28 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
 
     async def process(self, request):
         provider_input = _provider_input_for(self)
-        if provider_input is None or not provider_transport_sharding_required(
-            provider_input
-        ):
+        if provider_input is None:
+            _diagnostic(
+                "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION",
+                processing_attempt_id=request.processing_attempt_id,
+                provider_job_id=request.provider_job_id,
+                recognized_provider_input=False,
+                sharding_required=False,
+            )
+            return await super().process(request)
+
+        sharding_required = provider_transport_sharding_required(provider_input)
+        _diagnostic(
+            "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION",
+            processing_attempt_id=request.processing_attempt_id,
+            provider_job_id=request.provider_job_id,
+            recognized_provider_input=True,
+            provider_input_size_bytes=provider_input.provider_byte_size,
+            provider_input_page_count=provider_input.provider_page_count,
+            shard_target_bytes=PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
+            sharding_required=sharding_required,
+        )
+        if not sharding_required:
             return await super().process(request)
 
         if self.canonicalizer is None:

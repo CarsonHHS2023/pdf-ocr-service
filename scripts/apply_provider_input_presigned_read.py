@@ -50,7 +50,6 @@ _GRANT_SERVICE_ANCHOR = '''        grant_service = ProviderInputGrantService(
             get_transport_grant_service(),
             geometry_input,
         )
-        service = EndToEndProcessingIntegrationService(
 '''
 _GRANT_SERVICE_WITH_SOURCE_FACTORY = '''        grant_service = ProviderInputGrantService(
             get_transport_grant_service(),
@@ -62,7 +61,6 @@ _GRANT_SERVICE_WITH_SOURCE_FACTORY = '''        grant_service = ProviderInputGra
             reference=provider_delivery.storage_reference,
             byte_size=provider_delivery.byte_size,
         )
-        service = EndToEndProcessingIntegrationService(
 '''
 
 _SERVICE_POLICY_ANCHOR = '''            public_origin=settings.public_source_transport_origin,

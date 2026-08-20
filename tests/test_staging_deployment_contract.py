@@ -62,6 +62,18 @@ def test_staging_deploy_uses_verified_artifact_from_integration() -> None:
     assert "expected_revision={sha}" in source
 
 
+def test_overlay_installers_do_not_depend_on_provider_wait_call_shape() -> None:
+    for script_name in (
+        "apply_provider_transport_sharding.py",
+        "apply_opencv_v4_modal_bridge.py",
+    ):
+        source = (REPO_ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+        required_start = source.index("required = (")
+        required_end = source.index(")", required_start)
+        required_block = source[required_start:required_end]
+        assert "outcome = await service.process(request)" not in required_block
+
+
 def test_deprecated_staging_writers_cannot_write_shared_space() -> None:
     for workflow_name in ("deploy-staging-branch.yml", "deploy-staging.yml"):
         source = (WORKFLOWS / workflow_name).read_text(encoding="utf-8")

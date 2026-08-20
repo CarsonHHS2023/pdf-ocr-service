@@ -215,7 +215,6 @@ def _install_bridge_import() -> None:
         "PaddleVLClient(",
         "ProviderInputChecksumProvider(",
         "EndToEndProcessingIntegrationService(",
-        "outcome = await service.process(request)",
     )
     missing = [value for value in required if value not in source]
     if missing:
