@@ -19,6 +19,8 @@ from app.processing.integration import (
 )
 from app.processing.models import ProviderLifecycleStatus
 from app.processing.orchestration import OrchestrationPhase
+from app.processing.pdf_geometry_integration import provider_delivery_descriptor
+from app.processing.pdf_page_presentation_bridge import PresentationProviderInput
 from app.processing.pdf_provider_sharding import (
     PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
     ProviderTransportShardError,
@@ -37,20 +39,99 @@ def _diagnostic(event: str, **fields: object) -> None:
     _logger.info("%s %s", event, payload)
 
 
+def _identity_provider_page_map(page_count: int) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "provider_page_index": index,
+            "original_page_index": index,
+            "original_page_number": index + 1,
+            "source_unit_id": f"pdf-page:{index + 1:06d}",
+        }
+        for index in range(page_count)
+    )
+
+
+def _normalize_legacy_provider_input(
+    provider_input: Any,
+    *,
+    delivery: Any,
+) -> PresentationProviderInput:
+    """Adapt one validated legacy delivery to the sharding contract."""
+    processing_attempt_id = getattr(provider_input, "processing_attempt_id", None)
+    if not isinstance(processing_attempt_id, str) or not processing_attempt_id.strip():
+        raise ProviderTransportShardError(
+            "legacy provider input processing attempt id is invalid"
+        )
+
+    preprocessing = getattr(provider_input, "preprocessing", None)
+    page_count = getattr(preprocessing, "page_count", None)
+    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count <= 0:
+        raise ProviderTransportShardError(
+            "legacy provider input page count is invalid for transport sharding"
+        )
+
+    page_map = _identity_provider_page_map(page_count)
+    pages = [
+        {
+            "page_number": index + 1,
+            "source_unit_id": f"pdf-page:{index + 1:06d}",
+            "ocr_route": "modal_paddle_ocr",
+        }
+        for index in range(page_count)
+    ]
+    manifest = {
+        "page_count": page_count,
+        "provider_page_count": page_count,
+        "presentation_page_count": 0,
+        "native_text_page_count": 0,
+        "local_result_page_count": 0,
+        "pages": pages,
+        "provider_page_map": [dict(item) for item in page_map],
+    }
+    return PresentationProviderInput(
+        processing_attempt_id=processing_attempt_id,
+        storage_reference=delivery.storage_reference,
+        checksum_sha256=delivery.checksum_sha256,
+        byte_size=delivery.byte_size,
+        media_type=delivery.media_type,
+        filename=delivery.filename,
+        preprocessing=preprocessing,
+        provider_storage_reference=delivery.storage_reference,
+        provider_checksum_sha256=delivery.checksum_sha256,
+        provider_byte_size=delivery.byte_size,
+        provider_filename=delivery.filename,
+        provider_page_count=page_count,
+        provider_page_map=page_map,
+        presentation_manifest=manifest,
+    )
+
+
 def _provider_input_for(service: Any) -> Any | None:
     orchestrator = getattr(service, "orchestrator", None)
     provider_input = getattr(orchestrator, "provider_input", None)
-    required = (
-        "provider_byte_size",
+    if provider_input is None:
+        return None
+
+    try:
+        delivery = provider_delivery_descriptor(provider_input)
+    except (TypeError, ValueError) as exc:
+        raise ProviderTransportShardError(
+            "provider transport sharding input has invalid delivery identity"
+        ) from exc
+
+    sharding_fields = (
         "provider_page_count",
         "provider_page_map",
-        "provider_checksum_sha256",
+        "presentation_manifest",
     )
-    if provider_input is None or any(
-        not hasattr(provider_input, name) for name in required
-    ):
-        return None
-    return provider_input
+    sharding_present = tuple(hasattr(provider_input, name) for name in sharding_fields)
+    if all(sharding_present):
+        return provider_input
+    if any(sharding_present):
+        raise ProviderTransportShardError(
+            "provider transport sharding input has partial page mapping identity"
+        )
+    return _normalize_legacy_provider_input(provider_input, delivery=delivery)
 
 
 def _raw_client_for(service: Any) -> Any:
@@ -180,7 +261,9 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
             return await super().process(request)
 
         if self.canonicalizer is None:
-            return await super().process(request)
+            raise ProviderTransportShardError(
+                "provider transport sharding requires a canonicalizer"
+            )
 
         started = self.monotonic()
         _diagnostic(
