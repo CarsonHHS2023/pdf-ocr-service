@@ -214,10 +214,54 @@ jobs:
             /tmp/atlas-staging-verified/app/processing/ingestion_dispatch.py \
             /tmp/atlas-staging-verified/app/processing/ingestion_dispatch_model.py \
             /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
+            /tmp/atlas-staging-verified/app/processing/pdf_provider_sharding.py \
+            /tmp/atlas-staging-verified/app/processing/pdf_provider_sharding_compat.py \
+            /tmp/atlas-staging-verified/app/processing/pdf_page_presentation_lifecycle_compat.py \
+            /tmp/atlas-staging-verified/app/processing/provider_input_source_access.py \
+            /tmp/atlas-staging-verified/app/processing/provider_lifecycle_policy.py \
             /tmp/atlas-staging-verified/app/processing/s0_provider_wait_lease.py \
             /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_analysis_compat.py \
             /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_cache.py \
             /tmp/atlas-staging-verified/app/processing/s0_v5_phase1_shared_v4.py
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('/tmp/atlas-staging-verified')
+          contracts = {
+              'app/processing/pdf_ingestion.py': (
+                  'provider_delivery_descriptor(geometry_input)',
+                  'source_transport_url_factory=provider_source_url_factory',
+                  'ShardingAwareEndToEndProcessingIntegrationService(',
+                  'ATLAS_PROVIDER_ORCHESTRATION_TIMEOUT_SECONDS',
+                  'PROVIDER_SOURCE_ACCESS_TTL_SECONDS',
+              ),
+              'app/processing/pdf_provider_sharding.py': (
+                  'shard_delivery = integration.provider_delivery_descriptor(shard_input)',
+                  'source_transport_url_factory=shard_source_url_factory',
+                  'PROVIDER_SOURCE_ACCESS_TTL_SECONDS',
+              ),
+              'app/processing/pdf_provider_sharding_compat.py': (
+                  'PDF_PROVIDER_DELIVERY_READY',
+                  'PDF_PROVIDER_SHARDING_DECISION',
+                  'provider_delivery_descriptor(provider_input)',
+              ),
+              'app/processing/pdf_page_presentation_lifecycle_compat.py': (
+                  'select_provider_input_storage(get_storage_provider())',
+              ),
+          }
+          missing = []
+          for relative, markers in contracts.items():
+              source = (root / relative).read_text(encoding='utf-8')
+              for marker in markers:
+                  if marker not in source:
+                      missing.append(f'{relative}: {marker}')
+          if missing:
+              raise SystemExit(
+                  'tested staging artifact is missing provider delivery contract markers:\n'
+                  + '\n'.join(missing)
+              )
+          print('tested staging artifact provider delivery contract verified')
+          PY
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
