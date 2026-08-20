@@ -138,6 +138,16 @@ def _retryable_unavailable(message: str = "provider temporarily unavailable") ->
     )
 
 
+def _result_not_ready() -> ProviderClientError:
+    return ProviderClientError(
+        ProviderErrorDetail(
+            ProviderErrorCategory.RESULT_NOT_READY,
+            "provider result is not ready",
+            retryable=True,
+        )
+    )
+
+
 def _orchestrator(tmp_path, provider: _Provider, clock: _Clock) -> ProcessingOrchestrator:
     return ProcessingOrchestrator(
         provider=provider,
@@ -184,6 +194,39 @@ def test_status_poll_retries_transient_unavailable_within_existing_deadline(tmp_
     assert "PDF_PROVIDER_POLL_RETRY" in stderr
     assert "phase=provider_running" in stderr
     assert "error_category=provider_unavailable" in stderr
+
+
+def test_status_request_cap_counts_retryable_transport_failures(tmp_path) -> None:
+    provider = _Provider()
+    provider.statuses = [
+        _retryable_unavailable("transient-with-cap"),
+        _completed(),
+    ]
+    clock = _Clock()
+
+    with pytest.raises(OrchestrationError) as captured:
+        asyncio.run(
+            _orchestrator(tmp_path, provider, clock)._poll_terminal(
+                _request(),
+                PollingPolicy(
+                    timeout_seconds=30,
+                    initial_interval_seconds=1,
+                    max_interval_seconds=1,
+                    max_status_requests=1,
+                ),
+                0.0,
+                0,
+                ProviderLifecycleStatus.QUEUED,
+            )
+        )
+
+    error = captured.value
+    assert error.category is OrchestrationErrorCategory.TIMEOUT
+    assert error.safe_message == "maximum provider status requests reached"
+    assert error.poll_count == 0
+    assert len(provider.statuses) == 1
+    assert isinstance(provider.statuses[0], ProviderJobStatus)
+    assert provider.statuses[0].status is ProviderLifecycleStatus.PROVIDER_COMPLETED
 
 
 def test_status_poll_retry_exhaustion_preserves_last_successful_snapshot(tmp_path) -> None:
@@ -243,6 +286,49 @@ def test_result_poll_retries_transient_unavailable_within_existing_deadline(tmp_
             _request(),
             PollingPolicy(
                 timeout_seconds=30,
+                initial_interval_seconds=1,
+                max_interval_seconds=2,
+            ),
+            0.0,
+            1,
+            terminal,
+            0.0,
+        )
+    )
+
+    assert result.status is ProviderLifecycleStatus.PROVIDER_COMPLETED
+    assert polls == 1
+    assert snapshot is terminal
+    assert provider.results == []
+
+
+def test_result_not_ready_resets_retryable_transport_error_streak(tmp_path) -> None:
+    provider = _Provider()
+    terminal = _completed()
+    provider.results = [
+        _retryable_unavailable("transient-1"),
+        _result_not_ready(),
+        _retryable_unavailable("transient-2"),
+        _result_not_ready(),
+        _retryable_unavailable("transient-3"),
+        _result_not_ready(),
+        _retryable_unavailable("transient-4"),
+        ProviderResult(
+            "job-resilience",
+            "request-resilience",
+            ProviderLifecycleStatus.PROVIDER_COMPLETED,
+            "full",
+            None,
+            documents=[{"document_id": "document-resilience", "raw_result": []}],
+        ),
+    ]
+    clock = _Clock()
+
+    result, polls, snapshot = asyncio.run(
+        _orchestrator(tmp_path, provider, clock)._retrieve_result(
+            _request(),
+            PollingPolicy(
+                timeout_seconds=60,
                 initial_interval_seconds=1,
                 max_interval_seconds=2,
             ),
