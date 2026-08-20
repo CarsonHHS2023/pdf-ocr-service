@@ -19,6 +19,11 @@ from app.processing.integration import (
 )
 from app.processing.models import ProviderLifecycleStatus
 from app.processing.orchestration import OrchestrationPhase
+from app.processing.pdf_geometry_integration import (
+    GeometryProviderInput,
+    provider_delivery_descriptor,
+)
+from app.processing.pdf_page_presentation_bridge import PresentationProviderInput
 from app.processing.pdf_provider_sharding import (
     PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
     ProviderTransportShardError,
@@ -37,9 +42,78 @@ def _diagnostic(event: str, **fields: object) -> None:
     _logger.info("%s %s", event, payload)
 
 
+def _identity_provider_page_map(page_count: int) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "provider_page_index": index,
+            "original_page_index": index,
+            "original_page_number": index + 1,
+            "source_unit_id": f"pdf-page:{index + 1:06d}",
+        }
+        for index in range(page_count)
+    )
+
+
+def _normalize_geometry_provider_input(
+    provider_input: GeometryProviderInput,
+) -> PresentationProviderInput:
+    """Adapt the production geometry-only input to the sharding contract.
+
+    Geometry-only ingestion predates presentation routing and therefore carries
+    the provider identity as ``storage_reference/checksum_sha256/byte_size``.
+    The sharding core intentionally consumes the richer presentation contract.
+    Normalize once at this boundary rather than teaching every sharding helper a
+    second set of field names.
+    """
+    delivery = provider_delivery_descriptor(provider_input)
+    page_count = getattr(provider_input.preprocessing, "page_count", None)
+    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count <= 0:
+        raise ProviderTransportShardError(
+            "geometry provider input page count is invalid for transport sharding"
+        )
+
+    page_map = _identity_provider_page_map(page_count)
+    pages = [
+        {
+            "page_number": index + 1,
+            "source_unit_id": f"pdf-page:{index + 1:06d}",
+            "ocr_route": "modal_paddle_ocr",
+        }
+        for index in range(page_count)
+    ]
+    manifest = {
+        "page_count": page_count,
+        "provider_page_count": page_count,
+        "presentation_page_count": 0,
+        "native_text_page_count": 0,
+        "local_result_page_count": 0,
+        "pages": pages,
+        "provider_page_map": [dict(item) for item in page_map],
+    }
+    return PresentationProviderInput(
+        processing_attempt_id=provider_input.processing_attempt_id,
+        storage_reference=provider_input.storage_reference,
+        checksum_sha256=provider_input.checksum_sha256,
+        byte_size=provider_input.byte_size,
+        media_type=provider_input.media_type,
+        filename=provider_input.filename,
+        preprocessing=provider_input.preprocessing,
+        provider_storage_reference=delivery.storage_reference,
+        provider_checksum_sha256=delivery.checksum_sha256,
+        provider_byte_size=delivery.byte_size,
+        provider_filename=delivery.filename,
+        provider_page_count=page_count,
+        provider_page_map=page_map,
+        presentation_manifest=manifest,
+    )
+
+
 def _provider_input_for(service: Any) -> Any | None:
     orchestrator = getattr(service, "orchestrator", None)
     provider_input = getattr(orchestrator, "provider_input", None)
+    if isinstance(provider_input, GeometryProviderInput):
+        return _normalize_geometry_provider_input(provider_input)
+
     required = (
         "provider_byte_size",
         "provider_page_count",
@@ -209,8 +283,6 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
                 diagnostic=_diagnostic,
             )
         except Exception as exc:
-            # Planning/client-resolution failures happen before provider submission,
-            # so retaining the full render is not required for an active grant.
             result = ProviderTransportShardRunResult(
                 canonicalization=None,
                 raw_result=None,
