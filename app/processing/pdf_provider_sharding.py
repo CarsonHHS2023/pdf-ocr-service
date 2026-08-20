@@ -145,7 +145,7 @@ def materialize_provider_input_shard(
     max_bytes: int = PROVIDER_TRANSPORT_SHARD_MAX_BYTES,
 ) -> Any:
     """Create one shard input while keeping the full render PDF unchanged."""
-    if shard_count <= 1 or not 0 <= plan.shard_index < shard_count:
+    if shard_count < 1 or not 0 <= plan.shard_index < shard_count:
         raise ProviderTransportShardError("provider shard index/count is invalid")
     content = _provider_pdf_bytes(storage, provider_input)
     document = fitz.open(stream=content, filetype="pdf")
