@@ -114,8 +114,10 @@ def _provider_input_for(service: Any) -> Any | None:
 
     try:
         delivery = provider_delivery_descriptor(provider_input)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        raise ProviderTransportShardError(
+            "provider transport sharding input has invalid delivery identity"
+        ) from exc
 
     sharding_fields = (
         "provider_page_count",
@@ -152,7 +154,11 @@ def _raw_result_fields(raw_result: Any | None) -> tuple[Any, str | None, int | N
     if raw_result is None:
         return None, None, None
     ingestion = raw_result.ingestion
-    return ingestion.storage_reference, ingestion.payload_sha256, ingestion.payload_size_bytes
+    return (
+        ingestion.storage_reference,
+        ingestion.payload_sha256,
+        ingestion.payload_size_bytes,
+    )
 
 
 def _bounded_integration_error(exc: Exception) -> IntegrationError:
@@ -253,6 +259,7 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
         )
         if not sharding_required:
             return await super().process(request)
+
         if self.canonicalizer is None:
             raise ProviderTransportShardError(
                 "provider transport sharding requires a canonicalizer"
@@ -285,8 +292,15 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
                 diagnostic=_diagnostic,
             )
         except Exception as exc:
+            # Planning/client-resolution failures happen before provider submission,
+            # so retaining the full render is not required for an active grant.
             result = ProviderTransportShardRunResult(
-                None, None, exc, True, False, 0
+                canonicalization=None,
+                raw_result=None,
+                error=exc,
+                cleanup_safe=True,
+                submission_started=False,
+                shard_count=0,
             )
 
         elapsed = max(0.0, self.monotonic() - started)
@@ -312,6 +326,7 @@ def install_provider_transport_sharding_compat() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+
     from app.processing import pdf_ingestion
 
     current = pdf_ingestion.EndToEndProcessingIntegrationService
