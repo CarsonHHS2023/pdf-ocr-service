@@ -1,4 +1,10 @@
-"""Install fail-fast PDF provider runtime validation in staging ingestion."""
+"""Install fail-fast PDF provider runtime validation in staging ingestion.
+
+The narrow ``patch_provider_runtime_preflight`` helper remains independently
+usable.  The CLI entrypoint is the ordered Staging provider-runtime installer:
+after preflight is present it also installs the existing presigned provider-input
+lifecycle so the artifact tested by Staging CI matches the focused provider CI.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -75,8 +81,26 @@ def patch_provider_runtime_preflight(
     path.write_text(source, encoding="utf-8")
 
 
+def _presigned_lifecycle_installer():
+    """Resolve the sibling installer for package import or direct CLI execution."""
+    if __package__:
+        from scripts.apply_provider_input_presigned_read import (
+            patch_provider_input_presigned_read,
+        )
+    else:
+        from apply_provider_input_presigned_read import (
+            patch_provider_input_presigned_read,
+        )
+    return patch_provider_input_presigned_read
+
+
 def main() -> None:
     patch_provider_runtime_preflight()
+
+    # Staging CI invokes this script only after the heartbeat and sharding
+    # overlays.  At that point install the complete provider-delivery lifecycle
+    # into the same worktree that will be tested, archived, and deployed.
+    _presigned_lifecycle_installer()()
 
 
 if __name__ == "__main__":

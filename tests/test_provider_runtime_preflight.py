@@ -10,6 +10,8 @@ from app.processing.pdf_provider_runtime_preflight import (
     provider_runtime_configuration_status,
     validate_provider_runtime_configuration,
 )
+from scripts import apply_provider_input_presigned_read as presigned_installer
+from scripts import apply_provider_runtime_preflight as runtime_installer
 from scripts.apply_provider_runtime_preflight import patch_provider_runtime_preflight
 
 
@@ -77,3 +79,22 @@ def test_preflight_overlay_is_idempotent_and_precedes_storage(tmp_path: Path) ->
     assert once.index("validate_provider_runtime_configuration(settings)") < once.index(
         "storage = get_storage_provider()"
     )
+
+
+def test_cli_installer_composes_preflight_then_presigned_lifecycle(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        runtime_installer,
+        "patch_provider_runtime_preflight",
+        lambda: calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        presigned_installer,
+        "patch_provider_input_presigned_read",
+        lambda: calls.append("presigned"),
+    )
+
+    runtime_installer.main()
+
+    assert calls == ["preflight", "presigned"]

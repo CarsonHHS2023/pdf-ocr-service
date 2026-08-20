@@ -62,6 +62,28 @@ def test_staging_deploy_uses_verified_artifact_from_integration() -> None:
     assert "expected_revision={sha}" in source
 
 
+def test_staging_provider_runtime_installer_includes_presigned_delivery() -> None:
+    workflow = (WORKFLOWS / "staging-integration-ci.yml").read_text(encoding="utf-8")
+    installer = (
+        REPO_ROOT / "scripts" / "apply_provider_runtime_preflight.py"
+    ).read_text(encoding="utf-8")
+
+    heartbeat = "python scripts/apply_s0_pdf_resource_heartbeat.py"
+    preflight = "python scripts/apply_provider_runtime_preflight.py"
+    sharding = "python scripts/apply_provider_transport_sharding.py"
+
+    assert heartbeat in workflow
+    assert preflight in workflow
+    assert sharding in workflow
+    assert workflow.index(sharding) < workflow.index(preflight)
+    assert workflow.index(heartbeat) < workflow.index(preflight)
+    assert "patch_provider_input_presigned_read" in installer
+    assert "_presigned_lifecycle_installer" in installer
+    assert installer.index("patch_provider_runtime_preflight()") < installer.index(
+        "_presigned_lifecycle_installer()()"
+    )
+
+
 def test_overlay_installers_do_not_depend_on_provider_wait_call_shape() -> None:
     for script_name in (
         "apply_provider_transport_sharding.py",
