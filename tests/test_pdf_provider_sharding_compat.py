@@ -81,9 +81,11 @@ def _presentation_provider_input(
     full_size: int = 81 * _MIB,
     provider_size: int = 81 * _MIB,
     full_page_count: int = 101,
-    provider_page_count: int = 101,
+    provider_page_count: int | None = None,
     delivery_is_full_render: bool = True,
 ) -> PresentationProviderInput:
+    if provider_page_count is None:
+        provider_page_count = full_page_count
     if not 0 <= provider_page_count <= full_page_count:
         raise ValueError("provider page count must fit within the full document")
 
