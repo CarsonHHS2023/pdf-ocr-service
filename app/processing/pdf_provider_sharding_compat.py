@@ -19,10 +19,7 @@ from app.processing.integration import (
 )
 from app.processing.models import ProviderLifecycleStatus
 from app.processing.orchestration import OrchestrationPhase
-from app.processing.pdf_geometry_integration import (
-    GeometryProviderInput,
-    provider_delivery_descriptor,
-)
+from app.processing.pdf_geometry_integration import provider_delivery_descriptor
 from app.processing.pdf_page_presentation_bridge import PresentationProviderInput
 from app.processing.pdf_provider_sharding import (
     PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
@@ -54,22 +51,20 @@ def _identity_provider_page_map(page_count: int) -> tuple[dict[str, object], ...
     )
 
 
-def _normalize_geometry_provider_input(
-    provider_input: GeometryProviderInput,
-) -> PresentationProviderInput:
-    """Adapt the production geometry-only input to the sharding contract.
+def _normalize_legacy_provider_input(provider_input: Any) -> PresentationProviderInput:
+    """Adapt a validated legacy provider input to the sharding contract.
 
-    Geometry-only ingestion predates presentation routing and therefore carries
-    the provider identity as ``storage_reference/checksum_sha256/byte_size``.
-    The sharding core intentionally consumes the richer presentation contract.
-    Normalize once at this boundary rather than teaching every sharding helper a
-    second set of field names.
+    Geometry-only ingestion predates presentation routing and carries provider
+    identity as ``storage_reference/checksum_sha256/byte_size``. Resolve that
+    identity through the shared delivery descriptor, then normalize once at this
+    boundary instead of teaching every sharding helper a second field vocabulary.
     """
     delivery = provider_delivery_descriptor(provider_input)
-    page_count = getattr(provider_input.preprocessing, "page_count", None)
+    preprocessing = getattr(provider_input, "preprocessing", None)
+    page_count = getattr(preprocessing, "page_count", None)
     if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count <= 0:
         raise ProviderTransportShardError(
-            "geometry provider input page count is invalid for transport sharding"
+            "legacy provider input page count is invalid for transport sharding"
         )
 
     page_map = _identity_provider_page_map(page_count)
@@ -91,13 +86,13 @@ def _normalize_geometry_provider_input(
         "provider_page_map": [dict(item) for item in page_map],
     }
     return PresentationProviderInput(
-        processing_attempt_id=provider_input.processing_attempt_id,
-        storage_reference=provider_input.storage_reference,
-        checksum_sha256=provider_input.checksum_sha256,
-        byte_size=provider_input.byte_size,
-        media_type=provider_input.media_type,
-        filename=provider_input.filename,
-        preprocessing=provider_input.preprocessing,
+        processing_attempt_id=str(getattr(provider_input, "processing_attempt_id")),
+        storage_reference=delivery.storage_reference,
+        checksum_sha256=delivery.checksum_sha256,
+        byte_size=delivery.byte_size,
+        media_type=delivery.media_type,
+        filename=delivery.filename,
+        preprocessing=preprocessing,
         provider_storage_reference=delivery.storage_reference,
         provider_checksum_sha256=delivery.checksum_sha256,
         provider_byte_size=delivery.byte_size,
@@ -111,20 +106,28 @@ def _normalize_geometry_provider_input(
 def _provider_input_for(service: Any) -> Any | None:
     orchestrator = getattr(service, "orchestrator", None)
     provider_input = getattr(orchestrator, "provider_input", None)
-    if isinstance(provider_input, GeometryProviderInput):
-        return _normalize_geometry_provider_input(provider_input)
+    if provider_input is None:
+        return None
 
-    required = (
+    provider_fields = (
         "provider_byte_size",
         "provider_page_count",
         "provider_page_map",
         "provider_checksum_sha256",
     )
-    if provider_input is None or any(
-        not hasattr(provider_input, name) for name in required
-    ):
+    provider_present = tuple(hasattr(provider_input, name) for name in provider_fields)
+    if all(provider_present):
+        return provider_input
+    if any(provider_present):
+        raise ProviderTransportShardError(
+            "provider transport sharding input has partial provider identity"
+        )
+
+    try:
+        provider_delivery_descriptor(provider_input)
+    except (TypeError, ValueError):
         return None
-    return provider_input
+    return _normalize_legacy_provider_input(provider_input)
 
 
 def _raw_client_for(service: Any) -> Any:
@@ -147,11 +150,7 @@ def _raw_result_fields(raw_result: Any | None) -> tuple[Any, str | None, int | N
     if raw_result is None:
         return None, None, None
     ingestion = raw_result.ingestion
-    return (
-        ingestion.storage_reference,
-        ingestion.payload_sha256,
-        ingestion.payload_size_bytes,
-    )
+    return ingestion.storage_reference, ingestion.payload_sha256, ingestion.payload_size_bytes
 
 
 def _bounded_integration_error(exc: Exception) -> IntegrationError:
@@ -163,12 +162,7 @@ def _bounded_integration_error(exc: Exception) -> IntegrationError:
     )
 
 
-def _outcome_from_sharded_result(
-    request: Any,
-    result: ProviderTransportShardRunResult,
-    *,
-    elapsed_seconds: float,
-) -> ProcessingIntegrationOutcome:
+def _outcome_from_sharded_result(request: Any, result: ProviderTransportShardRunResult, *, elapsed_seconds: float) -> ProcessingIntegrationOutcome:
     raw_reference, raw_checksum, raw_size = _raw_result_fields(result.raw_result)
     grant_state = TransportGrantState.REVOKED if result.cleanup_safe else None
     if result.error is None and result.canonicalization is not None:
@@ -196,8 +190,7 @@ def _outcome_from_sharded_result(
         )
 
     error = _bounded_integration_error(
-        result.error
-        if isinstance(result.error, Exception)
+        result.error if isinstance(result.error, Exception)
         else ProviderTransportShardError("provider transport sharding did not complete")
     )
     return ProcessingIntegrationOutcome(
@@ -252,9 +245,10 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
         )
         if not sharding_required:
             return await super().process(request)
-
         if self.canonicalizer is None:
-            return await super().process(request)
+            raise ProviderTransportShardError(
+                "provider transport sharding requires a canonicalizer"
+            )
 
         started = self.monotonic()
         _diagnostic(
@@ -272,9 +266,7 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
                 descriptor=request.retained_source,
                 processing_attempt_id=request.processing_attempt_id,
                 logical_provider_job_id=request.provider_job_id,
-                logical_provider_request_id=(
-                    request.provider_request_id or request.processing_attempt_id
-                ),
+                logical_provider_request_id=request.provider_request_id or request.processing_attempt_id,
                 result_profile=request.result_profile,
                 provider_job_options=dict(request.provider_job_options),
                 public_origin=self._origin_value,
@@ -283,21 +275,10 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
                 diagnostic=_diagnostic,
             )
         except Exception as exc:
-            result = ProviderTransportShardRunResult(
-                canonicalization=None,
-                raw_result=None,
-                error=exc,
-                cleanup_safe=True,
-                submission_started=False,
-                shard_count=0,
-            )
+            result = ProviderTransportShardRunResult(None, None, exc, True, False, 0)
 
         elapsed = max(0.0, self.monotonic() - started)
-        outcome = _outcome_from_sharded_result(
-            request,
-            result,
-            elapsed_seconds=elapsed,
-        )
+        outcome = _outcome_from_sharded_result(request, result, elapsed_seconds=elapsed)
         _diagnostic(
             "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
             processing_attempt_id=request.processing_attempt_id,
@@ -315,7 +296,6 @@ def install_provider_transport_sharding_compat() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
-
     from app.processing import pdf_ingestion
 
     current = pdf_ingestion.EndToEndProcessingIntegrationService
@@ -323,16 +303,9 @@ def install_provider_transport_sharding_compat() -> None:
         _INSTALLED = True
         return
     if current is not _BaseIntegrationService:
-        raise RuntimeError(
-            "provider transport sharding integration service has an unexpected base"
-        )
-    pdf_ingestion.EndToEndProcessingIntegrationService = (
-        ShardingAwareEndToEndProcessingIntegrationService
-    )
+        raise RuntimeError("provider transport sharding integration service has an unexpected base")
+    pdf_ingestion.EndToEndProcessingIntegrationService = ShardingAwareEndToEndProcessingIntegrationService
     _INSTALLED = True
 
 
-__all__ = [
-    "ShardingAwareEndToEndProcessingIntegrationService",
-    "install_provider_transport_sharding_compat",
-]
+__all__ = ["ShardingAwareEndToEndProcessingIntegrationService", "install_provider_transport_sharding_compat"]
