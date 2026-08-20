@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from app.processing.errors import ProviderClientError, ProviderErrorCategory
 from app.processing.ingestion import RawResultIngestionError, ingest_artifact_result, ingest_inline_result, summarize_pages
-from app.processing.models import ArtifactMetadata, DocumentProcessingProvider, ProviderJobStatus, ProviderLifecycleStatus, ProviderResult
+from app.processing.models import ArtifactMetadata, DocumentProcessingProvider, ProviderJobStatus, ProviderLifecycleStatus, ProviderProgress, ProviderResult
 from app.processing.raw_result import RawProcessingResultEnvelope, RawResultArtifactMetadata, RawResultIdentity, RawResultPageSummary, RawResultProviderProvenance, RawResultSourceProvenance, is_valid_sha256
 from app.storage.base import StorageProvider
 from app.storage.models import StorageReference
@@ -63,6 +63,9 @@ class OrchestrationError(Exception):
     retryable: bool = False
     elapsed_seconds: float = 0.0
     poll_count: int = 0
+    provider_request_id: str | None = None
+    last_provider_progress: ProviderProgress | None = field(default=None, repr=False)
+    last_successful_poll_elapsed_seconds: float | None = None
 
     def __str__(self) -> str:
         return f"{self.category.value}: {self.safe_message}"
@@ -189,12 +192,12 @@ class ProcessingOrchestrator:
             if submission.job_id != request.provider_job_id:
                 raise OrchestrationError(OrchestrationErrorCategory.IDENTITY_MISMATCH, "provider returned a different job_id than requested", phase, request.provider_job_id)
             provider_request_id = submission.request_id or request.provider_request_id
-            terminal, polls, phase, snapshot = await self._poll_terminal(request, policy, start, polls)
+            terminal, polls, phase, snapshot, last_poll_elapsed = await self._poll_terminal(request, policy, start, polls, submission.status)
             if terminal.status == ProviderLifecycleStatus.FAILED:
-                return self._failure_outcome(request, provider_request_id, OrchestrationError(OrchestrationErrorCategory.PROVIDER_FAILED, "provider execution failed", OrchestrationPhase.FAILED, request.provider_job_id, terminal.status.value, _provider_code(terminal.error), False, self.monotonic()-start, polls), terminal, polls, start)
+                return self._failure_outcome(request, provider_request_id, OrchestrationError(OrchestrationErrorCategory.PROVIDER_FAILED, "provider execution failed", OrchestrationPhase.FAILED, request.provider_job_id, terminal.status.value, _provider_code(terminal.error), False, self.monotonic()-start, polls, terminal.request_id, terminal.progress, last_poll_elapsed), terminal, polls, start)
             if terminal.status == ProviderLifecycleStatus.EXPIRED:
-                return self._failure_outcome(request, provider_request_id, OrchestrationError(OrchestrationErrorCategory.JOB_EXPIRED, "provider job expired; a future new Atlas attempt may be required", OrchestrationPhase.FAILED, request.provider_job_id, terminal.status.value, _provider_code(terminal.error), False, self.monotonic()-start, polls), terminal, polls, start)
-            result, polls, snapshot = await self._retrieve_result(request, policy, start, polls, terminal)
+                return self._failure_outcome(request, provider_request_id, OrchestrationError(OrchestrationErrorCategory.JOB_EXPIRED, "provider job expired; a future new Atlas attempt may be required", OrchestrationPhase.FAILED, request.provider_job_id, terminal.status.value, _provider_code(terminal.error), False, self.monotonic()-start, polls, terminal.request_id, terminal.progress, last_poll_elapsed), terminal, polls, start)
+            result, polls, snapshot = await self._retrieve_result(request, policy, start, polls, terminal, last_poll_elapsed)
             provider_request_id = result.request_id or provider_request_id
             if result.status == ProviderLifecycleStatus.PROVIDER_PARTIAL_FAILED and not result.raw_provider_payload and not result.documents and not result.result_artifact:
                 return OrchestrationOutcome(request.processing_attempt_id, request.correlation_id, request.document_id, request.source_file_id, request.provider_name, request.provider_job_id, provider_request_id, OrchestrationPhase.PROVIDER_PARTIAL_FAILED, result.status, self.monotonic()-start, polls, snapshot, None, None, tuple(_warnings(result)), tuple(_errors(result)))
@@ -215,26 +218,79 @@ class ProcessingOrchestrator:
         except ValueError as exc:
             raise OrchestrationError(OrchestrationErrorCategory.INVALID_INPUT, _redact(str(exc)), phase, request.provider_job_id if 'request' in locals() else None, elapsed_seconds=_elapsed(start, self.monotonic()), poll_count=polls) from exc
 
-    async def _poll_terminal(self, request, policy, start, polls):
+    async def _poll_terminal(self, request, policy, start, polls, submission_status):
         interval = policy.initial_interval_seconds
+        snapshot: ProviderJobStatus | None = None
+        last_poll_elapsed: float | None = None
+        phase = _phase_for_status(submission_status)
         while True:
-            _check_deadline(policy, start, self.monotonic(), polls)
+            now = self.monotonic()
+            _check_deadline(
+                policy,
+                start,
+                now,
+                polls,
+                provider_job_id=request.provider_job_id,
+                snapshot=snapshot,
+                last_successful_poll_elapsed_seconds=last_poll_elapsed,
+            )
             if policy.max_status_requests is not None and polls >= policy.max_status_requests:
-                raise OrchestrationError(OrchestrationErrorCategory.TIMEOUT, "maximum provider status requests reached", OrchestrationPhase.TIMED_OUT, request.provider_job_id, elapsed_seconds=self.monotonic()-start, poll_count=polls)
-            status = await self.provider.get_job_status(request.provider_job_id); polls += 1
+                raise _timeout_error(
+                    "maximum provider status requests reached",
+                    request.provider_job_id,
+                    snapshot,
+                    _elapsed(start, now),
+                    polls,
+                    last_poll_elapsed,
+                )
+            try:
+                status = await self.provider.get_job_status(request.provider_job_id)
+            except ProviderClientError as exc:
+                raise _provider_client_error_with_snapshot(
+                    exc,
+                    phase,
+                    request.provider_job_id,
+                    snapshot,
+                    _elapsed(start, self.monotonic()),
+                    polls,
+                    last_poll_elapsed,
+                ) from exc
+            polls += 1
+            snapshot = status
+            last_poll_elapsed = _elapsed(start, self.monotonic())
             phase = _phase_for_status(status.status)
             if status.status in {ProviderLifecycleStatus.PROVIDER_COMPLETED, ProviderLifecycleStatus.PROVIDER_PARTIAL_FAILED, ProviderLifecycleStatus.FAILED, ProviderLifecycleStatus.EXPIRED}:
-                return status, polls, phase, status
+                return status, polls, phase, status, last_poll_elapsed
             await self.sleep(_sleep_interval(interval, policy, start, self.monotonic()))
             if policy.exponential_backoff:
                 interval = min(interval * policy.backoff_factor, policy.max_interval_seconds)
 
-    async def _retrieve_result(self, request, policy, start, polls, terminal):
+    async def _retrieve_result(self, request, policy, start, polls, terminal, last_poll_elapsed):
         result_requests = 0
         while True:
-            _check_deadline(policy, start, self.monotonic(), polls)
+            now = self.monotonic()
+            _check_deadline(
+                policy,
+                start,
+                now,
+                polls,
+                provider_job_id=request.provider_job_id,
+                snapshot=terminal,
+                last_successful_poll_elapsed_seconds=last_poll_elapsed,
+            )
             if policy.max_result_requests is not None and result_requests >= policy.max_result_requests:
-                raise OrchestrationError(OrchestrationErrorCategory.RESULT_UNAVAILABLE, "maximum provider result requests reached", OrchestrationPhase.RETRIEVING_RESULT, request.provider_job_id, terminal.status.value, elapsed_seconds=_elapsed(start, self.monotonic()), poll_count=polls)
+                raise OrchestrationError(
+                    OrchestrationErrorCategory.RESULT_UNAVAILABLE,
+                    "maximum provider result requests reached",
+                    OrchestrationPhase.RETRIEVING_RESULT,
+                    request.provider_job_id,
+                    terminal.status.value,
+                    elapsed_seconds=_elapsed(start, now),
+                    poll_count=polls,
+                    provider_request_id=terminal.request_id,
+                    last_provider_progress=terminal.progress,
+                    last_successful_poll_elapsed_seconds=last_poll_elapsed,
+                )
             try:
                 result_requests += 1
                 result = await self.provider.get_job_result(request.provider_job_id, request.result_profile)
@@ -242,7 +298,15 @@ class ProcessingOrchestrator:
                 if exc.detail.category == ProviderErrorCategory.RESULT_NOT_READY:
                     await self.sleep(_sleep_interval(policy.initial_interval_seconds, policy, start, self.monotonic()))
                     continue
-                raise
+                raise _provider_client_error_with_snapshot(
+                    exc,
+                    OrchestrationPhase.RETRIEVING_RESULT,
+                    request.provider_job_id,
+                    terminal,
+                    _elapsed(start, self.monotonic()),
+                    polls,
+                    last_poll_elapsed,
+                ) from exc
             if result.job_id != request.provider_job_id or result.profile != request.result_profile:
                 raise OrchestrationError(OrchestrationErrorCategory.RESULT_MALFORMED, "provider result identity/profile mismatch", OrchestrationPhase.RETRIEVING_RESULT, request.provider_job_id, result.status.value)
             if result.request_id and terminal.request_id and result.request_id != terminal.request_id:
@@ -313,17 +377,89 @@ def _build_provider_request(r: OrchestrationRequest) -> ProviderJobRequest:
         dict(r.provider_job_options),
     )
 
-def _check_deadline(policy, start, now, polls):
+
+def _timeout_error(message, provider_job_id, snapshot, elapsed, polls, last_poll_elapsed):
+    return OrchestrationError(
+        OrchestrationErrorCategory.TIMEOUT,
+        message,
+        OrchestrationPhase.TIMED_OUT,
+        provider_job_id,
+        _snapshot_status(snapshot),
+        elapsed_seconds=elapsed,
+        poll_count=polls,
+        provider_request_id=_snapshot_request_id(snapshot),
+        last_provider_progress=_snapshot_progress(snapshot),
+        last_successful_poll_elapsed_seconds=last_poll_elapsed,
+    )
+
+
+def _check_deadline(
+    policy,
+    start,
+    now,
+    polls,
+    *,
+    provider_job_id=None,
+    snapshot=None,
+    last_successful_poll_elapsed_seconds=None,
+):
     elapsed = _elapsed(start, now)
     if elapsed >= policy.timeout_seconds:
-        raise OrchestrationError(OrchestrationErrorCategory.TIMEOUT, "orchestration timed out; provider job may continue running because cancellation is not implemented", OrchestrationPhase.TIMED_OUT, elapsed_seconds=elapsed, poll_count=polls)
+        raise _timeout_error(
+            "orchestration timed out; provider job may continue running because cancellation is not implemented",
+            provider_job_id,
+            snapshot,
+            elapsed,
+            polls,
+            last_successful_poll_elapsed_seconds,
+        )
+
+
+def _provider_client_error_with_snapshot(
+    exc,
+    phase,
+    provider_job_id,
+    snapshot,
+    elapsed,
+    polls,
+    last_poll_elapsed,
+):
+    return OrchestrationError(
+        _map_provider_error(exc, phase),
+        _safe_provider_message(exc),
+        phase,
+        provider_job_id,
+        _snapshot_status(snapshot),
+        exc.detail.provider_code,
+        exc.detail.retryable,
+        elapsed,
+        polls,
+        _snapshot_request_id(snapshot),
+        _snapshot_progress(snapshot),
+        last_poll_elapsed,
+    )
+
+
+def _snapshot_status(snapshot):
+    return snapshot.status.value if isinstance(snapshot, ProviderJobStatus) else None
+
+
+def _snapshot_request_id(snapshot):
+    return snapshot.request_id if isinstance(snapshot, ProviderJobStatus) else None
+
+
+def _snapshot_progress(snapshot):
+    return snapshot.progress if isinstance(snapshot, ProviderJobStatus) else None
+
 
 def _elapsed(start, now):
     return max(0.0, float(now - start))
 
+
 def _sleep_interval(interval, policy, start, now):
     remaining = max(0.0, policy.timeout_seconds - _elapsed(start, now))
     return min(float(interval), float(policy.max_interval_seconds), remaining)
+
 
 def _phase_for_status(s):
     try:
@@ -331,27 +467,34 @@ def _phase_for_status(s):
     except KeyError as exc:
         raise OrchestrationError(OrchestrationErrorCategory.STATUS_FAILURE, "provider returned unknown lifecycle status", OrchestrationPhase.FAILED, provider_status=str(s)) from exc
 
+
 def _map_provider_error(exc, phase):
     if phase == OrchestrationPhase.DOWNLOADING_ARTIFACT:
         return OrchestrationErrorCategory.ARTIFACT_FAILURE
     return {ProviderErrorCategory.RESULT_NOT_READY: OrchestrationErrorCategory.RESULT_UNAVAILABLE, ProviderErrorCategory.RESULT_EXPIRED: OrchestrationErrorCategory.RESULT_UNAVAILABLE, ProviderErrorCategory.ARTIFACT_MISSING: OrchestrationErrorCategory.ARTIFACT_FAILURE, ProviderErrorCategory.EXECUTION_FAILED: OrchestrationErrorCategory.PROVIDER_FAILED, ProviderErrorCategory.VALIDATION: OrchestrationErrorCategory.SUBMISSION_REJECTED, ProviderErrorCategory.CONFLICT: OrchestrationErrorCategory.SUBMISSION_REJECTED}.get(exc.detail.category, OrchestrationErrorCategory.STATUS_FAILURE if phase in {OrchestrationPhase.PROVIDER_QUEUED, OrchestrationPhase.PROVIDER_RUNNING} else OrchestrationErrorCategory.UNEXPECTED)
 
+
 def _safe_provider_message(exc):
     return _redact(exc.detail.safe_message)
+
 
 def _provider_code(error):
     return error.get("code") if isinstance(error, dict) else None
 
+
 def _field(payload, name):
     return payload.get(name) if isinstance(payload, dict) else None
+
 
 def _warnings(result):
     payload = result.raw_provider_payload or {}
     return payload.get("warnings") or []
 
+
 def _errors(result):
     payload = result.raw_provider_payload or {}
     return payload.get("errors") or ([] if result.status != ProviderLifecycleStatus.PROVIDER_PARTIAL_FAILED else ["provider partial failure"])
+
 
 def _artifact_metadata(value):
     if not isinstance(value, dict):
@@ -366,6 +509,7 @@ def _artifact_metadata(value):
     if not is_valid_sha256(checksum):
         raise OrchestrationError(OrchestrationErrorCategory.RESULT_MALFORMED, "artifact metadata had invalid checksum", OrchestrationPhase.DOWNLOADING_ARTIFACT)
     return ArtifactMetadata(artifact_id, value.get("download_endpoint"), value.get("format") or value.get("media_type"), value.get("compression"), size_bytes, checksum)
+
 
 def _page_summary(request, result):
     pages: list[dict[str, Any]] = []
@@ -400,6 +544,7 @@ def _map_page_identities(document_id: str, pages: list[dict[str, Any]], expected
         raise ValueError("missing pages")
     return sorted(identities, key=lambda identity: identity.page_number)
 
+
 def _validate_provider_options(options: dict[str, Any]) -> None:
     for name, value in options.items():
         if isinstance(value, bool):
@@ -407,7 +552,9 @@ def _validate_provider_options(options: dict[str, Any]) -> None:
         if isinstance(value, int | float) and (not math.isfinite(float(value)) or value <= 0):
             raise ValueError(f"provider option {name} must be finite and positive")
 
+
 _SENSITIVE_RE = re.compile(r"(https?://\S+|Bearer\s+\S+|Authorization:\s*\S+|api[_-]?key=\S+|token=\S+)", re.IGNORECASE)
+
 
 def _redact(message: str) -> str:
     return _SENSITIVE_RE.sub("<redacted>", str(message))

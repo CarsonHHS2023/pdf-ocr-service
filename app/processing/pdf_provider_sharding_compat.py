@@ -9,7 +9,7 @@ worker scaling are intentionally untouched.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Mapping
 
 from app.processing.integration import (
     EndToEndProcessingIntegrationService as _BaseIntegrationService,
@@ -22,6 +22,7 @@ from app.processing.orchestration import OrchestrationPhase
 from app.processing.pdf_geometry_integration import provider_delivery_descriptor
 from app.processing.pdf_page_presentation_bridge import PresentationProviderInput
 from app.processing.pdf_provider_sharding import (
+    PROVIDER_TRANSPORT_SHARD_MAX_BYTES,
     PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
     ProviderTransportShardError,
     ProviderTransportShardRunResult,
@@ -134,6 +135,42 @@ def _provider_input_for(service: Any) -> Any | None:
     return _normalize_legacy_provider_input(provider_input, delivery=delivery)
 
 
+def _presentation_page_count(provider_input: Any) -> int | None:
+    manifest = getattr(provider_input, "presentation_manifest", None)
+    if isinstance(manifest, Mapping):
+        value = manifest.get("presentation_page_count")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+
+    preprocessing = getattr(provider_input, "preprocessing", None)
+    full_page_count = getattr(preprocessing, "page_count", None)
+    provider_page_count = getattr(provider_input, "provider_page_count", None)
+    if (
+        isinstance(full_page_count, int)
+        and not isinstance(full_page_count, bool)
+        and full_page_count >= 0
+        and isinstance(provider_page_count, int)
+        and not isinstance(provider_page_count, bool)
+        and 0 <= provider_page_count <= full_page_count
+    ):
+        return full_page_count - provider_page_count
+    return None
+
+
+def _delivery_is_full_render(provider_input: Any, delivery: Any) -> bool:
+    full_reference = getattr(provider_input, "storage_reference", None)
+    full_checksum = getattr(provider_input, "checksum_sha256", None)
+    full_size = getattr(provider_input, "byte_size", None)
+    return bool(
+        full_reference == delivery.storage_reference
+        and isinstance(full_checksum, str)
+        and full_checksum.lower() == delivery.checksum_sha256.lower()
+        and isinstance(full_size, int)
+        and not isinstance(full_size, bool)
+        and full_size == delivery.byte_size
+    )
+
+
 def _raw_client_for(service: Any) -> Any:
     orchestrator = getattr(service, "orchestrator", None)
     provider = getattr(orchestrator, "provider", None)
@@ -238,6 +275,19 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
         provider_input = _provider_input_for(self)
         if provider_input is None:
             _diagnostic(
+                "PDF_PROVIDER_SHARDING_DECISION",
+                document_id=request.retained_source.document_id,
+                processing_attempt_id=request.processing_attempt_id,
+                provider_job_id=request.provider_job_id,
+                recognized_provider_input=False,
+                provider_byte_size=None,
+                provider_page_count=None,
+                target_bytes=PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
+                max_bytes=PROVIDER_TRANSPORT_SHARD_MAX_BYTES,
+                route="single",
+                shard_count=0,
+            )
+            _diagnostic(
                 "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION",
                 processing_attempt_id=request.processing_attempt_id,
                 provider_job_id=request.provider_job_id,
@@ -246,14 +296,45 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
             )
             return await super().process(request)
 
+        delivery = provider_delivery_descriptor(provider_input)
+        provider_page_count = provider_input.provider_page_count
+        presentation_page_count = _presentation_page_count(provider_input)
         sharding_required = provider_transport_sharding_required(provider_input)
+        full_render_byte_size = getattr(provider_input, "byte_size", None)
+        delivery_is_full_render = _delivery_is_full_render(provider_input, delivery)
+
+        _diagnostic(
+            "PDF_PROVIDER_DELIVERY_READY",
+            document_id=request.retained_source.document_id,
+            processing_attempt_id=request.processing_attempt_id,
+            provider_job_id=request.provider_job_id,
+            full_render_byte_size=full_render_byte_size,
+            provider_byte_size=delivery.byte_size,
+            provider_page_count=provider_page_count,
+            presentation_page_count=presentation_page_count,
+            delivery_is_full_render=delivery_is_full_render,
+            sharding_threshold_bytes=PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
+            sharding_required=sharding_required,
+        )
+        _diagnostic(
+            "PDF_PROVIDER_SHARDING_DECISION",
+            document_id=request.retained_source.document_id,
+            processing_attempt_id=request.processing_attempt_id,
+            provider_job_id=request.provider_job_id,
+            provider_byte_size=delivery.byte_size,
+            provider_page_count=provider_page_count,
+            target_bytes=PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
+            max_bytes=PROVIDER_TRANSPORT_SHARD_MAX_BYTES,
+            route="sharded" if sharding_required else "single",
+            shard_count=None if sharding_required else 0,
+        )
         _diagnostic(
             "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION",
             processing_attempt_id=request.processing_attempt_id,
             provider_job_id=request.provider_job_id,
             recognized_provider_input=True,
-            provider_input_size_bytes=provider_input.provider_byte_size,
-            provider_input_page_count=provider_input.provider_page_count,
+            provider_input_size_bytes=delivery.byte_size,
+            provider_input_page_count=provider_page_count,
             shard_target_bytes=PROVIDER_TRANSPORT_SHARD_TARGET_BYTES,
             sharding_required=sharding_required,
         )
@@ -270,8 +351,8 @@ class ShardingAwareEndToEndProcessingIntegrationService(_BaseIntegrationService)
             "PDF_PROVIDER_TRANSPORT_SHARDING_STARTED",
             processing_attempt_id=request.processing_attempt_id,
             provider_job_id=request.provider_job_id,
-            provider_input_size_bytes=provider_input.provider_byte_size,
-            provider_input_page_count=provider_input.provider_page_count,
+            provider_input_size_bytes=delivery.byte_size,
+            provider_input_page_count=provider_page_count,
         )
         try:
             result = await run_provider_transport_shards(
