@@ -67,6 +67,7 @@ def test_staging_artifact_verification_checks_provider_delivery_contract() -> No
 
     verification = source[source.index("artifact_verification:") : source.index("\n  deploy:")]
     for module in (
+        "app/processing/orchestration.py",
         "app/processing/pdf_ingestion.py",
         "app/processing/pdf_provider_sharding.py",
         "app/processing/pdf_provider_sharding_compat.py",
@@ -77,6 +78,9 @@ def test_staging_artifact_verification_checks_provider_delivery_contract() -> No
         assert module in verification
 
     for marker in (
+        "last_provider_progress",
+        "last_successful_poll_elapsed_seconds",
+        "_provider_client_error_with_snapshot",
         "provider_delivery_descriptor(geometry_input)",
         "source_transport_url_factory=provider_source_url_factory",
         "ShardingAwareEndToEndProcessingIntegrationService(",
@@ -87,6 +91,13 @@ def test_staging_artifact_verification_checks_provider_delivery_contract() -> No
         "PDF_PROVIDER_SHARDING_DECISION",
     ):
         assert marker in verification
+
+
+def test_timeout_observability_regression_is_in_authoritative_staging_gate() -> None:
+    source = (WORKFLOWS / "staging-integration-ci.yml").read_text(encoding="utf-8")
+
+    assert "tests/test_processing_orchestration.py" in source
+    assert "tests/test_provider_timeout_observability.py" in source
 
 
 def test_staging_provider_runtime_installer_includes_presigned_delivery() -> None:
