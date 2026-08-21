@@ -87,7 +87,9 @@ jobs:
           grep -q 'classifier_fail_open_to_ocr_count' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'timeout_config_valid=timeout_config_valid' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'processing_attempt_id=_PROCESSING_ATTEMPT_ID.get()' app/processing/pdf_page_classification_observability_compat.py
-          grep -q '__atlas_page_classification_context__' app/processing/pdf_page_classification_observability_compat.py
+          grep -q 'def page_classification_observation_context' app/processing/pdf_page_classification_observability_compat.py
+          grep -q 'page_classification_observation_context,' app/processing/pdf_ingestion.py
+          grep -q 'with page_classification_observation_context(processing_attempt_id):' app/processing/pdf_ingestion.py
           grep -q 'native_text_page_count' app/processing/pdf_provider_sharding_compat.py
           grep -q 'native_text_page_count' app/processing/pdf_page_presentation_preprocess_compat.py
           grep -q 'excluded_from_provider_count = local_result_count' app/processing/pdf_page_presentation_preprocess_compat.py
