@@ -17,6 +17,7 @@ SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
 INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 TEST_SHARDING_PATH = Path("tests/test_pdf_provider_sharding.py")
 TEST_OBSERVABILITY_PATH = Path("tests/test_provider_20mib_observability.py")
+TEST_DEPLOYMENT_PATH = Path("tests/test_staging_deployment_contract.py")
 
 
 def _replace_once(source: str, old: str, new: str, *, label: str) -> str:
@@ -236,15 +237,63 @@ def _patch_canonicalization_failure_evidence() -> None:
     SHARDING_PATH.write_text(source, encoding="utf-8")
 
 
+def _patch_authoritative_staging_deploy_gate() -> None:
+    """Make the push-to-staging deploy gate assert the final PR #16 runtime contract."""
+    source = TEST_DEPLOYMENT_PATH.read_text(encoding="utf-8")
+    marker = "def test_pr16_20mib_baseline_runtime_contract_in_staging_deploy_gate()"
+    if marker in source:
+        return
+    block = '''
+
+
+def test_pr16_20mib_baseline_runtime_contract_in_staging_deploy_gate() -> None:
+    import inspect
+
+    from app.processing import pdf_page_classification_observability_compat as classification_obs
+    from app.processing import pdf_provider_sharding as sharding
+    from app.processing import pdf_provider_sharding_compat as sharding_compat
+
+    assert sharding.PROVIDER_TRANSPORT_SHARD_TARGET_BYTES == 20 * 1024 * 1024
+    assert sharding.PROVIDER_TRANSPORT_SHARD_MAX_BYTES == 20 * 1024 * 1024
+    assert sharding.PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE == "sequential"
+    assert not hasattr(sharding, "PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY")
+
+    runner = inspect.getsource(sharding.run_provider_transport_shards)
+    assert "for plan in plans:" in runner
+    assert "asyncio.Semaphore" not in runner
+    assert "asyncio.create_task" not in runner
+    assert "asyncio.gather" not in runner
+    assert "source_transport_url_factory=shard_source_url_factory" in runner
+    assert "PDF_PROVIDER_SHARD_CANONICALIZATION_FAILED" in runner
+    assert "None, merged, exc" in runner
+
+    ingestion = (REPO_ROOT / "app" / "processing" / "pdf_ingestion.py").read_text(
+        encoding="utf-8"
+    )
+    assert "with page_classification_observation_context(processing_attempt_id):" in ingestion
+
+    classifier = inspect.getsource(classification_obs)
+    assert "timeout_config_valid=timeout_config_valid" in classifier
+    assert "processing_attempt_id=_PROCESSING_ATTEMPT_ID.get()" in classifier
+
+    outcome_builder = inspect.getsource(sharding_compat._outcome_from_sharded_result)
+    assert "raw_result=result.raw_result" in outcome_builder
+    assert "raw_result_storage_reference=raw_reference" in outcome_builder
+'''
+    TEST_DEPLOYMENT_PATH.write_text(source.rstrip() + block + "\n", encoding="utf-8")
+
+
 def main() -> None:
     apply_v5()
     _patch_active_ingestion_classification_context()
     _patch_strict_20mib_transport_ceiling()
     _patch_canonicalization_failure_evidence()
+    _patch_authoritative_staging_deploy_gate()
     print(
         "provider 20 MiB review fixes ready: actual_transport_hard_max_mib=20 "
         "canonicalization_failure_raw_result=preserved "
-        "classification_identity_scope=active_ingestion"
+        "classification_identity_scope=active_ingestion "
+        "staging_deploy_gate=locked"
     )
 
 
