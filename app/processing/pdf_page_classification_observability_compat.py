@@ -8,9 +8,10 @@ fail-open OCR, presentation skips, and native-text skips.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 import os
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from app.processing import pdf_page_presentation_bridge as bridge
 from app.processing import pdf_page_presentation_preprocess_compat as preprocess
@@ -36,6 +37,23 @@ def _timeout_config() -> tuple[float | None, bool]:
         return float(raw), True
     except ValueError:
         return None, False
+
+
+@contextmanager
+def page_classification_observation_context(
+    processing_attempt_id: str | None,
+) -> Iterator[None]:
+    """Bind request identity around the real top-level PDF preprocessing call."""
+    resolved = (
+        processing_attempt_id.strip()
+        if isinstance(processing_attempt_id, str) and processing_attempt_id.strip()
+        else None
+    )
+    token = _PROCESSING_ATTEMPT_ID.set(resolved)
+    try:
+        yield
+    finally:
+        _PROCESSING_ATTEMPT_ID.reset(token)
 
 
 def _classification(decision: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -160,65 +178,48 @@ def _emit_summary(decisions: list[dict[str, Any]]) -> None:
 
 
 def install_page_classification_observability_compat() -> None:
-    """Wrap the fully composed classifier and propagate processing-attempt identity."""
+    """Wrap the fully composed page classifier without changing decisions."""
     global _INSTALLED
     if _INSTALLED:
         return
 
-    original_prepare = preprocess.prepare_presentation_provider_input_v2
-    if not getattr(original_prepare, "__atlas_page_classification_context__", False):
-        def prepare_with_observability(*args, **kwargs):
-            value = kwargs.get("processing_attempt_id")
-            processing_attempt_id = (
-                value.strip()
-                if isinstance(value, str) and value.strip()
-                else None
-            )
-            token = _PROCESSING_ATTEMPT_ID.set(processing_attempt_id)
-            try:
-                return original_prepare(*args, **kwargs)
-            finally:
-                _PROCESSING_ATTEMPT_ID.reset(token)
-
-        setattr(
-            prepare_with_observability,
-            "__atlas_page_classification_context__",
-            True,
-        )
-        preprocess.prepare_presentation_provider_input_v2 = prepare_with_observability
-
     original = preprocess._classify_source_pages
-    if not getattr(original, "__atlas_page_classification_observability__", False):
-        def classify_with_observability(source):
-            api_key_configured = bool(
-                os.getenv("PDF_STRUCTURE_REFINEMENT_OPENAI_API_KEY", "").strip()
-            )
-            model_id = _configured_model()
-            timeout_seconds, timeout_config_valid = _timeout_config()
-            bridge._diagnostic(
-                "PDF_PAGE_CLASSIFICATION_CONFIG",
-                processing_attempt_id=_PROCESSING_ATTEMPT_ID.get(),
-                enabled=bool(api_key_configured and model_id),
-                provider=("openai" if api_key_configured and model_id else "none"),
-                api_key_configured=api_key_configured,
-                model_configured=bool(model_id),
-                model_id=(model_id or None),
-                min_confidence=bridge._validated_min_confidence(),
-                timeout_seconds=timeout_seconds,
-                timeout_config_valid=timeout_config_valid,
-            )
-            decisions = original(source)
-            _emit_summary(decisions)
-            return decisions
+    if getattr(original, "__atlas_page_classification_observability__", False):
+        _INSTALLED = True
+        return
 
-        setattr(
-            classify_with_observability,
-            "__atlas_page_classification_observability__",
-            True,
+    def classify_with_observability(source):
+        api_key_configured = bool(
+            os.getenv("PDF_STRUCTURE_REFINEMENT_OPENAI_API_KEY", "").strip()
         )
-        preprocess._classify_source_pages = classify_with_observability
+        model_id = _configured_model()
+        timeout_seconds, timeout_config_valid = _timeout_config()
+        bridge._diagnostic(
+            "PDF_PAGE_CLASSIFICATION_CONFIG",
+            processing_attempt_id=_PROCESSING_ATTEMPT_ID.get(),
+            enabled=bool(api_key_configured and model_id),
+            provider=("openai" if api_key_configured and model_id else "none"),
+            api_key_configured=api_key_configured,
+            model_configured=bool(model_id),
+            model_id=(model_id or None),
+            min_confidence=bridge._validated_min_confidence(),
+            timeout_seconds=timeout_seconds,
+            timeout_config_valid=timeout_config_valid,
+        )
+        decisions = original(source)
+        _emit_summary(decisions)
+        return decisions
 
+    setattr(
+        classify_with_observability,
+        "__atlas_page_classification_observability__",
+        True,
+    )
+    preprocess._classify_source_pages = classify_with_observability
     _INSTALLED = True
 
 
-__all__ = ["install_page_classification_observability_compat"]
+__all__ = [
+    "install_page_classification_observability_compat",
+    "page_classification_observation_context",
+]
