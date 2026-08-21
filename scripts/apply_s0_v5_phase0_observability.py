@@ -41,14 +41,14 @@ def main() -> None:
         from scripts.apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
-        from scripts.apply_provider_20mib_observability import (
+        from scripts.apply_provider_20mib_observability_v2 import (
             main as apply_provider_20mib_observability,
         )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
-        from apply_provider_20mib_observability import (
+        from apply_provider_20mib_observability_v2 import (
             main as apply_provider_20mib_observability,
         )
 
