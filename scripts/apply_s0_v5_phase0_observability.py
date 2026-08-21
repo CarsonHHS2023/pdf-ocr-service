@@ -41,13 +41,24 @@ def main() -> None:
         from scripts.apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
+        from scripts.apply_provider_20mib_observability import (
+            main as apply_provider_20mib_observability,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
+        from apply_provider_20mib_observability import (
+            main as apply_provider_20mib_observability,
+        )
 
     patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
+    # This is deliberately last. It observes the fully composed production-like
+    # presentation/native path and patches the already resilience-hardened
+    # Provider sharding implementation that will be packed into the tested
+    # Staging artifact.
+    apply_provider_20mib_observability()
 
 
 if __name__ == "__main__":
