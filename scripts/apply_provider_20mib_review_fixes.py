@@ -14,6 +14,7 @@ except ImportError:
 
 
 SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
+INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 TEST_SHARDING_PATH = Path("tests/test_pdf_provider_sharding.py")
 TEST_OBSERVABILITY_PATH = Path("tests/test_provider_20mib_observability.py")
 
@@ -25,6 +26,56 @@ def _replace_once(source: str, old: str, new: str, *, label: str) -> str:
     if count != 1:
         raise RuntimeError(f"{label}: expected exactly one source match, found {count}")
     return source.replace(old, new, 1)
+
+
+def _patch_active_ingestion_classification_context() -> None:
+    """Bind run identity around the top-level function pdf_ingestion actually calls."""
+    source = INGESTION_PATH.read_text(encoding="utf-8")
+    source = _replace_once(
+        source,
+        "from app.processing.pdf_page_classification_observability_compat import (\n"
+        "    install_page_classification_observability_compat,\n"
+        ")",
+        "from app.processing.pdf_page_classification_observability_compat import (\n"
+        "    install_page_classification_observability_compat,\n"
+        "    page_classification_observation_context,\n"
+        ")",
+        label="classification observation context import",
+    )
+    old_call = '''    with pdf_resource_observation_context(
+        processing_run_id=processing_attempt_id,
+        document_id=descriptor.document_id,
+        page_count=resolved_page_count,
+    ):
+        result = prepare_geometry_provider_input(
+            storage=storage,
+            source_pdf_bytes=source_pdf,
+            original_filename=descriptor.filename,
+            processing_attempt_id=processing_attempt_id,
+            expected_page_count=resolved_page_count,
+        )
+'''
+    new_call = '''    with pdf_resource_observation_context(
+        processing_run_id=processing_attempt_id,
+        document_id=descriptor.document_id,
+        page_count=resolved_page_count,
+    ):
+        with page_classification_observation_context(processing_attempt_id):
+            result = prepare_geometry_provider_input(
+                storage=storage,
+                source_pdf_bytes=source_pdf,
+                original_filename=descriptor.filename,
+                processing_attempt_id=processing_attempt_id,
+                expected_page_count=resolved_page_count,
+            )
+'''
+    source = _replace_once(
+        source,
+        old_call,
+        new_call,
+        label="active ingestion classification identity scope",
+    )
+    INGESTION_PATH.write_text(source, encoding="utf-8")
 
 
 def _patch_strict_20mib_transport_ceiling() -> None:
@@ -187,11 +238,13 @@ def _patch_canonicalization_failure_evidence() -> None:
 
 def main() -> None:
     apply_v5()
+    _patch_active_ingestion_classification_context()
     _patch_strict_20mib_transport_ceiling()
     _patch_canonicalization_failure_evidence()
     print(
         "provider 20 MiB review fixes ready: actual_transport_hard_max_mib=20 "
-        "canonicalization_failure_raw_result=preserved"
+        "canonicalization_failure_raw_result=preserved "
+        "classification_identity_scope=active_ingestion"
     )
 
 
