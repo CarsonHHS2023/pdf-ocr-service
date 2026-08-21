@@ -41,22 +41,23 @@ def main() -> None:
         from scripts.apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
-        from scripts.apply_provider_20mib_observability_v5 import (
+        from scripts.apply_provider_20mib_review_fixes import (
             main as apply_provider_20mib_observability,
         )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
-        from apply_provider_20mib_observability_v5 import (
+        from apply_provider_20mib_review_fixes import (
             main as apply_provider_20mib_observability,
         )
 
     patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
     # This is deliberately last. It observes the fully composed production-like
-    # presentation/native path, applies the 20 MiB transport contract, and then
-    # restores sequential Atlas shard submission so Modal alone owns compute fanout.
+    # presentation/native path, applies the strict 20 MiB Baseline transport
+    # contract, preserves failure evidence, and keeps Atlas shard execution
+    # sequential.
     apply_provider_20mib_observability()
 
 
