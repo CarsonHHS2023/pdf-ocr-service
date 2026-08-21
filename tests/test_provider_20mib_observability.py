@@ -1,0 +1,505 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from app.processing import pdf_page_classification_observability_compat as classification_obs
+from app.processing import pdf_page_presentation_bridge as bridge
+from app.processing import pdf_page_presentation_preprocess_compat as preprocess
+from app.processing import pdf_provider_sharding as sharding
+from app.processing import pdf_provider_sharding_compat as sharding_compat
+from app.processing.pdf_provider_sharding import ProviderInputShardPlan
+
+
+_MIB = 1024 * 1024
+
+
+def test_provider_transport_defaults_are_20_mib_and_sequential() -> None:
+    assert sharding.PROVIDER_TRANSPORT_SHARD_TARGET_BYTES == 20 * _MIB
+    assert sharding.PROVIDER_TRANSPORT_SHARD_MAX_BYTES == 24 * _MIB
+    assert sharding.PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE == "sequential"
+    assert not hasattr(sharding, "PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY")
+    assert sharding.PROVIDER_TRANSPORT_SHARD_TARGET_BYTES < (
+        sharding.PROVIDER_TRANSPORT_SHARD_MAX_BYTES
+    )
+
+
+def test_provider_delivery_route_counts_distinguish_presentation_native_and_ocr() -> None:
+    provider_input = SimpleNamespace(
+        provider_page_count=7,
+        presentation_manifest={
+            "pages": [
+                {"page_number": 1, "ocr_route": "skipped_presentation_image"},
+                {"page_number": 2, "ocr_route": "skipped_presentation_image"},
+                {"page_number": 3, "ocr_route": "skipped_presentation_image"},
+                {"page_number": 4, "ocr_route": "modal_paddle_ocr"},
+                {"page_number": 5, "ocr_route": "modal_paddle_ocr"},
+                {"page_number": 6, "ocr_route": "modal_paddle_ocr"},
+                {"page_number": 7, "ocr_route": "modal_paddle_ocr"},
+                {"page_number": 8, "ocr_route": "modal_paddle_ocr"},
+                {"page_number": 9, "ocr_route": "native_pdf_text"},
+                {"page_number": 10, "ocr_route": "modal_paddle_ocr"},
+                {"page_number": 11, "ocr_route": "modal_paddle_ocr"},
+            ]
+        },
+    )
+
+    counts = sharding_compat._provider_page_route_counts(provider_input)
+
+    assert counts == {
+        "full_document_page_count": 11,
+        "presentation_page_count": 3,
+        "native_text_page_count": 1,
+        "provider_route_page_count": 7,
+        "provider_excluded_page_count": 4,
+    }
+
+
+def test_page_classification_observability_separates_model_fallback_and_native_text(
+    monkeypatch,
+) -> None:
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    decisions = [
+        {
+            "page_index": 0,
+            "page_number": 1,
+            "source_unit_id": "pdf-page:000001",
+            "candidate": True,
+            "classification": {
+                "page_role": "cover",
+                "confidence": 0.99,
+                "provider": "openai",
+                "model_id": "test-model",
+                "cache_hit": False,
+                "reason_codes": ["visual_cover"],
+            },
+            "skip_ocr": True,
+            "decision_reason": "presentation_page_confirmed",
+        },
+        {
+            "page_index": 1,
+            "page_number": 2,
+            "source_unit_id": "pdf-page:000002",
+            "candidate": True,
+            "classification": {
+                "page_role": "unknown",
+                "confidence": 0.0,
+                "provider": "none",
+                "model_id": "",
+                "cache_hit": False,
+                "reason_codes": ["classification_failed:ReadTimeout"],
+            },
+            "skip_ocr": False,
+            "decision_reason": "role_not_presentation",
+        },
+        {
+            "page_index": 2,
+            "page_number": 3,
+            "source_unit_id": "pdf-page:000003",
+            "candidate": True,
+            "classification": {
+                "page_role": "body",
+                "confidence": 0.98,
+                "provider": "openai",
+                "model_id": "test-model",
+                "cache_hit": True,
+                "reason_codes": ["body_prose"],
+            },
+            "native_text_accepted": True,
+            "skip_ocr": True,
+            "decision_reason": "native_pdf_text_accepted",
+        },
+        {
+            "page_index": 3,
+            "page_number": 4,
+            "source_unit_id": "pdf-page:000004",
+            "candidate": False,
+            "classification": {
+                "page_role": "unknown",
+                "confidence": 0.0,
+                "provider": "none",
+                "model_id": "",
+                "cache_hit": False,
+                "reason_codes": ["not_selected_for_multimodal_review"],
+            },
+            "skip_ocr": False,
+            "decision_reason": "not_a_local_candidate",
+        },
+    ]
+
+    monkeypatch.setenv("PDF_STRUCTURE_REFINEMENT_OPENAI_API_KEY", "not-logged-secret")
+    monkeypatch.setenv("PDF_STRUCTURE_REFINEMENT_OPENAI_MODEL", "test-model")
+    monkeypatch.setattr(
+        bridge,
+        "_diagnostic",
+        lambda event, **fields: diagnostics.append((event, fields)),
+    )
+    monkeypatch.setattr(preprocess, "_classify_source_pages", lambda source: decisions)
+    monkeypatch.setattr(classification_obs, "_INSTALLED", False)
+
+    classification_obs.install_page_classification_observability_compat()
+    result = preprocess._classify_source_pages(SimpleNamespace())
+
+    assert result is decisions
+    config = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PAGE_CLASSIFICATION_CONFIG"
+    )
+    assert config["enabled"] is True
+    assert config["provider"] == "openai"
+    assert config["model_id"] == "test-model"
+    assert "not-logged-secret" not in repr(config)
+
+    summary = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PAGE_CLASSIFICATION_SUMMARY"
+    )
+    assert summary["document_page_count"] == 4
+    assert summary["candidate_count"] == 3
+    assert summary["classifier_success_count"] == 2
+    assert summary["classifier_fallback_count"] == 1
+    assert summary["cache_hit_count"] == 1
+    assert summary["presentation_page_count"] == 1
+    assert summary["native_text_page_count"] == 1
+    assert summary["provider_page_count"] == 2
+    assert summary["excluded_from_provider_count"] == 2
+    assert summary["candidate_to_ocr_count"] == 1
+    assert summary["classifier_fail_open_to_ocr_count"] == 1
+    assert summary["classified_candidate_to_ocr_count"] == 0
+    assert summary["fallback_to_ocr_count"] == 1
+
+    page_two = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PAGE_CLASSIFICATION_DECISION"
+        and fields["page_number"] == 2
+    )
+    assert page_two["provider"] == "none"
+    assert page_two["skip_ocr"] is False
+    assert page_two["reason_codes"] == "classification_failed:ReadTimeout"
+
+
+def _install_three_shard_success_fixture(monkeypatch):
+    plans = tuple(
+        ProviderInputShardPlan(index, index, index, 1, 1024)
+        for index in range(3)
+    )
+    monkeypatch.setattr(sharding, "plan_provider_input_shards", lambda *a, **k: plans)
+    monkeypatch.setattr(
+        sharding,
+        "materialize_provider_input_shard",
+        lambda storage, provider_input, plan, **kwargs: SimpleNamespace(
+            provider_byte_size=1024,
+            provider_page_count=1,
+            provider_storage_reference=SimpleNamespace(value=f"shard-{plan.shard_index}"),
+            provider_checksum_sha256="a" * 64,
+            provider_filename=f"shard-{plan.shard_index}.pdf",
+            media_type="application/pdf",
+            preprocessing=None,
+        ),
+    )
+
+    from app.processing import pdf_geometry_integration as integration
+
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputChecksumProvider",
+        lambda client, provider_input: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputAwareProcessingOrchestrator",
+        lambda **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputGrantService",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "provider_delivery_descriptor",
+        lambda provider_input: SimpleNamespace(
+            storage_reference=provider_input.provider_storage_reference,
+            byte_size=provider_input.provider_byte_size,
+        ),
+    )
+    monkeypatch.setattr(sharding, "get_transport_grant_service", lambda: SimpleNamespace())
+
+    source_factory_calls: list[dict[str, object]] = []
+    source_factory_sentinels: list[object] = []
+
+    def fake_source_factory(**kwargs):
+        source_factory_calls.append(kwargs)
+        sentinel = object()
+        source_factory_sentinels.append(sentinel)
+        return sentinel
+
+    monkeypatch.setattr(
+        sharding,
+        "build_provider_input_source_url_factory",
+        fake_source_factory,
+    )
+
+    return plans, source_factory_calls, source_factory_sentinels
+
+
+def test_provider_shards_execute_sequentially_with_per_shard_source_access(monkeypatch) -> None:
+    plans, source_factory_calls, source_factory_sentinels = _install_three_shard_success_fixture(
+        monkeypatch
+    )
+    active = 0
+    observed_max_active = 0
+    process_order: list[str] = []
+    raw_results = [SimpleNamespace(name=f"raw-{index}") for index in range(3)]
+    service_source_contracts: list[tuple[object, object]] = []
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            service_source_contracts.append(
+                (
+                    kwargs.get("source_transport_url_factory"),
+                    kwargs.get("source_access_ttl"),
+                )
+            )
+
+        async def process(self, request):
+            nonlocal active, observed_max_active
+            shard_index = int(request.provider_job_id.rsplit("s", 1)[1]) - 1
+            active += 1
+            observed_max_active = max(observed_max_active, active)
+            process_order.append(request.provider_job_id)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return SimpleNamespace(
+                revocation_succeeded=True,
+                grant_final_state=None,
+                integration_terminal_phase=SimpleNamespace(value="raw_result_retained"),
+                provider_terminal_status=SimpleNamespace(value="completed"),
+                error=None,
+                poll_count=2,
+                raw_result=raw_results[shard_index],
+            )
+
+    monkeypatch.setattr(sharding, "EndToEndProcessingIntegrationService", FakeService)
+    merged = SimpleNamespace(
+        ingestion=SimpleNamespace(payload_size_bytes=1234, page_summary=None)
+    )
+
+    def fake_merge(storage, provider_input, evidence, **kwargs):
+        assert [item.plan.shard_index for item in evidence] == list(range(3))
+        return merged
+
+    monkeypatch.setattr(sharding, "merge_provider_shard_results", fake_merge)
+    canonical = SimpleNamespace(candidate_id="candidate")
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+
+    result = asyncio.run(
+        sharding.run_provider_transport_shards(
+            storage=SimpleNamespace(delete=lambda reference: None),
+            client=SimpleNamespace(),
+            provider_input=SimpleNamespace(
+                provider_byte_size=60 * _MIB,
+                provider_page_count=len(plans),
+            ),
+            descriptor=SimpleNamespace(),
+            processing_attempt_id="attempt",
+            logical_provider_job_id="job",
+            logical_provider_request_id="request",
+            result_profile="full",
+            provider_job_options={},
+            public_origin=None,
+            polling_policy=SimpleNamespace(),
+            canonicalizer=SimpleNamespace(canonicalize=lambda envelope: canonical),
+            diagnostic=lambda event, **fields: diagnostics.append((event, fields)),
+        )
+    )
+
+    assert observed_max_active == 1
+    assert process_order == ["job-s001", "job-s002", "job-s003"]
+    assert result.error is None
+    assert result.canonicalization is canonical
+    assert result.shard_count == 3
+    assert len(source_factory_calls) == 3
+    assert all(call["byte_size"] == 1024 for call in source_factory_calls)
+    assert {factory for factory, _ in service_source_contracts} == set(
+        source_factory_sentinels
+    )
+    assert all(
+        ttl.total_seconds() == sharding.PROVIDER_SOURCE_ACCESS_TTL_SECONDS
+        for _, ttl in service_source_contracts
+    )
+    request_events = [
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_REQUEST_STARTED"
+    ]
+    assert [fields["provider_job_id"] for fields in request_events] == process_order
+    assert all(fields["shard_execution_mode"] == "sequential" for fields in request_events)
+    batch = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_BATCH_TERMINAL"
+    )
+    assert batch["succeeded_shards"] == 3
+    assert batch["failed_shards"] == 0
+    assert batch["shard_execution_mode"] == "sequential"
+
+
+def _install_single_shard_cancellation_fixture(monkeypatch, *, cancel_before_submission: bool):
+    plan = ProviderInputShardPlan(0, 0, 0, 1, 1024)
+    shard_reference = SimpleNamespace(value="cancel-shard-0")
+    shard_input = SimpleNamespace(
+        provider_byte_size=1024,
+        provider_page_count=1,
+        provider_storage_reference=shard_reference,
+        provider_checksum_sha256="a" * 64,
+        provider_filename="cancel-shard.pdf",
+        media_type="application/pdf",
+        preprocessing=None,
+    )
+    monkeypatch.setattr(sharding, "plan_provider_input_shards", lambda *a, **k: (plan,))
+    monkeypatch.setattr(
+        sharding,
+        "materialize_provider_input_shard",
+        lambda *a, **k: shard_input,
+    )
+
+    from app.processing import pdf_geometry_integration as integration
+
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputChecksumProvider",
+        lambda client, provider_input: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputAwareProcessingOrchestrator",
+        lambda **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputGrantService",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "provider_delivery_descriptor",
+        lambda provider_input: SimpleNamespace(
+            storage_reference=provider_input.provider_storage_reference,
+            byte_size=provider_input.provider_byte_size,
+        ),
+    )
+    monkeypatch.setattr(sharding, "get_transport_grant_service", lambda: SimpleNamespace())
+
+    if cancel_before_submission:
+        def cancel_source_factory(**kwargs):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(
+            sharding,
+            "build_provider_input_source_url_factory",
+            cancel_source_factory,
+        )
+
+        class FakeService:
+            def __init__(self, **kwargs):
+                raise AssertionError("service must not be constructed after pre-submit cancellation")
+    else:
+        monkeypatch.setattr(
+            sharding,
+            "build_provider_input_source_url_factory",
+            lambda **kwargs: object(),
+        )
+
+        class FakeService:
+            def __init__(self, **kwargs):
+                pass
+
+            async def process(self, request):
+                raise asyncio.CancelledError()
+
+    monkeypatch.setattr(sharding, "EndToEndProcessingIntegrationService", FakeService)
+    return shard_reference
+
+
+def _run_cancelled_single_shard(storage, diagnostics):
+    return asyncio.run(
+        sharding.run_provider_transport_shards(
+            storage=storage,
+            client=SimpleNamespace(),
+            provider_input=SimpleNamespace(
+                provider_byte_size=21 * _MIB,
+                provider_page_count=1,
+            ),
+            descriptor=SimpleNamespace(),
+            processing_attempt_id="attempt-cancel",
+            logical_provider_job_id="job-cancel",
+            logical_provider_request_id="request-cancel",
+            result_profile="full",
+            provider_job_options={},
+            public_origin=None,
+            polling_policy=SimpleNamespace(),
+            canonicalizer=SimpleNamespace(canonicalize=lambda envelope: envelope),
+            diagnostic=lambda event, **fields: diagnostics.append((event, fields)),
+        )
+    )
+
+
+def test_cancelled_materialized_shard_is_deleted_before_provider_submission(monkeypatch) -> None:
+    reference = _install_single_shard_cancellation_fixture(
+        monkeypatch,
+        cancel_before_submission=True,
+    )
+    deleted: list[object] = []
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    storage = SimpleNamespace(delete=lambda value: deleted.append(value))
+
+    with pytest.raises(asyncio.CancelledError):
+        _run_cancelled_single_shard(storage, diagnostics)
+
+    assert deleted == [reference]
+    cancelled = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_CANCELLED"
+    )
+    assert cancelled["submission_started"] is False
+    assert cancelled["cleanup_safe"] is True
+    assert cancelled["elapsed_seconds"] is None
+    assert cancelled["shard_execution_mode"] == "sequential"
+    assert any(event == "PDF_PROVIDER_SHARD_INPUT_DELETED" for event, _ in diagnostics)
+
+
+def test_cancelled_submitted_shard_is_retained_for_provider_safety(monkeypatch) -> None:
+    _install_single_shard_cancellation_fixture(
+        monkeypatch,
+        cancel_before_submission=False,
+    )
+    deleted: list[object] = []
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    storage = SimpleNamespace(delete=lambda value: deleted.append(value))
+
+    with pytest.raises(asyncio.CancelledError):
+        _run_cancelled_single_shard(storage, diagnostics)
+
+    assert deleted == []
+    cancelled = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_CANCELLED"
+    )
+    assert cancelled["submission_started"] is True
+    assert cancelled["cleanup_safe"] is False
+    assert isinstance(cancelled["elapsed_seconds"], float)
+    assert cancelled["shard_execution_mode"] == "sequential"
+    retained = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_INPUT_RETAINED"
+    )
+    assert retained["reason"] == "provider_submission_may_still_be_active"

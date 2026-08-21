@@ -174,6 +174,12 @@ _SHARD_GRANT_WITH_SOURCE_FACTORY = '''        grant_service = integration.Provid
             polling_policy=polling_policy,
         )
 '''
+_SHARD_SOURCE_ACCESS_FINAL_MARKERS = (
+    "shard_delivery = integration.provider_delivery_descriptor(shard_input)",
+    "shard_source_url_factory = build_provider_input_source_url_factory(",
+    "source_transport_url_factory=shard_source_url_factory",
+    "seconds=PROVIDER_SOURCE_ACCESS_TTL_SECONDS",
+)
 
 
 def _replace_once(source: str, old: str, new: str, label: str) -> str:
@@ -257,6 +263,9 @@ def patch_provider_sharding(path: Path = PROVIDER_SHARDING_PATH) -> None:
         _SHARD_POLICY_IMPORTS,
         "sharding source-access imports",
     )
+    if all(marker in source for marker in _SHARD_SOURCE_ACCESS_FINAL_MARKERS):
+        path.write_text(source, encoding="utf-8")
+        return
     source = _replace_once(
         source,
         _SHARD_GRANT_ANCHOR,
