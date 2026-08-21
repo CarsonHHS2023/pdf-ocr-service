@@ -5,7 +5,13 @@ from pathlib import Path
 
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
+PRESENTATION_LIFECYCLE_PATH = Path(
+    "app/processing/pdf_page_presentation_lifecycle_compat.py"
+)
 PROVIDER_SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
+PROVIDER_SHARDING_COMPAT_PATH = Path(
+    "app/processing/pdf_provider_sharding_compat.py"
+)
 _ANCHOR = "from app.database import SessionLocal\n"
 _INSTALL = (
     "from app.processing.s0_v5_shadow_geometry import "
@@ -47,6 +53,30 @@ def _provider_20mib_final_composition_installed(
     return all(marker in source for marker in _PROVIDER_20MIB_FINAL_MARKERS)
 
 
+def _final_staging_composition_installed() -> bool:
+    """Recognize the complete final runtime so a second invocation is a no-op."""
+    ingestion = PDF_INGESTION_PATH.read_text(encoding="utf-8")
+    lifecycle = PRESENTATION_LIFECYCLE_PATH.read_text(encoding="utf-8")
+    sharding = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
+    compat = PROVIDER_SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
+
+    return (
+        _INSTALL in ingestion
+        and "with page_classification_observation_context(processing_attempt_id):" in ingestion
+        and "poll_count=outcome.poll_count" in ingestion
+        and "select_provider_input_storage(get_storage_provider())" in lifecycle
+        and all(marker in sharding for marker in _PROVIDER_20MIB_FINAL_MARKERS)
+        and "shard_source_url_factory = build_provider_input_source_url_factory(" in sharding
+        and "source_transport_url_factory=shard_source_url_factory" in sharding
+        and "poll_count: int = 0" in sharding
+        and "total_poll_count += max(0, int(outcome.poll_count or 0))" in sharding
+        and sharding.count("poll_count=total_poll_count") >= 1
+        and compat.count("poll_count=result.poll_count") == 2
+        and "PdfCanonicalizationError" in compat
+        and "IntegrationErrorCategory.CANONICALIZATION_FAILURE" in compat
+    )
+
+
 def main() -> None:
     # Staging executes this script after the heartbeat and provider-preflight
     # overlays. Keep the reusable Phase0 patch function independent for focused
@@ -79,12 +109,21 @@ def main() -> None:
             main as apply_provider_terminal_poll_diagnostic,
         )
 
+    # The source-rewrite stack below is a composition step, not a migration that
+    # should keep editing an already composed checkout. Once every final runtime
+    # marker is present, a repeated invocation is deliberately a byte-for-byte
+    # no-op. The regression suite verifies the key composed file digests remain
+    # unchanged across that second invocation.
+    if _final_staging_composition_installed():
+        print("staging provider composition already installed: no changes")
+        return
+
     patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
     # The historical v2-v5 overlays rewrite exact anchors and are intentionally
-    # a one-way composition chain. On a second invocation, recognize the final
-    # 20 MiB sequential contract and skip replaying that legacy chain. The later
-    # poll/terminal guards are independently idempotent and still run.
+    # a one-way composition chain. If a partially composed checkout has already
+    # reached the final 20 MiB review contract, skip replaying that legacy chain
+    # and finish only the later poll/terminal guards.
     if not _provider_20mib_final_composition_installed():
         apply_provider_20mib_observability()
     apply_provider_20mib_poll_count_fix()
