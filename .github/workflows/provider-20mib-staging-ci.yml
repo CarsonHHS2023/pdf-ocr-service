@@ -65,9 +65,11 @@ jobs:
             scripts/apply_provider_20mib_observability_v3.py \
             scripts/apply_provider_20mib_observability_v4.py \
             scripts/apply_provider_20mib_observability_v5.py \
-            tests/test_provider_shard_execution_contract.py
+            scripts/apply_provider_20mib_review_fixes.py \
+            tests/test_provider_shard_execution_contract.py \
+            tests/test_provider_20mib_review_fixes.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
-          grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 24 \* _MIB' app/processing/pdf_provider_sharding.py
+          grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE = "sequential"' app/processing/pdf_provider_sharding.py
           ! grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY' app/processing/pdf_provider_sharding.py
           ! grep -q 'asyncio.Semaphore' app/processing/pdf_provider_sharding.py
@@ -77,11 +79,15 @@ jobs:
           grep -q 'shard_execution_mode=PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PROVIDER_SHARD_BATCH_TERMINAL' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PROVIDER_SHARD_CANCELLED' app/processing/pdf_provider_sharding.py
+          grep -q 'PDF_PROVIDER_SHARD_CANONICALIZATION_FAILED' app/processing/pdf_provider_sharding.py
+          grep -q 'None, merged, exc' app/processing/pdf_provider_sharding.py
           grep -q 'shard_delivery = integration.provider_delivery_descriptor(shard_input)' app/processing/pdf_provider_sharding.py
           grep -q 'source_transport_url_factory=shard_source_url_factory' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PAGE_CLASSIFICATION_SUMMARY' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'classifier_fail_open_to_ocr_count' app/processing/pdf_page_classification_observability_compat.py
-          grep -q 'PDF_PAGE_CLASSIFICATION_CONFIG' app/processing/pdf_page_classification_observability_compat.py
+          grep -q 'timeout_config_valid=timeout_config_valid' app/processing/pdf_page_classification_observability_compat.py
+          grep -q 'processing_attempt_id=_PROCESSING_ATTEMPT_ID.get()' app/processing/pdf_page_classification_observability_compat.py
+          grep -q '__atlas_page_classification_context__' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'native_text_page_count' app/processing/pdf_provider_sharding_compat.py
           grep -q 'native_text_page_count' app/processing/pdf_page_presentation_preprocess_compat.py
           grep -q 'excluded_from_provider_count = local_result_count' app/processing/pdf_page_presentation_preprocess_compat.py
@@ -96,6 +102,7 @@ jobs:
             tests/test_pdf_provider_sharding_compat.py \
             tests/test_provider_timeout_observability.py \
             tests/test_provider_20mib_observability.py \
+            tests/test_provider_20mib_review_fixes.py \
             tests/test_provider_shard_execution_contract.py \
             tests/test_high_resolution_page_confirmation.py \
             tests/test_native_pdf_text_recovery.py
