@@ -185,6 +185,50 @@ def _restore_concurrent_shard_source_access() -> None:
     SHARDING_PATH.write_text(source, encoding="utf-8")
 
 
+def _patch_concurrent_shard_cancellation_cleanup() -> None:
+    """Delete only a cancelled shard that never entered Provider submission."""
+    source = SHARDING_PATH.read_text(encoding="utf-8")
+    old = '''            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                cleanup_safe = not submission_started
+'''
+    new = '''            except asyncio.CancelledError:
+                cleanup_safe = not submission_started
+                if shard_input is not None:
+                    _delete_shard_provider_input_if_safe(
+                        storage,
+                        shard_input,
+                        cleanup_safe=cleanup_safe,
+                        diagnostic=diagnostic,
+                        processing_attempt_id=processing_attempt_id,
+                        provider_job_id=job_id,
+                        shard_index=plan.shard_index,
+                    )
+                diagnostic(
+                    "PDF_PROVIDER_SHARD_CANCELLED",
+                    processing_attempt_id=processing_attempt_id,
+                    provider_job_id=job_id,
+                    shard_index=plan.shard_index,
+                    submission_started=submission_started,
+                    cleanup_safe=cleanup_safe,
+                    elapsed_seconds=round(
+                        asyncio.get_running_loop().time() - started, 6
+                    ),
+                )
+                raise
+            except Exception as exc:
+                cleanup_safe = not submission_started
+'''
+    source = _replace_once(
+        source,
+        old,
+        new,
+        label="concurrent shard cancellation cleanup",
+    )
+    SHARDING_PATH.write_text(source, encoding="utf-8")
+
+
 def _patch_composed_test_thresholds() -> None:
     source = TEST_COMPAT_PATH.read_text(encoding="utf-8")
     start_marker = "def test_real_geometry_provider_input_above_target_enters_sharding(monkeypatch) -> None:\n"
@@ -208,10 +252,11 @@ def main() -> None:
     v2._patch_presentation_native_counts = _patch_presentation_native_counts_composed
     v3.main()
     _restore_concurrent_shard_source_access()
+    _patch_concurrent_shard_cancellation_cleanup()
     _patch_composed_test_thresholds()
     print(
         "provider 20 MiB composition-aware overlay ready: "
-        "per_shard_source_access=remote_first"
+        "per_shard_source_access=remote_first cancellation_cleanup=safe"
     )
 
 
