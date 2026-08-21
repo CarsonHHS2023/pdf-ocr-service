@@ -69,6 +69,9 @@ jobs:
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY = 5' app/processing/pdf_provider_sharding.py
           grep -q 'first_error_raw_result = None' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PROVIDER_SHARD_BATCH_TERMINAL' app/processing/pdf_provider_sharding.py
+          grep -q 'PDF_PROVIDER_SHARD_CANCELLED' app/processing/pdf_provider_sharding.py
+          grep -q 'shard_delivery = integration.provider_delivery_descriptor(shard_input)' app/processing/pdf_provider_sharding.py
+          grep -q 'source_transport_url_factory=shard_source_url_factory' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PAGE_CLASSIFICATION_SUMMARY' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'classifier_fail_open_to_ocr_count' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'PDF_PAGE_CLASSIFICATION_CONFIG' app/processing/pdf_page_classification_observability_compat.py
