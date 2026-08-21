@@ -12,6 +12,8 @@ from app.processing import pdf_page_presentation_bridge as bridge
 from app.processing import pdf_page_presentation_preprocess_compat as preprocess
 from app.processing import pdf_provider_sharding as sharding
 from app.processing import pdf_provider_sharding_compat as sharding_compat
+from app.processing.integration import IntegrationErrorCategory
+from app.processing.pdf_canonicalization import PdfCanonicalizationError
 from app.processing.pdf_provider_sharding import ProviderInputShardPlan
 
 
@@ -259,7 +261,7 @@ def test_canonicalization_failure_preserves_merged_raw_result(monkeypatch) -> No
 
     class FailingCanonicalizer:
         def canonicalize(self, envelope):
-            raise RuntimeError("canonicalization failed")
+            raise PdfCanonicalizationError("canonicalization failed")
 
     diagnostics: list[tuple[str, dict[str, object]]] = []
     result = asyncio.run(
@@ -283,7 +285,7 @@ def test_canonicalization_failure_preserves_merged_raw_result(monkeypatch) -> No
         )
     )
 
-    assert isinstance(result.error, RuntimeError)
+    assert isinstance(result.error, PdfCanonicalizationError)
     assert result.canonicalization is None
     assert result.raw_result is merged
     assert any(event == "PDF_PROVIDER_SHARDS_MERGED" for event, _ in diagnostics)
@@ -308,6 +310,7 @@ def test_canonicalization_failure_preserves_merged_raw_result(monkeypatch) -> No
         elapsed_seconds=1.25,
     )
     assert outcome.error is not None
+    assert outcome.error.category is IntegrationErrorCategory.CANONICALIZATION_FAILURE
     assert outcome.canonicalization is None
     assert outcome.raw_result is merged
     assert outcome.raw_result_storage_reference is merged_reference
