@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.processing import pdf_page_classification_observability_compat as classification_obs
 from app.processing import pdf_page_presentation_bridge as bridge
 from app.processing import pdf_page_presentation_preprocess_compat as preprocess
@@ -337,3 +339,158 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
     assert batch["succeeded_shards"] == 6
     assert batch["failed_shards"] == 0
     assert batch["shard_max_concurrency"] == 5
+
+
+def _install_single_shard_cancellation_fixture(monkeypatch, *, cancel_before_submission: bool):
+    plan = ProviderInputShardPlan(0, 0, 0, 1, 1024)
+    shard_reference = SimpleNamespace(value="cancel-shard-0")
+    shard_input = SimpleNamespace(
+        provider_byte_size=1024,
+        provider_page_count=1,
+        provider_storage_reference=shard_reference,
+        provider_checksum_sha256="a" * 64,
+        provider_filename="cancel-shard.pdf",
+        media_type="application/pdf",
+        preprocessing=None,
+    )
+    monkeypatch.setattr(
+        sharding,
+        "plan_provider_input_shards",
+        lambda *a, **k: (plan,),
+    )
+    monkeypatch.setattr(
+        sharding,
+        "materialize_provider_input_shard",
+        lambda *a, **k: shard_input,
+    )
+
+    from app.processing import pdf_geometry_integration as integration
+
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputChecksumProvider",
+        lambda client, provider_input: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputAwareProcessingOrchestrator",
+        lambda **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "ProviderInputGrantService",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        integration,
+        "provider_delivery_descriptor",
+        lambda provider_input: SimpleNamespace(
+            storage_reference=provider_input.provider_storage_reference,
+            byte_size=provider_input.provider_byte_size,
+        ),
+    )
+    monkeypatch.setattr(sharding, "get_transport_grant_service", lambda: SimpleNamespace())
+
+    if cancel_before_submission:
+        def cancel_source_factory(**kwargs):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(
+            sharding,
+            "build_provider_input_source_url_factory",
+            cancel_source_factory,
+        )
+
+        class FakeService:
+            def __init__(self, **kwargs):
+                raise AssertionError("service must not be constructed after pre-submit cancellation")
+    else:
+        monkeypatch.setattr(
+            sharding,
+            "build_provider_input_source_url_factory",
+            lambda **kwargs: object(),
+        )
+
+        class FakeService:
+            def __init__(self, **kwargs):
+                pass
+
+            async def process(self, request):
+                raise asyncio.CancelledError()
+
+    monkeypatch.setattr(sharding, "EndToEndProcessingIntegrationService", FakeService)
+    return shard_reference
+
+
+def _run_cancelled_single_shard(storage, diagnostics):
+    return asyncio.run(
+        sharding.run_provider_transport_shards(
+            storage=storage,
+            client=SimpleNamespace(),
+            provider_input=SimpleNamespace(
+                provider_byte_size=21 * _MIB,
+                provider_page_count=1,
+            ),
+            descriptor=SimpleNamespace(),
+            processing_attempt_id="attempt-cancel",
+            logical_provider_job_id="job-cancel",
+            logical_provider_request_id="request-cancel",
+            result_profile="full",
+            provider_job_options={},
+            public_origin=None,
+            polling_policy=SimpleNamespace(),
+            canonicalizer=SimpleNamespace(canonicalize=lambda envelope: envelope),
+            diagnostic=lambda event, **fields: diagnostics.append((event, fields)),
+        )
+    )
+
+
+def test_cancelled_materialized_shard_is_deleted_before_provider_submission(monkeypatch) -> None:
+    reference = _install_single_shard_cancellation_fixture(
+        monkeypatch,
+        cancel_before_submission=True,
+    )
+    deleted: list[object] = []
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    storage = SimpleNamespace(delete=lambda value: deleted.append(value))
+
+    with pytest.raises(asyncio.CancelledError):
+        _run_cancelled_single_shard(storage, diagnostics)
+
+    assert deleted == [reference]
+    cancelled = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_CANCELLED"
+    )
+    assert cancelled["submission_started"] is False
+    assert cancelled["cleanup_safe"] is True
+    assert any(event == "PDF_PROVIDER_SHARD_INPUT_DELETED" for event, _ in diagnostics)
+
+
+def test_cancelled_submitted_shard_is_retained_for_provider_safety(monkeypatch) -> None:
+    _install_single_shard_cancellation_fixture(
+        monkeypatch,
+        cancel_before_submission=False,
+    )
+    deleted: list[object] = []
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    storage = SimpleNamespace(delete=lambda value: deleted.append(value))
+
+    with pytest.raises(asyncio.CancelledError):
+        _run_cancelled_single_shard(storage, diagnostics)
+
+    assert deleted == []
+    cancelled = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_CANCELLED"
+    )
+    assert cancelled["submission_started"] is True
+    assert cancelled["cleanup_safe"] is False
+    retained = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_INPUT_RETAINED"
+    )
+    assert retained["reason"] == "provider_submission_may_still_be_active"
