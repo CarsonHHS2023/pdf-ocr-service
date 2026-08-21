@@ -44,6 +44,9 @@ def main() -> None:
         from scripts.apply_provider_20mib_review_fixes import (
             main as apply_provider_20mib_observability,
         )
+        from scripts.apply_provider_20mib_poll_count_fix import (
+            main as apply_provider_20mib_poll_count_fix,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -51,14 +54,17 @@ def main() -> None:
         from apply_provider_20mib_review_fixes import (
             main as apply_provider_20mib_observability,
         )
+        from apply_provider_20mib_poll_count_fix import (
+            main as apply_provider_20mib_poll_count_fix,
+        )
 
     patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
-    # This is deliberately last. It observes the fully composed production-like
-    # presentation/native path, applies the strict 20 MiB Baseline transport
-    # contract, preserves failure evidence, and keeps Atlas shard execution
-    # sequential.
+    # Compose the production-like presentation/native path first, then apply the
+    # strict 20 MiB Baseline transport/failure contracts and finally aggregate
+    # real shard poll counts into the logical Provider outcome.
     apply_provider_20mib_observability()
+    apply_provider_20mib_poll_count_fix()
 
 
 if __name__ == "__main__":
