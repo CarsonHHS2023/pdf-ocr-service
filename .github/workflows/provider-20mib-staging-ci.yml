@@ -61,12 +61,15 @@ jobs:
             app/processing/pdf_page_presentation_preprocess_compat.py \
             app/processing/pdf_page_classification_observability_compat.py \
             app/processing/pdf_ingestion.py \
-            scripts/apply_provider_20mib_observability_v2.py
+            scripts/apply_provider_20mib_observability_v2.py \
+            scripts/apply_provider_20mib_observability_v3.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 24 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY = 5' app/processing/pdf_provider_sharding.py
+          grep -q 'first_error_raw_result = None' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PROVIDER_SHARD_BATCH_TERMINAL' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PAGE_CLASSIFICATION_SUMMARY' app/processing/pdf_page_classification_observability_compat.py
+          grep -q 'classifier_fail_open_to_ocr_count' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'PDF_PAGE_CLASSIFICATION_CONFIG' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'native_text_page_count' app/processing/pdf_provider_sharding_compat.py
           grep -q 'native_text_page_count' app/processing/pdf_page_presentation_preprocess_compat.py
