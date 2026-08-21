@@ -140,13 +140,21 @@ def test_page_classification_observability_separates_model_fallback_and_native_t
     result = preprocess._classify_source_pages(SimpleNamespace())
 
     assert result is decisions
-    config = next(fields for event, fields in diagnostics if event == "PDF_PAGE_CLASSIFICATION_CONFIG")
+    config = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PAGE_CLASSIFICATION_CONFIG"
+    )
     assert config["enabled"] is True
     assert config["provider"] == "openai"
     assert config["model_id"] == "test-model"
     assert "not-logged-secret" not in repr(config)
 
-    summary = next(fields for event, fields in diagnostics if event == "PDF_PAGE_CLASSIFICATION_SUMMARY")
+    summary = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PAGE_CLASSIFICATION_SUMMARY"
+    )
     assert summary["document_page_count"] == 4
     assert summary["candidate_count"] == 3
     assert summary["classifier_success_count"] == 2
@@ -156,6 +164,9 @@ def test_page_classification_observability_separates_model_fallback_and_native_t
     assert summary["native_text_page_count"] == 1
     assert summary["provider_page_count"] == 2
     assert summary["excluded_from_provider_count"] == 2
+    assert summary["candidate_to_ocr_count"] == 1
+    assert summary["classifier_fail_open_to_ocr_count"] == 1
+    assert summary["classified_candidate_to_ocr_count"] == 0
     assert summary["fallback_to_ocr_count"] == 1
 
     page_two = next(
@@ -185,7 +196,9 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
         lambda storage, provider_input, plan, **kwargs: SimpleNamespace(
             provider_byte_size=1024,
             provider_page_count=1,
-            provider_storage_reference=None,
+            provider_storage_reference=SimpleNamespace(
+                value=f"shard-{plan.shard_index}"
+            ),
             provider_checksum_sha256="a" * 64,
             provider_filename=f"shard-{plan.shard_index}.pdf",
             media_type="application/pdf",
@@ -210,13 +223,42 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
         "ProviderInputGrantService",
         lambda *args, **kwargs: SimpleNamespace(),
     )
+    monkeypatch.setattr(
+        integration,
+        "provider_delivery_descriptor",
+        lambda provider_input: SimpleNamespace(
+            storage_reference=provider_input.provider_storage_reference,
+            byte_size=provider_input.provider_byte_size,
+        ),
+    )
     monkeypatch.setattr(sharding, "get_transport_grant_service", lambda: SimpleNamespace())
 
+    source_factory_calls: list[dict[str, object]] = []
+    source_factory_sentinels: list[object] = []
+
+    def fake_source_factory(**kwargs):
+        source_factory_calls.append(kwargs)
+        sentinel = object()
+        source_factory_sentinels.append(sentinel)
+        return sentinel
+
+    monkeypatch.setattr(
+        sharding,
+        "build_provider_input_source_url_factory",
+        fake_source_factory,
+    )
+
     raw_results = [SimpleNamespace(name=f"raw-{index}") for index in range(6)]
+    service_source_contracts: list[tuple[object, object]] = []
 
     class FakeService:
         def __init__(self, **kwargs):
-            pass
+            service_source_contracts.append(
+                (
+                    kwargs.get("source_transport_url_factory"),
+                    kwargs.get("source_access_ttl"),
+                )
+            )
 
         async def process(self, request):
             nonlocal active, observed
@@ -277,7 +319,21 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
     assert result.error is None
     assert result.canonicalization is canonical
     assert result.shard_count == 6
-    batch = next(fields for event, fields in diagnostics if event == "PDF_PROVIDER_SHARD_BATCH_TERMINAL")
+    assert len(source_factory_calls) == 6
+    assert all(call["byte_size"] == 1024 for call in source_factory_calls)
+    assert len(service_source_contracts) == 6
+    assert {factory for factory, _ in service_source_contracts} == set(
+        source_factory_sentinels
+    )
+    assert all(
+        ttl.total_seconds() == sharding.PROVIDER_SOURCE_ACCESS_TTL_SECONDS
+        for _, ttl in service_source_contracts
+    )
+    batch = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_BATCH_TERMINAL"
+    )
     assert batch["succeeded_shards"] == 6
     assert batch["failed_shards"] == 0
     assert batch["shard_max_concurrency"] == 5
