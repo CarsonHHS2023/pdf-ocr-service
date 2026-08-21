@@ -17,9 +17,11 @@ TEST_DEPLOYMENT_PATH = Path("tests/test_staging_deployment_contract.py")
 
 
 def _replace_once(source: str, old: str, new: str, *, label: str) -> str:
-    if new in source:
-        return source
     count = source.count(old)
+    if count == 0:
+        if new in source:
+            return source
+        raise RuntimeError(f"{label}: source marker is missing")
     if count != 1:
         raise RuntimeError(f"{label}: expected exactly one source match, found {count}")
     return source.replace(old, new, 1)
@@ -33,9 +35,11 @@ def _replace_exact_count(
     expected: int,
     label: str,
 ) -> str:
-    if new in source and old not in source:
-        return source
     count = source.count(old)
+    if count == 0:
+        if new in source:
+            return source
+        raise RuntimeError(f"{label}: source marker is missing")
     if count != expected:
         raise RuntimeError(f"{label}: expected {expected} source matches, found {count}")
     return source.replace(old, new)
@@ -285,6 +289,33 @@ def test_successful_sharded_outcome_aggregates_real_poll_counts(monkeypatch) -> 
 +        elapsed_seconds=2.5,
 +    )
 +    assert outcome.poll_count == 5
++
++
++def test_failed_sharded_outcome_preserves_aggregate_poll_count() -> None:
++    result = sharding.ProviderTransportShardRunResult(
++        canonicalization=None,
++        raw_result=None,
++        error=sharding.ProviderTransportShardError("poll aggregate failure"),
++        cleanup_safe=True,
++        submission_started=True,
++        shard_count=2,
++        poll_count=7,
++    )
++    outcome = sharding_compat._outcome_from_sharded_result(
++        SimpleNamespace(
++            retained_source=SimpleNamespace(
++                document_id="document-poll-failure",
++                source_file_id="source-poll-failure",
++            ),
++            provider_name="paddle-vl",
++            provider_job_id="job-poll-failure",
++            provider_request_id="request-poll-failure",
++        ),
++        result,
++        elapsed_seconds=3.0,
++    )
++    assert outcome.error is not None
++    assert outcome.poll_count == 7
 +'''.replace("\n+", "\n")
     TEST_REVIEW_PATH.write_text(source.rstrip() + block.rstrip() + "\n", encoding="utf-8")
 
@@ -308,7 +339,6 @@ def test_pr16_shard_poll_count_aggregation_in_staging_deploy_gate() -> None:
 
     runner = inspect.getsource(sharding.run_provider_transport_shards)
     assert "total_poll_count += max(0, int(outcome.poll_count or 0))" in runner
-    assert "poll_count=total_poll_count" in runner
     assert "poll_count=total_poll_count" in runner
 
     outcome_builder = inspect.getsource(sharding_compat._outcome_from_sharded_result)
