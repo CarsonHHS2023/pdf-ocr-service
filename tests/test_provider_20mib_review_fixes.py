@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import inspect
 from types import SimpleNamespace
 
@@ -56,17 +57,13 @@ def test_classification_diagnostics_use_real_timeout_parse_and_attempt_identity(
         lambda event, **fields: diagnostics.append((event, fields)),
     )
     monkeypatch.setattr(preprocess, "_classify_source_pages", lambda source: decisions)
-
-    def fake_prepare(*args, **kwargs):
-        return preprocess._classify_source_pages(SimpleNamespace())
-
-    monkeypatch.setattr(preprocess, "prepare_presentation_provider_input_v2", fake_prepare)
     monkeypatch.setattr(classification_obs, "_INSTALLED", False)
 
     classification_obs.install_page_classification_observability_compat()
-    result = preprocess.prepare_presentation_provider_input_v2(
-        processing_attempt_id="attempt-review-42"
-    )
+    with classification_obs.page_classification_observation_context(
+        "attempt-review-42"
+    ):
+        result = preprocess._classify_source_pages(SimpleNamespace())
 
     assert result is decisions
     for event_name in (
@@ -85,6 +82,58 @@ def test_classification_diagnostics_use_real_timeout_parse_and_attempt_identity(
     assert config["timeout_config_valid"] is False
     assert config["timeout_seconds"] is None
     assert "not-logged-secret" not in repr(config)
+    assert classification_obs._PROCESSING_ATTEMPT_ID.get() is None
+
+
+def test_active_pdf_ingestion_entrypoint_scopes_classification_identity(monkeypatch) -> None:
+    """Exercise the actual top-level function used by pdf_ingestion, not a stale alias."""
+    from app.processing import pdf_ingestion
+
+    observed_attempts: list[str | None] = []
+
+    monkeypatch.setattr(
+        pdf_ingestion,
+        "record_pdf_processing_heartbeat",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pdf_ingestion,
+        "_read_verified_source_pdf",
+        lambda storage, descriptor: b"%PDF-review-fixture",
+    )
+    monkeypatch.setattr(
+        pdf_ingestion,
+        "pdf_resource_observation_context",
+        lambda **kwargs: nullcontext(),
+    )
+
+    expected = SimpleNamespace(
+        byte_size=123,
+        preprocessing=SimpleNamespace(changed_page_count=0),
+    )
+
+    def fake_prepare_geometry_provider_input(**kwargs):
+        observed_attempts.append(classification_obs._PROCESSING_ATTEMPT_ID.get())
+        return expected
+
+    monkeypatch.setattr(
+        pdf_ingestion,
+        "prepare_geometry_provider_input",
+        fake_prepare_geometry_provider_input,
+    )
+
+    result = pdf_ingestion._prepare_geometry_provider_input_from_storage(
+        storage=SimpleNamespace(),
+        descriptor=SimpleNamespace(
+            document_id="document-review-42",
+            filename="review.pdf",
+        ),
+        processing_attempt_id="attempt-active-route-42",
+        expected_page_count=1,
+    )
+
+    assert result is expected
+    assert observed_attempts == ["attempt-active-route-42"]
     assert classification_obs._PROCESSING_ATTEMPT_ID.get() is None
 
 
