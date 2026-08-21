@@ -16,10 +16,11 @@ from app.processing.pdf_provider_sharding import ProviderInputShardPlan
 _MIB = 1024 * 1024
 
 
-def test_provider_transport_defaults_are_20_mib_with_narrow_safety_ceiling() -> None:
+def test_provider_transport_defaults_are_20_mib_and_sequential() -> None:
     assert sharding.PROVIDER_TRANSPORT_SHARD_TARGET_BYTES == 20 * _MIB
     assert sharding.PROVIDER_TRANSPORT_SHARD_MAX_BYTES == 24 * _MIB
-    assert sharding.PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY == 5
+    assert sharding.PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE == "sequential"
+    assert not hasattr(sharding, "PROVIDER_TRANSPORT_SHARD_MAX_CONCURRENCY")
     assert sharding.PROVIDER_TRANSPORT_SHARD_TARGET_BYTES < (
         sharding.PROVIDER_TRANSPORT_SHARD_MAX_BYTES
     )
@@ -182,15 +183,11 @@ def test_page_classification_observability_separates_model_fallback_and_native_t
     assert page_two["reason_codes"] == "classification_failed:ReadTimeout"
 
 
-def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) -> None:
+def _install_three_shard_success_fixture(monkeypatch):
     plans = tuple(
         ProviderInputShardPlan(index, index, index, 1, 1024)
-        for index in range(6)
+        for index in range(3)
     )
-    active = 0
-    observed = 0
-    lock = asyncio.Lock()
-
     monkeypatch.setattr(sharding, "plan_provider_input_shards", lambda *a, **k: plans)
     monkeypatch.setattr(
         sharding,
@@ -198,9 +195,7 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
         lambda storage, provider_input, plan, **kwargs: SimpleNamespace(
             provider_byte_size=1024,
             provider_page_count=1,
-            provider_storage_reference=SimpleNamespace(
-                value=f"shard-{plan.shard_index}"
-            ),
+            provider_storage_reference=SimpleNamespace(value=f"shard-{plan.shard_index}"),
             provider_checksum_sha256="a" * 64,
             provider_filename=f"shard-{plan.shard_index}.pdf",
             media_type="application/pdf",
@@ -250,7 +245,17 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
         fake_source_factory,
     )
 
-    raw_results = [SimpleNamespace(name=f"raw-{index}") for index in range(6)]
+    return plans, source_factory_calls, source_factory_sentinels
+
+
+def test_provider_shards_execute_sequentially_with_per_shard_source_access(monkeypatch) -> None:
+    plans, source_factory_calls, source_factory_sentinels = _install_three_shard_success_fixture(
+        monkeypatch
+    )
+    active = 0
+    observed_max_active = 0
+    process_order: list[str] = []
+    raw_results = [SimpleNamespace(name=f"raw-{index}") for index in range(3)]
     service_source_contracts: list[tuple[object, object]] = []
 
     class FakeService:
@@ -263,14 +268,13 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
             )
 
         async def process(self, request):
-            nonlocal active, observed
+            nonlocal active, observed_max_active
             shard_index = int(request.provider_job_id.rsplit("s", 1)[1]) - 1
-            async with lock:
-                active += 1
-                observed = max(observed, active)
-            await asyncio.sleep(0.02)
-            async with lock:
-                active -= 1
+            active += 1
+            observed_max_active = max(observed_max_active, active)
+            process_order.append(request.provider_job_id)
+            await asyncio.sleep(0.01)
+            active -= 1
             return SimpleNamespace(
                 revocation_succeeded=True,
                 grant_final_state=None,
@@ -282,18 +286,16 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
             )
 
     monkeypatch.setattr(sharding, "EndToEndProcessingIntegrationService", FakeService)
-
     merged = SimpleNamespace(
         ingestion=SimpleNamespace(payload_size_bytes=1234, page_summary=None)
     )
 
     def fake_merge(storage, provider_input, evidence, **kwargs):
-        assert [item.plan.shard_index for item in evidence] == list(range(6))
+        assert [item.plan.shard_index for item in evidence] == list(range(3))
         return merged
 
     monkeypatch.setattr(sharding, "merge_provider_shard_results", fake_merge)
     canonical = SimpleNamespace(candidate_id="candidate")
-    canonicalizer = SimpleNamespace(canonicalize=lambda envelope: canonical)
     diagnostics: list[tuple[str, dict[str, object]]] = []
 
     result = asyncio.run(
@@ -301,8 +303,8 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
             storage=SimpleNamespace(delete=lambda reference: None),
             client=SimpleNamespace(),
             provider_input=SimpleNamespace(
-                provider_byte_size=30 * _MIB,
-                provider_page_count=6,
+                provider_byte_size=60 * _MIB,
+                provider_page_count=len(plans),
             ),
             descriptor=SimpleNamespace(),
             processing_attempt_id="attempt",
@@ -312,18 +314,18 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
             provider_job_options={},
             public_origin=None,
             polling_policy=SimpleNamespace(),
-            canonicalizer=canonicalizer,
+            canonicalizer=SimpleNamespace(canonicalize=lambda envelope: canonical),
             diagnostic=lambda event, **fields: diagnostics.append((event, fields)),
         )
     )
 
-    assert observed == 5
+    assert observed_max_active == 1
+    assert process_order == ["job-s001", "job-s002", "job-s003"]
     assert result.error is None
     assert result.canonicalization is canonical
-    assert result.shard_count == 6
-    assert len(source_factory_calls) == 6
+    assert result.shard_count == 3
+    assert len(source_factory_calls) == 3
     assert all(call["byte_size"] == 1024 for call in source_factory_calls)
-    assert len(service_source_contracts) == 6
     assert {factory for factory, _ in service_source_contracts} == set(
         source_factory_sentinels
     )
@@ -331,14 +333,21 @@ def test_provider_shards_execute_with_bounded_five_way_concurrency(monkeypatch) 
         ttl.total_seconds() == sharding.PROVIDER_SOURCE_ACCESS_TTL_SECONDS
         for _, ttl in service_source_contracts
     )
+    request_events = [
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_SHARD_REQUEST_STARTED"
+    ]
+    assert [fields["provider_job_id"] for fields in request_events] == process_order
+    assert all(fields["shard_execution_mode"] == "sequential" for fields in request_events)
     batch = next(
         fields
         for event, fields in diagnostics
         if event == "PDF_PROVIDER_SHARD_BATCH_TERMINAL"
     )
-    assert batch["succeeded_shards"] == 6
+    assert batch["succeeded_shards"] == 3
     assert batch["failed_shards"] == 0
-    assert batch["shard_max_concurrency"] == 5
+    assert batch["shard_execution_mode"] == "sequential"
 
 
 def _install_single_shard_cancellation_fixture(monkeypatch, *, cancel_before_submission: bool):
@@ -353,11 +362,7 @@ def _install_single_shard_cancellation_fixture(monkeypatch, *, cancel_before_sub
         media_type="application/pdf",
         preprocessing=None,
     )
-    monkeypatch.setattr(
-        sharding,
-        "plan_provider_input_shards",
-        lambda *a, **k: (plan,),
-    )
+    monkeypatch.setattr(sharding, "plan_provider_input_shards", lambda *a, **k: (plan,))
     monkeypatch.setattr(
         sharding,
         "materialize_provider_input_shard",
@@ -465,6 +470,8 @@ def test_cancelled_materialized_shard_is_deleted_before_provider_submission(monk
     )
     assert cancelled["submission_started"] is False
     assert cancelled["cleanup_safe"] is True
+    assert cancelled["elapsed_seconds"] is None
+    assert cancelled["shard_execution_mode"] == "sequential"
     assert any(event == "PDF_PROVIDER_SHARD_INPUT_DELETED" for event, _ in diagnostics)
 
 
@@ -488,6 +495,8 @@ def test_cancelled_submitted_shard_is_retained_for_provider_safety(monkeypatch) 
     )
     assert cancelled["submission_started"] is True
     assert cancelled["cleanup_safe"] is False
+    assert isinstance(cancelled["elapsed_seconds"], float)
+    assert cancelled["shard_execution_mode"] == "sequential"
     retained = next(
         fields
         for event, fields in diagnostics
