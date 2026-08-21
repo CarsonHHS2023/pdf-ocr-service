@@ -47,6 +47,9 @@ def main() -> None:
         from scripts.apply_provider_20mib_poll_count_fix import (
             main as apply_provider_20mib_poll_count_fix,
         )
+        from scripts.apply_provider_terminal_poll_diagnostic import (
+            main as apply_provider_terminal_poll_diagnostic,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -57,14 +60,19 @@ def main() -> None:
         from apply_provider_20mib_poll_count_fix import (
             main as apply_provider_20mib_poll_count_fix,
         )
+        from apply_provider_terminal_poll_diagnostic import (
+            main as apply_provider_terminal_poll_diagnostic,
+        )
 
     patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
     # Compose the production-like presentation/native path first, then apply the
-    # strict 20 MiB Baseline transport/failure contracts and finally aggregate
-    # real shard poll counts into the logical Provider outcome.
+    # strict 20 MiB Baseline transport/failure contracts, aggregate real shard
+    # polls into the logical Provider outcome, and expose that aggregate in the
+    # top-level terminal diagnostic.
     apply_provider_20mib_observability()
     apply_provider_20mib_poll_count_fix()
+    apply_provider_terminal_poll_diagnostic()
 
 
 if __name__ == "__main__":
