@@ -78,7 +78,9 @@ def _emit_summary(decisions: list[dict[str, Any]]) -> None:
     presentation_page_count = 0
     native_text_page_count = 0
     provider_page_count = 0
-    fallback_to_ocr_count = 0
+    candidate_to_ocr_count = 0
+    classifier_fail_open_to_ocr_count = 0
+    classified_candidate_to_ocr_count = 0
     below_confidence_count = 0
     prose_conflict_count = 0
     role_not_presentation_count = 0
@@ -90,10 +92,11 @@ def _emit_summary(decisions: list[dict[str, Any]]) -> None:
         native_text = bool(decision.get("native_text_accepted"))
         decision_reason = str(decision.get("decision_reason") or "")
         provider = str(classification.get("provider") or "")
+        classifier_succeeded = bool(provider and provider != "none")
 
         candidate_count += int(candidate)
         if candidate:
-            if provider and provider != "none":
+            if classifier_succeeded:
                 classifier_success_count += 1
             else:
                 classifier_fallback_count += 1
@@ -107,7 +110,11 @@ def _emit_summary(decisions: list[dict[str, Any]]) -> None:
         if not skip_ocr:
             provider_page_count += 1
             if candidate:
-                fallback_to_ocr_count += 1
+                candidate_to_ocr_count += 1
+                if classifier_succeeded:
+                    classified_candidate_to_ocr_count += 1
+                else:
+                    classifier_fail_open_to_ocr_count += 1
 
         below_confidence_count += int(
             decision_reason == "classification_below_confidence_threshold"
@@ -133,7 +140,12 @@ def _emit_summary(decisions: list[dict[str, Any]]) -> None:
         excluded_from_provider_count=(
             presentation_page_count + native_text_page_count
         ),
-        fallback_to_ocr_count=fallback_to_ocr_count,
+        candidate_to_ocr_count=candidate_to_ocr_count,
+        classifier_fail_open_to_ocr_count=classifier_fail_open_to_ocr_count,
+        # Compatibility name retained, but it now means a true classifier
+        # fail-open rather than every candidate that legitimately needs OCR.
+        fallback_to_ocr_count=classifier_fail_open_to_ocr_count,
+        classified_candidate_to_ocr_count=classified_candidate_to_ocr_count,
         below_confidence_count=below_confidence_count,
         prose_conflict_count=prose_conflict_count,
         role_not_presentation_count=role_not_presentation_count,
