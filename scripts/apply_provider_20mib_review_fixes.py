@@ -14,6 +14,7 @@ except ImportError:
 
 
 SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
+SHARDING_COMPAT_PATH = Path("app/processing/pdf_provider_sharding_compat.py")
 INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 TEST_SHARDING_PATH = Path("tests/test_pdf_provider_sharding.py")
 TEST_OBSERVABILITY_PATH = Path("tests/test_provider_20mib_observability.py")
@@ -237,6 +238,48 @@ def _patch_canonicalization_failure_evidence() -> None:
     SHARDING_PATH.write_text(source, encoding="utf-8")
 
 
+def _patch_canonicalization_failure_category() -> None:
+    """Match the sharded canonicalization error category to the single-job path."""
+    source = SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
+    source = _replace_once(
+        source,
+        "from app.processing.orchestration import OrchestrationPhase\n"
+        "from app.processing.pdf_geometry_integration import provider_delivery_descriptor",
+        "from app.processing.orchestration import OrchestrationPhase\n"
+        "from app.processing.pdf_canonicalization import PdfCanonicalizationError\n"
+        "from app.processing.pdf_geometry_integration import provider_delivery_descriptor",
+        label="canonicalization error import",
+    )
+    old = """def _bounded_integration_error(exc: Exception) -> IntegrationError:
+    if isinstance(exc, IntegrationError):
+        return exc
+    return IntegrationError(
+        IntegrationErrorCategory.UNEXPECTED,
+        \"provider transport sharding failed before canonical content became ready\",
+    )
+"""
+    new = """def _bounded_integration_error(exc: Exception) -> IntegrationError:
+    if isinstance(exc, IntegrationError):
+        return exc
+    if isinstance(exc, PdfCanonicalizationError):
+        return IntegrationError(
+            IntegrationErrorCategory.CANONICALIZATION_FAILURE,
+            \"retained raw result could not be canonicalized\",
+        )
+    return IntegrationError(
+        IntegrationErrorCategory.UNEXPECTED,
+        \"provider transport sharding failed before canonical content became ready\",
+    )
+"""
+    source = _replace_once(
+        source,
+        old,
+        new,
+        label="canonicalization failure category mapping",
+    )
+    SHARDING_COMPAT_PATH.write_text(source, encoding="utf-8")
+
+
 def _patch_authoritative_staging_deploy_gate() -> None:
     """Make the push-to-staging deploy gate assert the final PR #16 runtime contract."""
     source = TEST_DEPLOYMENT_PATH.read_text(encoding="utf-8")
@@ -252,6 +295,7 @@ def test_pr16_20mib_baseline_runtime_contract_in_staging_deploy_gate() -> None:
     from app.processing import pdf_page_classification_observability_compat as classification_obs
     from app.processing import pdf_provider_sharding as sharding
     from app.processing import pdf_provider_sharding_compat as sharding_compat
+    from app.processing.pdf_canonicalization import PdfCanonicalizationError
 
     assert sharding.PROVIDER_TRANSPORT_SHARD_TARGET_BYTES == 20 * 1024 * 1024
     assert sharding.PROVIDER_TRANSPORT_SHARD_MAX_BYTES == 20 * 1024 * 1024
@@ -279,6 +323,14 @@ def test_pr16_20mib_baseline_runtime_contract_in_staging_deploy_gate() -> None:
     outcome_builder = inspect.getsource(sharding_compat._outcome_from_sharded_result)
     assert "raw_result=result.raw_result" in outcome_builder
     assert "raw_result_storage_reference=raw_reference" in outcome_builder
+
+    canonicalization_error = sharding_compat._bounded_integration_error(
+        PdfCanonicalizationError("deploy-gate-canonicalization")
+    )
+    assert (
+        canonicalization_error.category
+        is sharding_compat.IntegrationErrorCategory.CANONICALIZATION_FAILURE
+    )
 '''
     TEST_DEPLOYMENT_PATH.write_text(
         source.rstrip() + block.rstrip() + "\n",
@@ -291,10 +343,12 @@ def main() -> None:
     _patch_active_ingestion_classification_context()
     _patch_strict_20mib_transport_ceiling()
     _patch_canonicalization_failure_evidence()
+    _patch_canonicalization_failure_category()
     _patch_authoritative_staging_deploy_gate()
     print(
         "provider 20 MiB review fixes ready: actual_transport_hard_max_mib=20 "
         "canonicalization_failure_raw_result=preserved "
+        "canonicalization_failure_category=preserved "
         "classification_identity_scope=active_ingestion "
         "staging_deploy_gate=locked"
     )
