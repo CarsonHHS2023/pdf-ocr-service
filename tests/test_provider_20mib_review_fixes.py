@@ -5,10 +5,13 @@ from contextlib import nullcontext
 import inspect
 from types import SimpleNamespace
 
+import pytest
+
 from app.processing import pdf_page_classification_observability_compat as classification_obs
 from app.processing import pdf_page_presentation_bridge as bridge
 from app.processing import pdf_page_presentation_preprocess_compat as preprocess
 from app.processing import pdf_provider_sharding as sharding
+from app.processing import pdf_provider_sharding_compat as sharding_compat
 from app.processing.pdf_provider_sharding import ProviderInputShardPlan
 
 
@@ -24,6 +27,39 @@ def test_actual_provider_transport_hard_max_is_20_mib() -> None:
         .default
         == 20 * _MIB
     )
+
+
+def test_materialization_over_20_mib_fails_before_provider_storage(monkeypatch) -> None:
+    class FakeDocument:
+        page_count = 1
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sharding, "_provider_pdf_bytes", lambda *args: b"%PDF-fixture")
+    monkeypatch.setattr(sharding.fitz, "open", lambda *args, **kwargs: FakeDocument())
+    monkeypatch.setattr(
+        sharding,
+        "_serialize_page_range",
+        lambda *args, **kwargs: b"x" * (20 * _MIB + 1),
+    )
+
+    storage_puts: list[object] = []
+    storage = SimpleNamespace(put=lambda *args, **kwargs: storage_puts.append((args, kwargs)))
+    plan = ProviderInputShardPlan(0, 0, 0, 1, 20 * _MIB)
+
+    with pytest.raises(
+        sharding.ProviderTransportShardError,
+        match="exceeds transport safety maximum",
+    ):
+        sharding.materialize_provider_input_shard(
+            storage,
+            SimpleNamespace(),
+            plan,
+            shard_count=1,
+        )
+
+    assert storage_puts == []
 
 
 def test_classification_diagnostics_use_real_timeout_parse_and_attempt_identity(
@@ -206,8 +242,14 @@ def test_canonicalization_failure_preserves_merged_raw_result(monkeypatch) -> No
             )
 
     monkeypatch.setattr(sharding, "EndToEndProcessingIntegrationService", FakeService)
+    merged_reference = SimpleNamespace(value="merged-raw-result")
     merged = SimpleNamespace(
-        ingestion=SimpleNamespace(payload_size_bytes=1234, page_summary=None)
+        ingestion=SimpleNamespace(
+            storage_reference=merged_reference,
+            payload_sha256="b" * 64,
+            payload_size_bytes=1234,
+            page_summary=None,
+        )
     )
     monkeypatch.setattr(
         sharding,
@@ -251,3 +293,23 @@ def test_canonicalization_failure_preserves_merged_raw_result(monkeypatch) -> No
         for event, fields in diagnostics
     )
     assert not any(event == "PDF_PROVIDER_SHARD_MERGE_FAILED" for event, _ in diagnostics)
+
+    outcome = sharding_compat._outcome_from_sharded_result(
+        SimpleNamespace(
+            retained_source=SimpleNamespace(
+                document_id="document-review",
+                source_file_id="source-review",
+            ),
+            provider_name="paddle-vl",
+            provider_job_id="job-review",
+            provider_request_id="request-review",
+        ),
+        result,
+        elapsed_seconds=1.25,
+    )
+    assert outcome.error is not None
+    assert outcome.canonicalization is None
+    assert outcome.raw_result is merged
+    assert outcome.raw_result_storage_reference is merged_reference
+    assert outcome.raw_result_checksum_sha256 == "b" * 64
+    assert outcome.raw_result_size_bytes == 1234
