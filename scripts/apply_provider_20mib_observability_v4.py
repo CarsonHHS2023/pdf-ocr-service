@@ -185,6 +185,32 @@ def _restore_concurrent_shard_source_access() -> None:
     SHARDING_PATH.write_text(source, encoding="utf-8")
 
 
+def _patch_concurrent_shard_timing() -> None:
+    """Exclude semaphore queueing from per-shard elapsed diagnostics."""
+    source = SHARDING_PATH.read_text(encoding="utf-8")
+    old = '''        shard_input = None
+        submission_started = False
+        started = asyncio.get_running_loop().time()
+
+        async with semaphore:
+            try:
+'''
+    new = '''        shard_input = None
+        submission_started = False
+
+        async with semaphore:
+            started = asyncio.get_running_loop().time()
+            try:
+'''
+    source = _replace_once(
+        source,
+        old,
+        new,
+        label="concurrent shard timing after semaphore admission",
+    )
+    SHARDING_PATH.write_text(source, encoding="utf-8")
+
+
 def _patch_concurrent_shard_cancellation_cleanup() -> None:
     """Delete only a cancelled shard that never entered Provider submission."""
     source = SHARDING_PATH.read_text(encoding="utf-8")
@@ -252,11 +278,13 @@ def main() -> None:
     v2._patch_presentation_native_counts = _patch_presentation_native_counts_composed
     v3.main()
     _restore_concurrent_shard_source_access()
+    _patch_concurrent_shard_timing()
     _patch_concurrent_shard_cancellation_cleanup()
     _patch_composed_test_thresholds()
     print(
         "provider 20 MiB composition-aware overlay ready: "
-        "per_shard_source_access=remote_first cancellation_cleanup=safe"
+        "per_shard_source_access=remote_first shard_timing=post_semaphore "
+        "cancellation_cleanup=safe"
     )
 
 
