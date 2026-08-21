@@ -280,7 +280,10 @@ def test_pr16_20mib_baseline_runtime_contract_in_staging_deploy_gate() -> None:
     assert "raw_result=result.raw_result" in outcome_builder
     assert "raw_result_storage_reference=raw_reference" in outcome_builder
 '''
-    TEST_DEPLOYMENT_PATH.write_text(source.rstrip() + block + "\n", encoding="utf-8")
+    TEST_DEPLOYMENT_PATH.write_text(
+        source.rstrip() + block.rstrip() + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
