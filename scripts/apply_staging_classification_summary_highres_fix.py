@@ -137,7 +137,7 @@ def _append_deployment_regression() -> bool:
     if _DEPLOYMENT_TEST_MARKER in source:
         return False
     DEPLOYMENT_TEST_PATH.write_text(
-        source.rstrip() + _DEPLOYMENT_TEST_BLOCK + "\n",
+        source.rstrip() + _DEPLOYMENT_TEST_BLOCK.rstrip() + "\n",
         encoding="utf-8",
     )
     return True
