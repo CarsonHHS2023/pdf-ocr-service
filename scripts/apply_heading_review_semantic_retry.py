@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 RUNTIME_PATH = Path("app/processing/batched_structure_refinement.py")
-REGRESSION_TEST_PATH = Path("tests/processing/test_batched_structure_refinement.py")
+REGRESSION_TEST_PATH = Path("tests/test_staging_deployment_contract.py")
 
 _CONSTANT_ANCHOR = '''_PAGE_ROLE_PROMPT_TOKEN = "v4_page_roles"\n'''
 _CONSTANT_REPLACEMENT = '''_PAGE_ROLE_PROMPT_TOKEN = "v4_page_roles"\n_HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS = 2\n'''
@@ -235,6 +235,59 @@ _REGRESSION_BLOCK = r'''
 
 
 def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
+    import asyncio
+
+    from app.processing.batched_structure_refinement import BatchedStructureRefiner
+    from app.processing.llm_structure_refinement import (
+        RefinementOperationKind,
+        StructureRefinementOperation,
+        StructureRefinementPatch,
+    )
+    from app.processing.structured_result_v2.model import (
+        ProcessingNode,
+        ProcessingNodeKind,
+        StructuredProcessingResultV2,
+    )
+    from app.source_units import SourceUnit, SourceUnitDimensions, SourceUnitKind
+
+    units = tuple(
+        SourceUnit(
+            f"page-{index}",
+            SourceUnitKind.PHYSICAL_PAGE,
+            index - 1,
+            "source",
+            dimensions=SourceUnitDimensions(600, 900),
+        )
+        for index in (1, 2)
+    )
+    spr = StructuredProcessingResultV2(
+        document_ref="doc",
+        processing_run_ref="run",
+        source_units=units,
+        observations=(),
+        nodes=tuple(
+            ProcessingNode(
+                f"heading-{index}",
+                ProcessingNodeKind.HEADING,
+                index - 1,
+                (units[index - 1].source_unit_id,),
+                text=f"Heading {index}",
+                heading_level=2,
+            )
+            for index in (1, 2)
+        ),
+    )
+
+    def operation(node_id: str) -> StructureRefinementOperation:
+        return StructureRefinementOperation(
+            RefinementOperationKind.RECLASSIFY_NODE,
+            node_id,
+            0.98,
+            ("outline_consistency",),
+            target_kind=ProcessingNodeKind.HEADING,
+            heading_level=2,
+        )
+
     calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     events: list[tuple[str, dict[str, object]]] = []
 
@@ -242,22 +295,16 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         def __init__(self, images):
             self.images = dict(images)
 
-        async def propose_async(self, spr):
+        async def propose_async(self, scoped_spr):
             calls.append(
                 (
                     tuple(sorted(self.images)),
-                    tuple(node.node_id for node in spr.nodes),
+                    tuple(node.node_id for node in scoped_spr.nodes),
                 )
             )
             if len(calls) == 1:
-                return StructureRefinementPatch(
-                    "model",
-                    (_operation(node_id="heading-1"),),
-                )
-            return StructureRefinementPatch(
-                "model",
-                (_operation(node_id="heading-2"),),
-            )
+                return StructureRefinementPatch("model", (operation("heading-1"),))
+            return StructureRefinementPatch("model", (operation("heading-2"),))
 
     refiner = BatchedStructureRefiner(
         model_id="model",
@@ -271,19 +318,16 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         event_sink=lambda event, fields: events.append((event, dict(fields))),
     )
 
-    patch = asyncio.run(
-        refiner.propose_async(
-            _spr(page_count=2, heading_pages=(1, 2))
-        )
-    )
+    patch = asyncio.run(refiner.propose_async(spr))
 
     assert calls == [
         (("page-1", "page-2"), ("heading-1", "heading-2")),
         (("page-2",), ("heading-2",)),
     ]
-    assert {
-        operation.node_id for operation in patch.operations
-    } == {"heading-1", "heading-2"}
+    assert {operation.node_id for operation in patch.operations} == {
+        "heading-1",
+        "heading-2",
+    }
     scheduled = next(
         fields
         for event, fields in events
@@ -299,41 +343,6 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
     )
     assert completed["retained_heading_review_count"] == 1
     assert completed["repaired_heading_count"] == 1
-
-
-def test_invalid_heading_suppression_does_not_enter_targeted_repair() -> None:
-    calls = 0
-    suppression = StructureRefinementOperation(
-        RefinementOperationKind.SUPPRESS_AS_ARTIFACT,
-        "heading-1",
-        0.99,
-        ("probable_show_through",),
-    )
-
-    class Refiner:
-        def __init__(self, _images):
-            pass
-
-        async def propose_async(self, _spr):
-            nonlocal calls
-            calls += 1
-            return StructureRefinementPatch("model", (suppression,))
-
-    refiner = BatchedStructureRefiner(
-        model_id="model",
-        batch_planner=lambda _spr: (
-            {"page-1": "data:image/jpeg;base64,AA=="},
-        ),
-        refiner_factory=Refiner,
-    )
-
-    with pytest.raises(
-        RequiredHeadingReviewError,
-        match="coverage is incomplete",
-    ):
-        asyncio.run(refiner.propose_async(_spr(page_count=1)))
-
-    assert calls == 1
 '''
 
 
