@@ -120,6 +120,21 @@ def main() -> None:
         from scripts.apply_staging_classification_summary_highres_fix import (
             main as apply_staging_classification_summary_highres_fix,
         )
+        from scripts.apply_structure_refinement_batch_budgeting import (
+            main as apply_structure_refinement_batch_budgeting,
+        )
+        from scripts.apply_structure_refinement_heading_batch_atomicity import (
+            main as apply_structure_refinement_heading_batch_atomicity,
+        )
+        from scripts.apply_structure_refinement_batch_safety import (
+            main as apply_structure_refinement_batch_safety,
+        )
+        from scripts.apply_structure_refinement_shared_node_ownership import (
+            main as apply_structure_refinement_shared_node_ownership,
+        )
+        from scripts.apply_structure_refinement_soft_batch_targets import (
+            main as apply_structure_refinement_soft_batch_targets,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -145,6 +160,32 @@ def main() -> None:
         from apply_staging_classification_summary_highres_fix import (
             main as apply_staging_classification_summary_highres_fix,
         )
+        from apply_structure_refinement_batch_budgeting import (
+            main as apply_structure_refinement_batch_budgeting,
+        )
+        from apply_structure_refinement_heading_batch_atomicity import (
+            main as apply_structure_refinement_heading_batch_atomicity,
+        )
+        from apply_structure_refinement_batch_safety import (
+            main as apply_structure_refinement_batch_safety,
+        )
+        from apply_structure_refinement_shared_node_ownership import (
+            main as apply_structure_refinement_shared_node_ownership,
+        )
+        from apply_structure_refinement_soft_batch_targets import (
+            main as apply_structure_refinement_soft_batch_targets,
+        )
+
+    # Structure-refinement batching is independent of the historical provider
+    # rewrite chain, so install it before the provider-composition no-op guard.
+    # Heading-linked pages stay atomic; scoped references are closed; every other
+    # multi-page node has one deterministic owner batch. Heading/node thresholds
+    # are soft targets for normal batch splitting, while max_pages remains hard.
+    apply_structure_refinement_batch_budgeting()
+    apply_structure_refinement_heading_batch_atomicity()
+    apply_structure_refinement_batch_safety()
+    apply_structure_refinement_shared_node_ownership()
+    apply_structure_refinement_soft_batch_targets()
 
     # The source-rewrite stack below is a composition step, not a migration that
     # should keep editing an already composed checkout. Once every final runtime

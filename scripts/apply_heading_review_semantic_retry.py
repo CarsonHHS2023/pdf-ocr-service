@@ -1,41 +1,574 @@
-"""Retry one semantically incomplete mandatory heading-review batch once."""
+"""Repair one semantically incomplete mandatory heading-review batch narrowly."""
 from __future__ import annotations
 
 from pathlib import Path
 
+RUNTIME_PATH = Path("app/processing/batched_structure_refinement.py")
+REGRESSION_TEST_PATH = Path("tests/test_staging_deployment_contract.py")
 
-def _replace_once(path: Path, old: str, new: str, *, label: str) -> None:
-    source = path.read_text(encoding="utf-8")
-    if new in source:
-        return
-    if source.count(old) != 1:
-        raise RuntimeError(f"Could not find unique {label} in {path}")
-    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+_CONSTANT_ANCHOR = '''_PAGE_ROLE_PROMPT_TOKEN = "v4_page_roles"\n'''
+_CONSTANT_REPLACEMENT = '''_PAGE_ROLE_PROMPT_TOKEN = "v4_page_roles"\n_HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS = 2\n'''
+
+_BASE_METHOD = '''    async def _propose_one_async(
+        self,
+        spr: StructuredProcessingResultV2,
+        image_batch: Mapping[str, str],
+        *,
+        required_page_role_source_unit_ids: Sequence[str] = (),
+    ) -> StructureRefinementPatch:
+        refiner = self.refiner_factory(dict(image_batch))
+        propose_async = getattr(refiner, "propose_async", None)
+        if callable(propose_async):
+            patch = await propose_async(spr)
+        else:
+            propose = getattr(refiner, "propose", None)
+            if not callable(propose):
+                raise TypeError("batch refiner must expose propose_async(spr) or propose(spr)")
+            patch = await asyncio.to_thread(propose, spr)
+        if not isinstance(patch, StructureRefinementPatch):
+            raise TypeError("batch refiner must return StructureRefinementPatch")
+        _validate_batch_patch(
+            spr,
+            patch,
+            required_page_role_source_unit_ids=required_page_role_source_unit_ids,
+        )
+        return patch
+'''
+
+_LEGACY_BLIND_RETRY_MARKER = (
+    'for semantic_attempt in range(1, _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS + 1):'
+)
+_TARGETED_REPAIR_MARKER = '"PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_SCOPED"'
+
+_TARGETED_METHOD = '''    async def _propose_one_async(
+        self,
+        spr: StructuredProcessingResultV2,
+        image_batch: Mapping[str, str],
+        *,
+        required_page_role_source_unit_ids: Sequence[str] = (),
+    ) -> StructureRefinementPatch:
+        async def propose_once(
+            candidate_spr: StructuredProcessingResultV2,
+            candidate_images: Mapping[str, str],
+        ) -> StructureRefinementPatch:
+            refiner = self.refiner_factory(dict(candidate_images))
+            propose_async = getattr(refiner, "propose_async", None)
+            if callable(propose_async):
+                candidate_patch = await propose_async(candidate_spr)
+            else:
+                propose = getattr(refiner, "propose", None)
+                if not callable(propose):
+                    raise TypeError(
+                        "batch refiner must expose propose_async(spr) or propose(spr)"
+                    )
+                candidate_patch = await asyncio.to_thread(propose, candidate_spr)
+            if not isinstance(candidate_patch, StructureRefinementPatch):
+                raise TypeError("batch refiner must return StructureRefinementPatch")
+            return candidate_patch
+
+        patch = await propose_once(spr, image_batch)
+        try:
+            _validate_batch_patch(
+                spr,
+                patch,
+                required_page_role_source_unit_ids=required_page_role_source_unit_ids,
+            )
+        except RequiredHeadingReviewError as exc:
+            if (
+                exc.stage != "heading_review_coverage"
+                or _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS < 2
+            ):
+                raise
+
+            expected_heading_ids = frozenset(_heading_candidate_ids(spr))
+            heading_review_counts = _heading_review_counts(spr, patch)
+            reviewed_heading_ids = frozenset(heading_review_counts)
+            missing_heading_ids = expected_heading_ids - reviewed_heading_ids
+            duplicate_heading_count = sum(
+                count - 1
+                for count in heading_review_counts.values()
+                if count > 1
+            )
+            existing_primary_dispositions = frozenset(
+                operation.node_id
+                for operation in patch.operations
+                if operation.node_id in missing_heading_ids
+                and operation.kind
+                in {
+                    RefinementOperationKind.RECLASSIFY_NODE,
+                    RefinementOperationKind.SUPPRESS_AS_ARTIFACT,
+                }
+            )
+            repairable = (
+                bool(missing_heading_ids)
+                and duplicate_heading_count == 0
+                and not existing_primary_dispositions
+            )
+            if not repairable:
+                raise
+
+            repair_node_ids = frozenset(missing_heading_ids)
+            repair_nodes = tuple(
+                replace(
+                    node,
+                    parent_id=(
+                        node.parent_id
+                        if node.parent_id in repair_node_ids
+                        else None
+                    ),
+                )
+                for node in spr.nodes
+                if node.node_id in repair_node_ids
+            )
+            observation_by_id = {
+                observation.observation_id: observation
+                for observation in spr.observations
+            }
+            evidence_by_id = {item.evidence_id: item for item in spr.evidence}
+            repair_observation_ids = {
+                observation_id
+                for node in repair_nodes
+                for observation_id in node.observation_ids
+            }
+            repair_evidence_ids = {
+                evidence_id
+                for node in repair_nodes
+                for evidence_id in node.evidence_ids
+            }
+            # Close the explicitly referenced observation/evidence subgraph.
+            # An evidence item can point back to an observation, and that
+            # observation can in turn reference more evidence. Keep only that
+            # finite transitive closure; never absorb unrelated page-wide data.
+            while True:
+                previous_sizes = (
+                    len(repair_observation_ids),
+                    len(repair_evidence_ids),
+                )
+                repair_evidence_ids.update(
+                    evidence_id
+                    for observation_id in tuple(repair_observation_ids)
+                    for evidence_id in observation_by_id[
+                        observation_id
+                    ].evidence_ids
+                )
+                repair_observation_ids.update(
+                    evidence_by_id[evidence_id].observation_id
+                    for evidence_id in tuple(repair_evidence_ids)
+                    if evidence_by_id[evidence_id].observation_id is not None
+                )
+                if previous_sizes == (
+                    len(repair_observation_ids),
+                    len(repair_evidence_ids),
+                ):
+                    break
+
+            repair_observations = tuple(
+                observation
+                for observation in spr.observations
+                if observation.observation_id in repair_observation_ids
+            )
+            repair_evidence = tuple(
+                item
+                for item in spr.evidence
+                if item.evidence_id in repair_evidence_ids
+            )
+            repair_source_unit_ids = {
+                source_unit_id
+                for node in repair_nodes
+                for source_unit_id in node.source_unit_ids
+            }
+            repair_source_unit_ids.update(
+                observation.source_unit_id
+                for observation in repair_observations
+            )
+            repair_source_unit_ids.update(
+                item.source_unit_id
+                for item in repair_evidence
+                if item.source_unit_id is not None
+            )
+            repair_source_unit_ids.update(
+                anchor.source_unit_id
+                for owner in (*repair_nodes, *repair_observations, *repair_evidence)
+                for anchor in owner.anchors
+            )
+            repair_source_unit_ids = frozenset(repair_source_unit_ids)
+            repair_source_units = tuple(
+                unit
+                for unit in spr.source_units
+                if unit.source_unit_id in repair_source_unit_ids
+            )
+            repair_spr = StructuredProcessingResultV2(
+                document_ref=spr.document_ref,
+                processing_run_ref=spr.processing_run_ref,
+                raw_result_ref=spr.raw_result_ref,
+                source_units=repair_source_units,
+                observations=repair_observations,
+                nodes=repair_nodes,
+                evidence=repair_evidence,
+                schema_id=spr.schema_id,
+                schema_version=spr.schema_version,
+            )
+            repair_images = {
+                source_unit_id: image_batch[source_unit_id]
+                for source_unit_id in sorted(repair_source_unit_ids)
+                if source_unit_id in image_batch
+            }
+            if not repair_images:
+                raise RuntimeError(
+                    "missing heading repair has no page image inside the batch scope"
+                )
+
+            # Preserve the existing retry event contract exactly. New bounded
+            # targeted-repair diagnostics use a distinct event.
+            self.event_sink(
+                "PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED",
+                {
+                    "semantic_attempt": 1,
+                    "next_semantic_attempt": 2,
+                    "max_semantic_attempts": (
+                        _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS
+                    ),
+                    "error_stage": exc.stage,
+                    "expected_heading_count": exc.expected_heading_count,
+                    "reviewed_heading_count": exc.reviewed_heading_count,
+                },
+            )
+            self.event_sink(
+                "PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_SCOPED",
+                {
+                    "retry_mode": "missing_heading_repair",
+                    "missing_heading_count": len(missing_heading_ids),
+                    "repair_page_count": len(repair_images),
+                },
+            )
+            raw_repair_patch = await propose_once(repair_spr, repair_images)
+            unexpected_repair_node_ids = frozenset(
+                operation.node_id
+                for operation in raw_repair_patch.operations
+                if operation.node_id not in expected_heading_ids
+            )
+            if unexpected_repair_node_ids:
+                raise ValueError(
+                    "heading repair returned operations outside the original heading scope"
+                )
+            repair_patch = StructureRefinementPatch(
+                model_id=raw_repair_patch.model_id,
+                prompt_version=raw_repair_patch.prompt_version,
+                operations=tuple(
+                    operation
+                    for operation in raw_repair_patch.operations
+                    if operation.node_id in missing_heading_ids
+                    and operation.kind
+                    in {
+                        RefinementOperationKind.RECLASSIFY_NODE,
+                        RefinementOperationKind.SUPPRESS_AS_ARTIFACT,
+                    }
+                ),
+                page_reviews=(),
+            )
+            try:
+                _validate_batch_patch(
+                    repair_spr,
+                    repair_patch,
+                    required_page_role_source_unit_ids=(),
+                )
+            except RequiredHeadingReviewError:
+                # Keep the original batch-level coverage contract and counts.
+                raise exc
+            merged = merge_structure_refinement_patches(
+                (patch, repair_patch),
+                model_id=self.model_id,
+                prompt_version=self.prompt_version,
+            )
+            _validate_batch_patch(
+                spr,
+                merged,
+                required_page_role_source_unit_ids=required_page_role_source_unit_ids,
+            )
+            self.event_sink(
+                "PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_COMPLETED",
+                {
+                    "expected_heading_count": len(expected_heading_ids),
+                    "retained_heading_review_count": len(reviewed_heading_ids),
+                    "repaired_heading_count": len(missing_heading_ids),
+                    "repair_page_count": len(repair_images),
+                },
+            )
+            return merged
+        return patch
+'''
+
+_REGRESSION_MARKER = (
+    "def test_heading_semantic_retry_repairs_only_missing_heading_scope("
+)
+_REGRESSION_BLOCK = r'''
+
+
+def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
+    import asyncio
+
+    from app.processing.batched_structure_refinement import BatchedStructureRefiner
+    from app.processing.llm_structure_refinement import (
+        RefinementOperationKind,
+        StructureRefinementOperation,
+        StructureRefinementPatch,
+    )
+    from app.processing.structured_result_v2.model import (
+        ProcessingEvidence,
+        ProcessingNode,
+        ProcessingNodeKind,
+        ProcessingObservation,
+        StructuredProcessingResultV2,
+    )
+    from app.processing.structured_result_v2.validation import validate_spr_v2
+    from app.source_units import SourceUnit, SourceUnitDimensions, SourceUnitKind
+
+    units = tuple(
+        SourceUnit(
+            f"page-{index}",
+            SourceUnitKind.PHYSICAL_PAGE,
+            index - 1,
+            "source",
+            dimensions=SourceUnitDimensions(600, 900),
+        )
+        for index in (1, 2, 3)
+    )
+    spr = StructuredProcessingResultV2(
+        document_ref="doc",
+        processing_run_ref="run",
+        source_units=units,
+        observations=(
+            ProcessingObservation(
+                "obs-linked",
+                "page-3",
+                0,
+                "text",
+                evidence_ids=("evidence-linked",),
+            ),
+            ProcessingObservation(
+                "obs-unrelated",
+                "page-2",
+                1,
+                "text",
+                evidence_ids=("evidence-unrelated",),
+            ),
+        ),
+        nodes=tuple(
+            ProcessingNode(
+                f"heading-{index}",
+                ProcessingNodeKind.HEADING,
+                index - 1,
+                (units[index - 1].source_unit_id,),
+                parent_id="heading-1" if index == 2 else None,
+                text=f"Heading {index}",
+                heading_level=2,
+                observation_ids=("obs-linked",) if index == 2 else (),
+                evidence_ids=("evidence-linked",) if index == 2 else (),
+            )
+            for index in (1, 2)
+        ),
+        evidence=(
+            ProcessingEvidence(
+                "evidence-linked",
+                source_unit_id="page-3",
+                observation_id="obs-linked",
+            ),
+            ProcessingEvidence(
+                "evidence-unrelated",
+                source_unit_id="page-2",
+                observation_id="obs-unrelated",
+            ),
+        ),
+    )
+
+    def disposition(node_id: str) -> StructureRefinementOperation:
+        return StructureRefinementOperation(
+            RefinementOperationKind.RECLASSIFY_NODE,
+            node_id,
+            0.98,
+            ("outline_consistency",),
+            target_kind=ProcessingNodeKind.HEADING,
+            heading_level=2,
+        )
+
+    def secondary_warning(node_id: str) -> StructureRefinementOperation:
+        return StructureRefinementOperation(
+            RefinementOperationKind.ADD_WARNING,
+            node_id,
+            0.95,
+            ("reduced_context_secondary_operation",),
+            warning="must not escape targeted heading repair",
+        )
+
+    calls: list[
+        tuple[
+            tuple[str, ...],
+            tuple[tuple[str, str | None], ...],
+            tuple[str, ...],
+            tuple[str, ...],
+        ]
+    ] = []
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class Refiner:
+        def __init__(self, images):
+            self.images = dict(images)
+
+        async def propose_async(self, scoped_spr):
+            validate_spr_v2(scoped_spr)
+            calls.append(
+                (
+                    tuple(sorted(self.images)),
+                    tuple(
+                        (node.node_id, node.parent_id)
+                        for node in scoped_spr.nodes
+                    ),
+                    tuple(
+                        observation.observation_id
+                        for observation in scoped_spr.observations
+                    ),
+                    tuple(
+                        evidence.evidence_id
+                        for evidence in scoped_spr.evidence
+                    ),
+                )
+            )
+            if len(calls) == 1:
+                return StructureRefinementPatch(
+                    "model",
+                    (disposition("heading-1"),),
+                )
+            return StructureRefinementPatch(
+                "model",
+                (
+                    disposition("heading-2"),
+                    secondary_warning("heading-2"),
+                ),
+            )
+
+    refiner = BatchedStructureRefiner(
+        model_id="model",
+        batch_planner=lambda _spr: (
+            {
+                "page-1": "data:image/jpeg;base64,AA==",
+                "page-2": "data:image/jpeg;base64,AA==",
+                "page-3": "data:image/jpeg;base64,AA==",
+            },
+        ),
+        refiner_factory=Refiner,
+        event_sink=lambda event, fields: events.append((event, dict(fields))),
+    )
+
+    patch = asyncio.run(refiner.propose_async(spr))
+
+    assert calls == [
+        (
+            ("page-1", "page-2", "page-3"),
+            (("heading-1", None), ("heading-2", "heading-1")),
+            ("obs-linked", "obs-unrelated"),
+            ("evidence-linked", "evidence-unrelated"),
+        ),
+        (
+            ("page-2", "page-3"),
+            (("heading-2", None),),
+            ("obs-linked",),
+            ("evidence-linked",),
+        ),
+    ]
+    assert tuple(
+        (operation.node_id, operation.kind)
+        for operation in patch.operations
+    ) == (
+        ("heading-1", RefinementOperationKind.RECLASSIFY_NODE),
+        ("heading-2", RefinementOperationKind.RECLASSIFY_NODE),
+    )
+    scheduled = next(
+        fields
+        for event, fields in events
+        if event == "PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED"
+    )
+    assert scheduled == {
+        "semantic_attempt": 1,
+        "next_semantic_attempt": 2,
+        "max_semantic_attempts": 2,
+        "error_stage": "heading_review_coverage",
+        "expected_heading_count": 2,
+        "reviewed_heading_count": 1,
+    }
+    scoped = next(
+        fields
+        for event, fields in events
+        if event == "PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_SCOPED"
+    )
+    assert scoped["retry_mode"] == "missing_heading_repair"
+    assert scoped["missing_heading_count"] == 1
+    assert scoped["repair_page_count"] == 2
+    completed = next(
+        fields
+        for event, fields in events
+        if event == "PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_COMPLETED"
+    )
+    assert completed["retained_heading_review_count"] == 1
+    assert completed["repaired_heading_count"] == 1
+'''
+
+
+def _replace_method(source: str, old_marker: str, new_method: str) -> str:
+    marker_index = source.index(old_marker)
+    method_start = source.rfind("    async def _propose_one_async(", 0, marker_index + 1)
+    if method_start < 0:
+        raise RuntimeError("Could not find heading semantic retry method start")
+    method_end = source.find("\n    def propose(", method_start)
+    if method_end < 0:
+        raise RuntimeError("Could not find heading semantic retry method end")
+    return source[:method_start] + new_method + source[method_end:]
 
 
 def _patch_heading_review_semantic_retry() -> None:
-    path = Path("app/processing/batched_structure_refinement.py")
-    constant_anchor = '''_PAGE_ROLE_PROMPT_TOKEN = "v4_page_roles"\n'''
-    constant_replacement = '''_PAGE_ROLE_PROMPT_TOKEN = "v4_page_roles"\n_HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS = 2\n'''
-    _replace_once(
-        path,
-        constant_anchor,
-        constant_replacement,
-        label="heading semantic retry constant anchor",
-    )
+    source = RUNTIME_PATH.read_text(encoding="utf-8")
+    if _CONSTANT_REPLACEMENT not in source:
+        if source.count(_CONSTANT_ANCHOR) != 1:
+            raise RuntimeError(
+                "Could not find unique heading semantic retry constant anchor"
+            )
+        source = source.replace(
+            _CONSTANT_ANCHOR,
+            _CONSTANT_REPLACEMENT,
+            1,
+        )
 
-    old = '''    async def _propose_one_async(\n        self,\n        spr: StructuredProcessingResultV2,\n        image_batch: Mapping[str, str],\n        *,\n        required_page_role_source_unit_ids: Sequence[str] = (),\n    ) -> StructureRefinementPatch:\n        refiner = self.refiner_factory(dict(image_batch))\n        propose_async = getattr(refiner, "propose_async", None)\n        if callable(propose_async):\n            patch = await propose_async(spr)\n        else:\n            propose = getattr(refiner, "propose", None)\n            if not callable(propose):\n                raise TypeError("batch refiner must expose propose_async(spr) or propose(spr)")\n            patch = await asyncio.to_thread(propose, spr)\n        if not isinstance(patch, StructureRefinementPatch):\n            raise TypeError("batch refiner must return StructureRefinementPatch")\n        _validate_batch_patch(\n            spr,\n            patch,\n            required_page_role_source_unit_ids=required_page_role_source_unit_ids,\n        )\n        return patch\n'''
-    new = '''    async def _propose_one_async(\n        self,\n        spr: StructuredProcessingResultV2,\n        image_batch: Mapping[str, str],\n        *,\n        required_page_role_source_unit_ids: Sequence[str] = (),\n    ) -> StructureRefinementPatch:\n        for semantic_attempt in range(1, _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS + 1):\n            refiner = self.refiner_factory(dict(image_batch))\n            propose_async = getattr(refiner, "propose_async", None)\n            if callable(propose_async):\n                patch = await propose_async(spr)\n            else:\n                propose = getattr(refiner, "propose", None)\n                if not callable(propose):\n                    raise TypeError(\n                        "batch refiner must expose propose_async(spr) or propose(spr)"\n                    )\n                patch = await asyncio.to_thread(propose, spr)\n            if not isinstance(patch, StructureRefinementPatch):\n                raise TypeError("batch refiner must return StructureRefinementPatch")\n            try:\n                _validate_batch_patch(\n                    spr,\n                    patch,\n                    required_page_role_source_unit_ids=(\n                        required_page_role_source_unit_ids\n                    ),\n                )\n            except RequiredHeadingReviewError as exc:\n                will_retry = (\n                    exc.stage == "heading_review_coverage"\n                    and semantic_attempt < _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS\n                )\n                if not will_retry:\n                    raise\n                self.event_sink(\n                    "PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED",\n                    {\n                        "semantic_attempt": semantic_attempt,\n                        "next_semantic_attempt": semantic_attempt + 1,\n                        "max_semantic_attempts": (\n                            _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS\n                        ),\n                        "error_stage": exc.stage,\n                        "expected_heading_count": (\n                            exc.expected_heading_count\n                        ),\n                        "reviewed_heading_count": (\n                            exc.reviewed_heading_count\n                        ),\n                    },\n                )\n                continue\n            return patch\n        raise AssertionError(\n            "heading review semantic retry loop exhausted without returning or raising"\n        )\n'''
-    _replace_once(
-        path,
-        old,
-        new,
-        label="batched heading review proposal method",
+    if _TARGETED_REPAIR_MARKER in source:
+        RUNTIME_PATH.write_text(source, encoding="utf-8")
+        return
+
+    if _BASE_METHOD in source:
+        source = source.replace(_BASE_METHOD, _TARGETED_METHOD, 1)
+    elif _LEGACY_BLIND_RETRY_MARKER in source:
+        source = _replace_method(
+            source,
+            _LEGACY_BLIND_RETRY_MARKER,
+            _TARGETED_METHOD,
+        )
+    else:
+        raise RuntimeError(
+            "Could not find base or legacy heading semantic retry method"
+        )
+    RUNTIME_PATH.write_text(source, encoding="utf-8")
+
+
+def _append_regressions() -> None:
+    source = REGRESSION_TEST_PATH.read_text(encoding="utf-8")
+    if _REGRESSION_MARKER in source:
+        return
+    REGRESSION_TEST_PATH.write_text(
+        source.rstrip() + _REGRESSION_BLOCK.rstrip() + "\n",
+        encoding="utf-8",
     )
 
 
 def main() -> None:
     _patch_heading_review_semantic_retry()
+    _append_regressions()
 
 
 if __name__ == "__main__":
