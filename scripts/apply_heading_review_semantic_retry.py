@@ -154,8 +154,6 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                 item
                 for item in spr.evidence
                 if item.evidence_id in repair_evidence_ids
-                or getattr(item, "source_unit_id", None) in repair_source_unit_ids
-                or getattr(item, "observation_id", None) in repair_observation_ids
             )
             repair_spr = StructuredProcessingResultV2(
                 document_ref=spr.document_ref,
@@ -274,10 +272,13 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         StructureRefinementPatch,
     )
     from app.processing.structured_result_v2.model import (
+        ProcessingEvidence,
         ProcessingNode,
         ProcessingNodeKind,
+        ProcessingObservation,
         StructuredProcessingResultV2,
     )
+    from app.processing.structured_result_v2.validation import validate_spr_v2
     from app.source_units import SourceUnit, SourceUnitDimensions, SourceUnitKind
 
     units = tuple(
@@ -294,7 +295,22 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         document_ref="doc",
         processing_run_ref="run",
         source_units=units,
-        observations=(),
+        observations=(
+            ProcessingObservation(
+                "obs-linked",
+                "page-2",
+                0,
+                "text",
+                evidence_ids=("evidence-linked",),
+            ),
+            ProcessingObservation(
+                "obs-unrelated",
+                "page-2",
+                1,
+                "text",
+                evidence_ids=("evidence-unrelated",),
+            ),
+        ),
         nodes=tuple(
             ProcessingNode(
                 f"heading-{index}",
@@ -304,8 +320,22 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
                 parent_id="heading-1" if index == 2 else None,
                 text=f"Heading {index}",
                 heading_level=2,
+                observation_ids=("obs-linked",) if index == 2 else (),
+                evidence_ids=("evidence-linked",) if index == 2 else (),
             )
             for index in (1, 2)
+        ),
+        evidence=(
+            ProcessingEvidence(
+                "evidence-linked",
+                source_unit_id="page-2",
+                observation_id="obs-linked",
+            ),
+            ProcessingEvidence(
+                "evidence-unrelated",
+                source_unit_id="page-2",
+                observation_id="obs-unrelated",
+            ),
         ),
     )
 
@@ -329,7 +359,12 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         )
 
     calls: list[
-        tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]]
+        tuple[
+            tuple[str, ...],
+            tuple[tuple[str, str | None], ...],
+            tuple[str, ...],
+            tuple[str, ...],
+        ]
     ] = []
     events: list[tuple[str, dict[str, object]]] = []
 
@@ -338,12 +373,21 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
             self.images = dict(images)
 
         async def propose_async(self, scoped_spr):
+            validate_spr_v2(scoped_spr)
             calls.append(
                 (
                     tuple(sorted(self.images)),
                     tuple(
                         (node.node_id, node.parent_id)
                         for node in scoped_spr.nodes
+                    ),
+                    tuple(
+                        observation.observation_id
+                        for observation in scoped_spr.observations
+                    ),
+                    tuple(
+                        evidence.evidence_id
+                        for evidence in scoped_spr.evidence
                     ),
                 )
             )
@@ -378,8 +422,15 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         (
             ("page-1", "page-2"),
             (("heading-1", None), ("heading-2", "heading-1")),
+            ("obs-linked", "obs-unrelated"),
+            ("evidence-linked", "evidence-unrelated"),
         ),
-        (("page-2",), (("heading-2", None),)),
+        (
+            ("page-2",),
+            (("heading-2", None),),
+            ("obs-linked",),
+            ("evidence-linked",),
+        ),
     ]
     assert tuple(
         (operation.node_id, operation.kind)
