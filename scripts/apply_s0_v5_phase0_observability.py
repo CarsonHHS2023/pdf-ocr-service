@@ -123,6 +123,9 @@ def main() -> None:
         from scripts.apply_structure_refinement_batch_budgeting import (
             main as apply_structure_refinement_batch_budgeting,
         )
+        from scripts.apply_structure_refinement_batch_safety import (
+            main as apply_structure_refinement_batch_safety,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -151,12 +154,16 @@ def main() -> None:
         from apply_structure_refinement_batch_budgeting import (
             main as apply_structure_refinement_batch_budgeting,
         )
+        from apply_structure_refinement_batch_safety import (
+            main as apply_structure_refinement_batch_safety,
+        )
 
-    # Structure-refinement budgeting is independent of the historical provider
-    # rewrite chain, so install it before the provider-composition no-op guard.
-    # This lets an already-composed checkout gain the new bounded batching without
-    # replaying legacy one-way provider overlays.
+    # Structure-refinement budgeting and scoped-reference safety are independent
+    # of the historical provider rewrite chain, so install them before the
+    # provider-composition no-op guard. This lets an already-composed checkout
+    # gain the new bounded batching without replaying legacy one-way overlays.
     apply_structure_refinement_batch_budgeting()
+    apply_structure_refinement_batch_safety()
 
     # The source-rewrite stack below is a composition step, not a migration that
     # should keep editing an already composed checkout. Once every final runtime
