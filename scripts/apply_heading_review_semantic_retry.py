@@ -38,7 +38,7 @@ _BASE_METHOD = '''    async def _propose_one_async(
 _LEGACY_BLIND_RETRY_MARKER = (
     'for semantic_attempt in range(1, _HEADING_REVIEW_SEMANTIC_MAX_ATTEMPTS + 1):'
 )
-_TARGETED_REPAIR_MARKER = 'retry_mode": "missing_heading_repair"'
+_TARGETED_REPAIR_MARKER = '"PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_SCOPED"'
 
 _TARGETED_METHOD = '''    async def _propose_one_async(
         self,
@@ -168,6 +168,8 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                     "missing heading repair has no page image inside the batch scope"
                 )
 
+            # Preserve the existing retry event contract exactly.  New bounded
+            # targeted-repair diagnostics use a distinct event.
             self.event_sink(
                 "PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED",
                 {
@@ -179,9 +181,14 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                     "error_stage": exc.stage,
                     "expected_heading_count": exc.expected_heading_count,
                     "reviewed_heading_count": exc.reviewed_heading_count,
+                },
+            )
+            self.event_sink(
+                "PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_SCOPED",
+                {
+                    "retry_mode": "missing_heading_repair",
                     "missing_heading_count": len(missing_heading_ids),
                     "repair_page_count": len(repair_images),
-                    "retry_mode": "missing_heading_repair",
                 },
             )
             raw_repair_patch = await propose_once(repair_spr, repair_images)
@@ -204,11 +211,15 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                 ),
                 page_reviews=(),
             )
-            _validate_batch_patch(
-                repair_spr,
-                repair_patch,
-                required_page_role_source_unit_ids=(),
-            )
+            try:
+                _validate_batch_patch(
+                    repair_spr,
+                    repair_patch,
+                    required_page_role_source_unit_ids=(),
+                )
+            except RequiredHeadingReviewError:
+                # Keep the original batch-level coverage contract and counts.
+                raise exc
             merged = merge_structure_refinement_patches(
                 (patch, repair_patch),
                 model_id=self.model_id,
@@ -337,9 +348,22 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         for event, fields in events
         if event == "PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED"
     )
-    assert scheduled["retry_mode"] == "missing_heading_repair"
-    assert scheduled["missing_heading_count"] == 1
-    assert scheduled["repair_page_count"] == 1
+    assert scheduled == {
+        "semantic_attempt": 1,
+        "next_semantic_attempt": 2,
+        "max_semantic_attempts": 2,
+        "error_stage": "heading_review_coverage",
+        "expected_heading_count": 2,
+        "reviewed_heading_count": 1,
+    }
+    scoped = next(
+        fields
+        for event, fields in events
+        if event == "PDF_STRUCTURE_REFINEMENT_SEMANTIC_REPAIR_SCOPED"
+    )
+    assert scoped["retry_mode"] == "missing_heading_repair"
+    assert scoped["missing_heading_count"] == 1
+    assert scoped["repair_page_count"] == 1
     completed = next(
         fields
         for event, fields in events
