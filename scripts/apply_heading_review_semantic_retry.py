@@ -107,8 +107,18 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
             if not repairable:
                 raise
 
+            repair_node_ids = frozenset(missing_heading_ids)
             repair_nodes = tuple(
-                node for node in spr.nodes if node.node_id in missing_heading_ids
+                replace(
+                    node,
+                    parent_id=(
+                        node.parent_id
+                        if node.parent_id in repair_node_ids
+                        else None
+                    ),
+                )
+                for node in spr.nodes
+                if node.node_id in repair_node_ids
             )
             repair_source_unit_ids = frozenset(
                 source_unit_id
@@ -291,6 +301,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
                 ProcessingNodeKind.HEADING,
                 index - 1,
                 (units[index - 1].source_unit_id,),
+                parent_id="heading-1" if index == 2 else None,
                 text=f"Heading {index}",
                 heading_level=2,
             )
@@ -317,7 +328,9 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
             warning="must not escape targeted heading repair",
         )
 
-    calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    calls: list[
+        tuple[tuple[str, ...], tuple[tuple[str, str | None], ...]]
+    ] = []
     events: list[tuple[str, dict[str, object]]] = []
 
     class Refiner:
@@ -328,7 +341,10 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
             calls.append(
                 (
                     tuple(sorted(self.images)),
-                    tuple(node.node_id for node in scoped_spr.nodes),
+                    tuple(
+                        (node.node_id, node.parent_id)
+                        for node in scoped_spr.nodes
+                    ),
                 )
             )
             if len(calls) == 1:
@@ -359,8 +375,11 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
     patch = asyncio.run(refiner.propose_async(spr))
 
     assert calls == [
-        (("page-1", "page-2"), ("heading-1", "heading-2")),
-        (("page-2",), ("heading-2",)),
+        (
+            ("page-1", "page-2"),
+            (("heading-1", None), ("heading-2", "heading-1")),
+        ),
+        (("page-2",), (("heading-2", None),)),
     ]
     assert tuple(
         (operation.node_id, operation.kind)
