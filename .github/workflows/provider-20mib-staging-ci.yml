@@ -67,7 +67,8 @@ jobs:
             scripts/apply_provider_20mib_observability_v5.py \
             scripts/apply_provider_20mib_review_fixes.py \
             tests/test_provider_shard_execution_contract.py \
-            tests/test_provider_20mib_review_fixes.py
+            tests/test_provider_20mib_review_fixes.py \
+            tests/test_provider_sharding_source_access.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE = "sequential"' app/processing/pdf_provider_sharding.py
@@ -106,5 +107,6 @@ jobs:
             tests/test_provider_20mib_observability.py \
             tests/test_provider_20mib_review_fixes.py \
             tests/test_provider_shard_execution_contract.py \
+            tests/test_provider_sharding_source_access.py \
             tests/test_high_resolution_page_confirmation.py \
             tests/test_native_pdf_text_recovery.py
