@@ -37,8 +37,13 @@ def _run_observed_classification(monkeypatch, decisions: list[dict[str, object]]
     diagnostics: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setenv("PDF_STRUCTURE_REFINEMENT_OPENAI_API_KEY", "configured-test-key")
     monkeypatch.setenv("PDF_STRUCTURE_REFINEMENT_OPENAI_MODEL", "test-model")
+    diagnostic_owner = (
+        classification_obs
+        if hasattr(classification_obs, "_diagnostic")
+        else bridge
+    )
     monkeypatch.setattr(
-        bridge,
+        diagnostic_owner,
         "_diagnostic",
         lambda event, **fields: diagnostics.append((event, fields)),
     )
