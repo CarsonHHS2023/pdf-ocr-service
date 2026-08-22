@@ -15,6 +15,7 @@ from app.storage.federated import FederatedStorageProvider
 from app.storage.local import LocalStorageProvider
 from app.storage.models import StorageReference
 from app.storage.s3 import S3StorageProvider
+from app.storage import visual_assets as visual_asset_storage
 from app.storage.visual_assets import select_visual_asset_storage
 from app.structured_content_v2.model import AssetRecoveryStateV2, AssetRoleV2
 
@@ -332,7 +333,10 @@ def test_ingress_delete_does_not_delete_published_source():
     assert provider.get(reference) == b"%PDF-direct"
 
 
-def test_visual_rendition_survives_federated_primary_restart(tmp_path):
+def test_visual_rendition_survives_federated_primary_restart(tmp_path, monkeypatch):
+    marker = tmp_path / "staging-revision.txt"
+    marker.write_text("a" * 40 + "\n", encoding="utf-8")
+    monkeypatch.setattr(visual_asset_storage, "_STAGING_REVISION_FILE", marker)
     primary = LocalStorageProvider(tmp_path / "primary-before-restart")
     secondary = LocalStorageProvider(tmp_path / "durable-secondary")
     federated = FederatedStorageProvider(primary, secondary)
@@ -365,7 +369,11 @@ def test_visual_rendition_survives_federated_primary_restart(tmp_path):
     assert after_restart.get(artifact_ref) == png
 
 
-def test_visual_rendition_does_not_fallback_to_ephemeral_primary(tmp_path):
+def test_visual_rendition_does_not_fallback_to_ephemeral_primary(tmp_path, monkeypatch):
+    marker = tmp_path / "staging-revision.txt"
+    marker.write_text("b" * 40 + "\n", encoding="utf-8")
+    monkeypatch.setattr(visual_asset_storage, "_STAGING_REVISION_FILE", marker)
+
     class FailingStorage(LocalStorageProvider):
         def put(self, *args, **kwargs):
             raise WriteFailure("durable visual storage unavailable")
@@ -395,3 +403,113 @@ def test_visual_rendition_does_not_fallback_to_ephemeral_primary(tmp_path):
 def test_visual_asset_selector_preserves_local_only_storage(tmp_path):
     local = LocalStorageProvider(tmp_path / "local-only")
     assert select_visual_asset_storage(local) is local
+
+
+def test_visual_asset_selector_preserves_federated_production_placement(tmp_path, monkeypatch):
+    missing_marker = tmp_path / "no-staging-revision.txt"
+    monkeypatch.setattr(visual_asset_storage, "_STAGING_REVISION_FILE", missing_marker)
+    primary = LocalStorageProvider(tmp_path / "production-primary")
+    secondary = LocalStorageProvider(tmp_path / "production-secondary")
+    federated = FederatedStorageProvider(primary, secondary)
+
+    selected = select_visual_asset_storage(federated)
+    reference = StorageReference.parse("src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    selected.put(b"production-placement", reference)
+
+    assert selected is federated
+    assert primary.get(reference) == b"production-placement"
+    assert secondary.exists(reference) is False
+
+
+def test_visual_asset_selector_rejects_invalid_staging_marker(tmp_path, monkeypatch):
+    marker = tmp_path / "staging-revision.txt"
+    marker.write_text("not-a-commit-sha\n", encoding="utf-8")
+    monkeypatch.setattr(visual_asset_storage, "_STAGING_REVISION_FILE", marker)
+    primary = LocalStorageProvider(tmp_path / "invalid-marker-primary")
+    secondary = LocalStorageProvider(tmp_path / "invalid-marker-secondary")
+    federated = FederatedStorageProvider(primary, secondary)
+
+    assert select_visual_asset_storage(federated) is federated
+
+
+def test_presentation_rendition_uses_same_staging_durable_storage(tmp_path, monkeypatch):
+    import fitz
+
+    from app.processing.pdf_page_presentation_bridge import _enrich_presentation_assets
+    from app.processing.pdf_visual_assets import enrich_candidate_with_pdf_visual_assets
+    from app.source_units import SourceUnit, SourceUnitDimensions, SourceUnitKind
+    from app.structured_content_v2.model import (
+        ContentNodeTypeV2,
+        ContentNodeV2,
+        ContentRecoveryStateV2,
+        ContentRecoverySummaryV2,
+        StructuredContentCandidateV2,
+        StructuredSourceUnit,
+    )
+
+    marker = tmp_path / "staging-revision.txt"
+    marker.write_text("c" * 40 + "\n", encoding="utf-8")
+    monkeypatch.setattr(visual_asset_storage, "_STAGING_REVISION_FILE", marker)
+
+    document = fitz.open()
+    page = document.new_page(width=200, height=200)
+    page.draw_rect(fitz.Rect(20, 20, 180, 180), color=(0, 0, 0), fill=(0.8, 0.8, 0.8))
+    pdf_bytes = document.tobytes()
+    document.close()
+
+    source_unit_id = "pdf-page:000001"
+    unit = SourceUnit(
+        source_unit_id=source_unit_id,
+        kind=SourceUnitKind.PHYSICAL_PAGE,
+        source_order=0,
+        source_ref="source",
+        dimensions=SourceUnitDimensions(200, 200),
+    )
+    presentation = ContentNodeV2(
+        node_id="presentation-1",
+        lineage_key="presentation-lineage",
+        node_type=ContentNodeTypeV2.FIGURE,
+        source_unit_ids=(source_unit_id,),
+        sibling_order=0,
+        metadata={
+            "presentation_mode": "source_rendering",
+            "ocr_route": "skipped_presentation_image",
+            "page_kind": "cover",
+        },
+    )
+    candidate = StructuredContentCandidateV2(
+        document_ref="doc",
+        candidate_id="candidate-presentation",
+        lineage_key="candidate-presentation-lineage",
+        recovery_summary=ContentRecoverySummaryV2(
+            ContentRecoveryStateV2.COMPLETE,
+            total_source_units=1,
+            complete_source_units=1,
+        ),
+        source_units=(StructuredSourceUnit(unit),),
+        nodes=(presentation,),
+    )
+
+    primary = LocalStorageProvider(tmp_path / "presentation-primary")
+    secondary = LocalStorageProvider(tmp_path / "presentation-secondary")
+    federated = FederatedStorageProvider(primary, secondary)
+    enriched = _enrich_presentation_assets(
+        enrich_candidate_with_pdf_visual_assets,
+        candidate,
+        pdf_bytes=pdf_bytes,
+        storage=federated,
+        source_kind="retained_source_pdf",
+        enhancer=None,
+    )
+
+    assert len(enriched.assets) == 1
+    assert len(enriched.renditions) == 1
+    artifact_ref = enriched.renditions[0].artifact_ref
+    assert primary.exists(artifact_ref) is False
+    assert secondary.exists(artifact_ref) is True
+
+    after_restart = FederatedStorageProvider(
+        LocalStorageProvider(tmp_path / "presentation-fresh-primary"),
+        secondary,
+    )
+    assert after_restart.get(artifact_ref).startswith(b"\x89PNG\r\n\x1a\n")
