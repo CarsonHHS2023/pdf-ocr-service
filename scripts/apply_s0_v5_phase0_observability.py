@@ -86,6 +86,7 @@ def _final_staging_composition_installed() -> bool:
         and "provider_phase_completed=result.provider_phase_completed" in compat
         and "print(message, file=sys.stderr, flush=True)" in classification
         and classification.count("_diagnostic(") >= 4
+        and '"presentation_page_high_resolution_confirmed",' in classification
     )
 
 
@@ -116,6 +117,9 @@ def main() -> None:
         from scripts.apply_staging_post_provider_terminal_fix import (
             main as apply_staging_post_provider_terminal_fix,
         )
+        from scripts.apply_staging_classification_summary_highres_fix import (
+            main as apply_staging_classification_summary_highres_fix,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -137,6 +141,9 @@ def main() -> None:
         )
         from apply_staging_post_provider_terminal_fix import (
             main as apply_staging_post_provider_terminal_fix,
+        )
+        from apply_staging_classification_summary_highres_fix import (
+            main as apply_staging_classification_summary_highres_fix,
         )
 
     # The source-rewrite stack below is a composition step, not a migration that
@@ -161,6 +168,7 @@ def main() -> None:
     apply_staging_baseline_observability_hotfix()
     apply_staging_baseline_canonicalization_terminal_fix()
     apply_staging_post_provider_terminal_fix()
+    apply_staging_classification_summary_highres_fix()
 
 
 if __name__ == "__main__":
