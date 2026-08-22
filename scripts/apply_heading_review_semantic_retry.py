@@ -120,40 +120,82 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                 for node in spr.nodes
                 if node.node_id in repair_node_ids
             )
-            repair_source_unit_ids = frozenset(
-                source_unit_id
-                for node in repair_nodes
-                for source_unit_id in node.source_unit_ids
-            )
-            repair_source_units = tuple(
-                unit
-                for unit in spr.source_units
-                if unit.source_unit_id in repair_source_unit_ids
-            )
-            repair_observation_ids = frozenset(
+            observation_by_id = {
+                observation.observation_id: observation
+                for observation in spr.observations
+            }
+            evidence_by_id = {item.evidence_id: item for item in spr.evidence}
+            repair_observation_ids = {
                 observation_id
                 for node in repair_nodes
                 for observation_id in node.observation_ids
-            )
-            repair_observations = tuple(
-                observation
-                for observation in spr.observations
-                if observation.observation_id in repair_observation_ids
-            )
+            }
             repair_evidence_ids = {
                 evidence_id
                 for node in repair_nodes
                 for evidence_id in node.evidence_ids
             }
-            repair_evidence_ids.update(
-                evidence_id
-                for observation in repair_observations
-                for evidence_id in observation.evidence_ids
+            # Close the explicitly referenced observation/evidence subgraph.
+            # An evidence item can point back to an observation, and that
+            # observation can in turn reference more evidence. Keep only that
+            # finite transitive closure; never absorb unrelated page-wide data.
+            while True:
+                previous_sizes = (
+                    len(repair_observation_ids),
+                    len(repair_evidence_ids),
+                )
+                repair_evidence_ids.update(
+                    evidence_id
+                    for observation_id in tuple(repair_observation_ids)
+                    for evidence_id in observation_by_id[
+                        observation_id
+                    ].evidence_ids
+                )
+                repair_observation_ids.update(
+                    evidence_by_id[evidence_id].observation_id
+                    for evidence_id in tuple(repair_evidence_ids)
+                    if evidence_by_id[evidence_id].observation_id is not None
+                )
+                if previous_sizes == (
+                    len(repair_observation_ids),
+                    len(repair_evidence_ids),
+                ):
+                    break
+
+            repair_observations = tuple(
+                observation
+                for observation in spr.observations
+                if observation.observation_id in repair_observation_ids
             )
             repair_evidence = tuple(
                 item
                 for item in spr.evidence
                 if item.evidence_id in repair_evidence_ids
+            )
+            repair_source_unit_ids = {
+                source_unit_id
+                for node in repair_nodes
+                for source_unit_id in node.source_unit_ids
+            }
+            repair_source_unit_ids.update(
+                observation.source_unit_id
+                for observation in repair_observations
+            )
+            repair_source_unit_ids.update(
+                item.source_unit_id
+                for item in repair_evidence
+                if item.source_unit_id is not None
+            )
+            repair_source_unit_ids.update(
+                anchor.source_unit_id
+                for owner in (*repair_nodes, *repair_observations, *repair_evidence)
+                for anchor in owner.anchors
+            )
+            repair_source_unit_ids = frozenset(repair_source_unit_ids)
+            repair_source_units = tuple(
+                unit
+                for unit in spr.source_units
+                if unit.source_unit_id in repair_source_unit_ids
             )
             repair_spr = StructuredProcessingResultV2(
                 document_ref=spr.document_ref,
@@ -289,7 +331,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
             "source",
             dimensions=SourceUnitDimensions(600, 900),
         )
-        for index in (1, 2)
+        for index in (1, 2, 3)
     )
     spr = StructuredProcessingResultV2(
         document_ref="doc",
@@ -298,7 +340,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         observations=(
             ProcessingObservation(
                 "obs-linked",
-                "page-2",
+                "page-3",
                 0,
                 "text",
                 evidence_ids=("evidence-linked",),
@@ -328,7 +370,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         evidence=(
             ProcessingEvidence(
                 "evidence-linked",
-                source_unit_id="page-2",
+                source_unit_id="page-3",
                 observation_id="obs-linked",
             ),
             ProcessingEvidence(
@@ -410,6 +452,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
             {
                 "page-1": "data:image/jpeg;base64,AA==",
                 "page-2": "data:image/jpeg;base64,AA==",
+                "page-3": "data:image/jpeg;base64,AA==",
             },
         ),
         refiner_factory=Refiner,
@@ -420,13 +463,13 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
 
     assert calls == [
         (
-            ("page-1", "page-2"),
+            ("page-1", "page-2", "page-3"),
             (("heading-1", None), ("heading-2", "heading-1")),
             ("obs-linked", "obs-unrelated"),
             ("evidence-linked", "evidence-unrelated"),
         ),
         (
-            ("page-2",),
+            ("page-2", "page-3"),
             (("heading-2", None),),
             ("obs-linked",),
             ("evidence-linked",),
@@ -459,7 +502,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
     )
     assert scoped["retry_mode"] == "missing_heading_repair"
     assert scoped["missing_heading_count"] == 1
-    assert scoped["repair_page_count"] == 1
+    assert scoped["repair_page_count"] == 2
     completed = next(
         fields
         for event, fields in events
