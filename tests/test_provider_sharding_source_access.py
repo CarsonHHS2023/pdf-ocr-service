@@ -119,6 +119,7 @@ def test_each_shard_receives_exact_delivery_source_factory_and_4200s_ttl(
                 integration_terminal_phase=OrchestrationPhase.RAW_RESULT_RETAINED,
                 provider_terminal_status=ProviderLifecycleStatus.PROVIDER_COMPLETED,
                 error=None,
+                poll_count=1,
                 raw_result=object(),
             )
 
