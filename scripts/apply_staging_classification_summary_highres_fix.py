@@ -92,8 +92,13 @@ def test_classification_summary_counts_high_resolution_presentation_routes(monke
     ]
 
     diagnostics: list[tuple[str, dict[str, object]]] = []
+    diagnostic_owner = (
+        classification_obs
+        if hasattr(classification_obs, "_diagnostic")
+        else bridge
+    )
     monkeypatch.setattr(
-        bridge,
+        diagnostic_owner,
         "_diagnostic",
         lambda event, **fields: diagnostics.append((event, fields)),
     )
