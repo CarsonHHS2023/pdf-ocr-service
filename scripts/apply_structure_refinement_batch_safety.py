@@ -256,6 +256,8 @@ _TIMEOUT_REPLACEMENT = '''def _batch_execution_timeout_seconds(probe) -> float:
     return max(420.0, 2 * one_semantic_request_budget + 30.0)
 '''
 _TIMEOUT_MARKER = "max(0, probe.max_attempts - 1) * probe.max_backoff_seconds"
+_TIMEOUT_REGRESSION_ANCHOR = "    assert built.batch_timeout_seconds == 420.0\n"
+_TIMEOUT_REGRESSION_REPLACEMENT = "    assert built.batch_timeout_seconds == 422.0\n"
 
 _REGRESSION_MARKER = (
     "def test_structure_refinement_scoped_batch_closes_cross_page_references("
@@ -398,6 +400,17 @@ def _patch_timeout_budget() -> None:
     IMAGE_RUNTIME_PATH.write_text(source, encoding="utf-8")
 
 
+def _patch_timeout_regression_expectation() -> None:
+    source = REGRESSION_TEST_PATH.read_text(encoding="utf-8")
+    source = _replace_once(
+        source,
+        _TIMEOUT_REGRESSION_ANCHOR,
+        _TIMEOUT_REGRESSION_REPLACEMENT,
+        label="batch timeout regression expectation",
+    )
+    REGRESSION_TEST_PATH.write_text(source, encoding="utf-8")
+
+
 def _append_regression() -> None:
     source = REGRESSION_TEST_PATH.read_text(encoding="utf-8")
     if _REGRESSION_MARKER in source:
@@ -411,6 +424,7 @@ def _append_regression() -> None:
 def main() -> None:
     _patch_scoped_spr()
     _patch_timeout_budget()
+    _patch_timeout_regression_expectation()
     _append_regression()
 
 
