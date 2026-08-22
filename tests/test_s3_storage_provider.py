@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 from io import BytesIO
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 from botocore.exceptions import ClientError
+import pytest
 
+from app.processing.pdf_visual_assets import _persist_visual_asset_renditions
+from app.source_units import SpatialAnchor
+from app.storage.errors import WriteFailure
+from app.storage.federated import FederatedStorageProvider
+from app.storage.local import LocalStorageProvider
 from app.storage.models import StorageReference
 from app.storage.s3 import S3StorageProvider
+from app.storage.visual_assets import select_visual_asset_storage
+from app.structured_content_v2.model import AssetRecoveryStateV2, AssetRoleV2
 
 
 class FakeS3Client:
@@ -321,3 +330,68 @@ def test_ingress_delete_does_not_delete_published_source():
 
     assert ("atlas-staging", ingress_key) not in client.objects
     assert provider.get(reference) == b"%PDF-direct"
+
+
+def test_visual_rendition_survives_federated_primary_restart(tmp_path):
+    primary = LocalStorageProvider(tmp_path / "primary-before-restart")
+    secondary = LocalStorageProvider(tmp_path / "durable-secondary")
+    federated = FederatedStorageProvider(primary, secondary)
+    visual_storage = select_visual_asset_storage(federated)
+    png = b"reader-visual-png"
+    anchor = SpatialAnchor("pdf-page:000001", 0.1, 0.1, 0.9, 0.9)
+    node = SimpleNamespace(text="Example figure", evidence_ids=())
+
+    asset, renditions = _persist_visual_asset_renditions(
+        asset_id="asset:test-visual",
+        role=AssetRoleV2.FIGURE,
+        node=node,
+        anchor=anchor,
+        png=png,
+        storage=visual_storage,
+        source_kind="retained_source_pdf",
+        enhancer=None,
+    )
+
+    assert asset.recovery_state is AssetRecoveryStateV2.AVAILABLE
+    assert len(renditions) == 1
+    artifact_ref = renditions[0].artifact_ref
+    assert primary.exists(artifact_ref) is False
+    assert secondary.get(artifact_ref) == png
+
+    after_restart = FederatedStorageProvider(
+        LocalStorageProvider(tmp_path / "fresh-empty-primary"),
+        secondary,
+    )
+    assert after_restart.get(artifact_ref) == png
+
+
+def test_visual_rendition_does_not_fallback_to_ephemeral_primary(tmp_path):
+    class FailingStorage(LocalStorageProvider):
+        def put(self, *args, **kwargs):
+            raise WriteFailure("durable visual storage unavailable")
+
+    primary = LocalStorageProvider(tmp_path / "ephemeral-primary")
+    secondary = FailingStorage(tmp_path / "failing-secondary")
+    federated = FederatedStorageProvider(primary, secondary)
+    visual_storage = select_visual_asset_storage(federated)
+    anchor = SpatialAnchor("pdf-page:000001", 0.1, 0.1, 0.9, 0.9)
+    node = SimpleNamespace(text="Example table", evidence_ids=())
+
+    with pytest.raises(WriteFailure, match="durable visual storage unavailable"):
+        _persist_visual_asset_renditions(
+            asset_id="asset:test-table",
+            role=AssetRoleV2.TABLE_RENDERING,
+            node=node,
+            anchor=anchor,
+            png=b"table-png",
+            storage=visual_storage,
+            source_kind="retained_source_pdf",
+            enhancer=None,
+        )
+
+    assert not list(primary.root.rglob("src_*"))
+
+
+def test_visual_asset_selector_preserves_local_only_storage(tmp_path):
+    local = LocalStorageProvider(tmp_path / "local-only")
+    assert select_visual_asset_storage(local) is local
