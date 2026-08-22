@@ -129,6 +129,9 @@ def main() -> None:
         from scripts.apply_structure_refinement_batch_safety import (
             main as apply_structure_refinement_batch_safety,
         )
+        from scripts.apply_structure_refinement_shared_node_ownership import (
+            main as apply_structure_refinement_shared_node_ownership,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -163,14 +166,19 @@ def main() -> None:
         from apply_structure_refinement_batch_safety import (
             main as apply_structure_refinement_batch_safety,
         )
+        from apply_structure_refinement_shared_node_ownership import (
+            main as apply_structure_refinement_shared_node_ownership,
+        )
 
-    # Structure-refinement budgeting, heading-page atomicity, and scoped-reference
-    # safety are independent of the historical provider rewrite chain, so install
-    # them before the provider-composition no-op guard. This lets an already-
-    # composed checkout gain the bounded batching without replaying legacy overlays.
+    # Structure-refinement batching is independent of the historical provider
+    # rewrite chain, so install it before the provider-composition no-op guard.
+    # Heading-linked pages stay atomic; scoped references are closed; every other
+    # multi-page node has one deterministic owner batch so unique review scope is
+    # preserved without duplicate proposals across finer cost-aware boundaries.
     apply_structure_refinement_batch_budgeting()
     apply_structure_refinement_heading_batch_atomicity()
     apply_structure_refinement_batch_safety()
+    apply_structure_refinement_shared_node_ownership()
 
     # The source-rewrite stack below is a composition step, not a migration that
     # should keep editing an already composed checkout. Once every final runtime
