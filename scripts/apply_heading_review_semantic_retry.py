@@ -188,16 +188,7 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
             repair_patch = StructureRefinementPatch(
                 model_id=raw_repair_patch.model_id,
                 prompt_version=raw_repair_patch.prompt_version,
-                operations=tuple(
-                    operation
-                    for operation in raw_repair_patch.operations
-                    if operation.node_id in missing_heading_ids
-                    and operation.kind
-                    in {
-                        RefinementOperationKind.RECLASSIFY_NODE,
-                        RefinementOperationKind.SUPPRESS_AS_ARTIFACT,
-                    }
-                ),
+                operations=raw_repair_patch.operations,
                 page_reviews=(),
             )
             _validate_batch_patch(
