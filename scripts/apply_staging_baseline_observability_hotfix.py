@@ -212,17 +212,121 @@ def test_baseline_smoke_observability_hotfix_contracts(capsys) -> None:
     assert fields["storage_backend"] == "FailingStorage"
 
 
-def test_sharding_terminal_event_uses_logical_aggregate_fields() -> None:
-    import inspect
-
+def test_sharding_terminal_event_uses_logical_aggregate_fields(monkeypatch) -> None:
+    from app.processing import pdf_provider_sharding as sharding
     from app.processing import pdf_provider_sharding_compat as sharding_compat
 
-    process = inspect.getsource(
-        sharding_compat.ShardingAwareEndToEndProcessingIntegrationService.process
+    diagnostics: list[tuple[str, dict[str, object]]] = []
+    provider_input = SimpleNamespace(provider_page_count=7, byte_size=28_425_561)
+    delivery = SimpleNamespace(byte_size=28_425_561)
+    raw_result = SimpleNamespace(
+        ingestion=SimpleNamespace(
+            storage_reference=SimpleNamespace(),
+            payload_sha256="a" * 64,
+            payload_size_bytes=1234,
+        )
     )
-    terminal_start = process.index('"PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL"')
-    terminal_block = process[max(0, terminal_start - 300):terminal_start + 1200]
-    assert "failure_fields = _logical_terminal_diagnostic_fields(outcome)" in terminal_block
+    canonical = SimpleNamespace(candidate_id="candidate-logical-terminal")
+
+    monkeypatch.setattr(
+        sharding_compat,
+        "_provider_input_for",
+        lambda service: provider_input,
+    )
+    monkeypatch.setattr(
+        sharding_compat,
+        "provider_delivery_descriptor",
+        lambda value: delivery,
+    )
+    monkeypatch.setattr(
+        sharding_compat,
+        "_provider_page_route_counts",
+        lambda value: {
+            "presentation_page_count": 0,
+            "native_text_page_count": 0,
+            "full_document_page_count": 7,
+            "provider_excluded_page_count": 0,
+            "provider_route_page_count": 7,
+        },
+    )
+    monkeypatch.setattr(
+        sharding_compat,
+        "provider_transport_sharding_required",
+        lambda value: True,
+    )
+    monkeypatch.setattr(
+        sharding_compat,
+        "_delivery_is_full_render",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        sharding_compat,
+        "_raw_client_for",
+        lambda service: object(),
+    )
+    monkeypatch.setattr(
+        sharding_compat,
+        "_diagnostic",
+        lambda event, **fields: diagnostics.append((event, fields)),
+    )
+
+    async def fake_run_provider_transport_shards(**kwargs):
+        return sharding.ProviderTransportShardRunResult(
+            canonicalization=canonical,
+            raw_result=raw_result,
+            error=None,
+            cleanup_safe=True,
+            submission_started=True,
+            shard_count=2,
+            poll_count=16,
+        )
+
+    monkeypatch.setattr(
+        sharding_compat,
+        "run_provider_transport_shards",
+        fake_run_provider_transport_shards,
+    )
+
+    ticks = iter((10.0, 11.5))
+    service = SimpleNamespace(
+        orchestrator=SimpleNamespace(storage=SimpleNamespace()),
+        canonicalizer=object(),
+        monotonic=lambda: next(ticks),
+        _origin_value=None,
+        polling_policy=SimpleNamespace(),
+    )
+    request = SimpleNamespace(
+        retained_source=SimpleNamespace(
+            document_id="document-logical-terminal",
+            source_file_id="source-logical-terminal",
+        ),
+        processing_attempt_id="attempt-logical-terminal",
+        provider_name="paddle-vl",
+        provider_job_id="job-logical-terminal",
+        provider_request_id="request-logical-terminal",
+        result_profile="full",
+        provider_job_options={},
+    )
+
+    outcome = asyncio.run(
+        sharding_compat.ShardingAwareEndToEndProcessingIntegrationService.process(
+            service,
+            request,
+        )
+    )
+    terminal = next(
+        fields
+        for event, fields in diagnostics
+        if event == "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL"
+    )
+
+    assert outcome.poll_count == 16
+    assert terminal["provider_status"] == "provider_completed"
+    assert terminal["provider_request_id"] == "request-logical-terminal"
+    assert terminal["poll_count"] == 16
+    assert terminal["raw_result_retained"] is True
+    assert terminal["canonicalization_ready"] is True
+    assert terminal["succeeded"] is True
 '''
     TEST_REVIEW_PATH.write_text(
         source.rstrip() + block.rstrip() + "\n",
