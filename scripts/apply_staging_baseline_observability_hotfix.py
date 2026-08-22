@@ -14,6 +14,7 @@ CLASSIFICATION_PATH = Path(
 )
 SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
 SHARDING_COMPAT_PATH = Path("app/processing/pdf_provider_sharding_compat.py")
+TEST_OBSERVABILITY_PATH = Path("tests/test_provider_20mib_observability.py")
 TEST_REVIEW_PATH = Path("tests/test_provider_20mib_review_fixes.py")
 TEST_DEPLOYMENT_PATH = Path("tests/test_staging_deployment_contract.py")
 
@@ -68,6 +69,19 @@ def _patch_classification_runtime_sink() -> None:
     if missing:
         raise RuntimeError(f"classification runtime sink markers missing: {missing}")
     CLASSIFICATION_PATH.write_text(source, encoding="utf-8")
+
+
+def _patch_existing_classification_capture_tests() -> None:
+    """Keep pre-existing unit tests attached to the runtime-visible sink."""
+    old = '''    monkeypatch.setattr(\n        bridge,\n        "_diagnostic",\n        lambda event, **fields: diagnostics.append((event, fields)),\n    )\n'''
+    new = '''    monkeypatch.setattr(\n        classification_obs,\n        "_diagnostic",\n        lambda event, **fields: diagnostics.append((event, fields)),\n    )\n'''
+    for path, label in (
+        (TEST_OBSERVABILITY_PATH, "classification observability capture test"),
+        (TEST_REVIEW_PATH, "classification review capture test"),
+    ):
+        source = path.read_text(encoding="utf-8")
+        source = _replace_once(source, old, new, label=label)
+        path.write_text(source, encoding="utf-8")
 
 
 def _patch_logical_sharding_terminal_fields() -> None:
@@ -258,6 +272,7 @@ def test_baseline_smoke_observability_hotfix_in_staging_deploy_gate() -> None:
 
 def main() -> None:
     _patch_classification_runtime_sink()
+    _patch_existing_classification_capture_tests()
     _patch_logical_sharding_terminal_fields()
     _patch_shard_cleanup_diagnostics()
     _append_focused_regressions()
