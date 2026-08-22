@@ -77,12 +77,13 @@ def _final_staging_composition_installed() -> bool:
         and sharding.count("poll_count=total_poll_count") >= 1
         and "PDF_PROVIDER_SHARD_INPUT_ALREADY_DELETED" in sharding
         and "already_missing=False" in sharding
+        and "provider_phase_completed: bool = False" in sharding
         and compat.count("poll_count=result.poll_count") == 2
         and "PdfCanonicalizationError" in compat
         and "IntegrationErrorCategory.CANONICALIZATION_FAILURE" in compat
-        and "def _logical_terminal_diagnostic_fields(outcome: Any)" in compat
+        and "def _logical_terminal_diagnostic_fields(" in compat
         and 'fields["provider_status"] = ProviderLifecycleStatus.PROVIDER_COMPLETED.value' in compat
-        and "failure_fields = _logical_terminal_diagnostic_fields(outcome)" in compat
+        and "provider_phase_completed=result.provider_phase_completed" in compat
         and "print(message, file=sys.stderr, flush=True)" in classification
         and classification.count("_diagnostic(") >= 4
     )
@@ -112,6 +113,9 @@ def main() -> None:
         from scripts.apply_staging_baseline_canonicalization_terminal_fix import (
             main as apply_staging_baseline_canonicalization_terminal_fix,
         )
+        from scripts.apply_staging_post_provider_terminal_fix import (
+            main as apply_staging_post_provider_terminal_fix,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -130,6 +134,9 @@ def main() -> None:
         )
         from apply_staging_baseline_canonicalization_terminal_fix import (
             main as apply_staging_baseline_canonicalization_terminal_fix,
+        )
+        from apply_staging_post_provider_terminal_fix import (
+            main as apply_staging_post_provider_terminal_fix,
         )
 
     # The source-rewrite stack below is a composition step, not a migration that
@@ -153,6 +160,7 @@ def main() -> None:
     apply_provider_terminal_poll_diagnostic()
     apply_staging_baseline_observability_hotfix()
     apply_staging_baseline_canonicalization_terminal_fix()
+    apply_staging_post_provider_terminal_fix()
 
 
 if __name__ == "__main__":
