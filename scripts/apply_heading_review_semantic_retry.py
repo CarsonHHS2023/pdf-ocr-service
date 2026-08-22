@@ -185,10 +185,23 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                 },
             )
             raw_repair_patch = await propose_once(repair_spr, repair_images)
+            unexpected_repair_node_ids = frozenset(
+                operation.node_id
+                for operation in raw_repair_patch.operations
+                if operation.node_id not in expected_heading_ids
+            )
+            if unexpected_repair_node_ids:
+                raise ValueError(
+                    "heading repair returned operations outside the original heading scope"
+                )
             repair_patch = StructureRefinementPatch(
                 model_id=raw_repair_patch.model_id,
                 prompt_version=raw_repair_patch.prompt_version,
-                operations=raw_repair_patch.operations,
+                operations=tuple(
+                    operation
+                    for operation in raw_repair_patch.operations
+                    if operation.node_id in missing_heading_ids
+                ),
                 page_reviews=(),
             )
             _validate_batch_patch(
