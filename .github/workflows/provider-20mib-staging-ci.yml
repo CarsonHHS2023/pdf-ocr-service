@@ -66,9 +66,11 @@ jobs:
             scripts/apply_provider_20mib_observability_v4.py \
             scripts/apply_provider_20mib_observability_v5.py \
             scripts/apply_provider_20mib_review_fixes.py \
+            scripts/apply_staging_classification_summary_highres_fix.py \
             tests/test_provider_shard_execution_contract.py \
             tests/test_provider_20mib_review_fixes.py \
-            tests/test_provider_sharding_source_access.py
+            tests/test_provider_sharding_source_access.py \
+            tests/test_classification_summary_highres_observability.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_MAX_BYTES = 20 \* _MIB' app/processing/pdf_provider_sharding.py
           grep -q 'PROVIDER_TRANSPORT_SHARD_EXECUTION_MODE = "sequential"' app/processing/pdf_provider_sharding.py
@@ -86,6 +88,7 @@ jobs:
           grep -q 'source_transport_url_factory=shard_source_url_factory' app/processing/pdf_provider_sharding.py
           grep -q 'PDF_PAGE_CLASSIFICATION_SUMMARY' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'classifier_fail_open_to_ocr_count' app/processing/pdf_page_classification_observability_compat.py
+          grep -q 'presentation_page_high_resolution_confirmed' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'timeout_config_valid=timeout_config_valid' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'processing_attempt_id=_PROCESSING_ATTEMPT_ID.get()' app/processing/pdf_page_classification_observability_compat.py
           grep -q 'def page_classification_observation_context' app/processing/pdf_page_classification_observability_compat.py
@@ -108,5 +111,6 @@ jobs:
             tests/test_provider_20mib_review_fixes.py \
             tests/test_provider_shard_execution_contract.py \
             tests/test_provider_sharding_source_access.py \
+            tests/test_classification_summary_highres_observability.py \
             tests/test_high_resolution_page_confirmation.py \
             tests/test_native_pdf_text_recovery.py
