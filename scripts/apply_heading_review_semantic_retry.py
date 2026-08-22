@@ -168,7 +168,7 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                     "missing heading repair has no page image inside the batch scope"
                 )
 
-            # Preserve the existing retry event contract exactly.  New bounded
+            # Preserve the existing retry event contract exactly. New bounded
             # targeted-repair diagnostics use a distinct event.
             self.event_sink(
                 "PDF_STRUCTURE_REFINEMENT_SEMANTIC_RETRY_SCHEDULED",
@@ -208,6 +208,11 @@ _TARGETED_METHOD = '''    async def _propose_one_async(
                     operation
                     for operation in raw_repair_patch.operations
                     if operation.node_id in missing_heading_ids
+                    and operation.kind
+                    in {
+                        RefinementOperationKind.RECLASSIFY_NODE,
+                        RefinementOperationKind.SUPPRESS_AS_ARTIFACT,
+                    }
                 ),
                 page_reviews=(),
             )
@@ -293,7 +298,7 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         ),
     )
 
-    def operation(node_id: str) -> StructureRefinementOperation:
+    def disposition(node_id: str) -> StructureRefinementOperation:
         return StructureRefinementOperation(
             RefinementOperationKind.RECLASSIFY_NODE,
             node_id,
@@ -301,6 +306,15 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
             ("outline_consistency",),
             target_kind=ProcessingNodeKind.HEADING,
             heading_level=2,
+        )
+
+    def secondary_warning(node_id: str) -> StructureRefinementOperation:
+        return StructureRefinementOperation(
+            RefinementOperationKind.ADD_WARNING,
+            node_id,
+            0.95,
+            ("reduced_context_secondary_operation",),
+            warning="must not escape targeted heading repair",
         )
 
     calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
@@ -318,8 +332,17 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
                 )
             )
             if len(calls) == 1:
-                return StructureRefinementPatch("model", (operation("heading-1"),))
-            return StructureRefinementPatch("model", (operation("heading-2"),))
+                return StructureRefinementPatch(
+                    "model",
+                    (disposition("heading-1"),),
+                )
+            return StructureRefinementPatch(
+                "model",
+                (
+                    disposition("heading-2"),
+                    secondary_warning("heading-2"),
+                ),
+            )
 
     refiner = BatchedStructureRefiner(
         model_id="model",
@@ -339,10 +362,13 @@ def test_heading_semantic_retry_repairs_only_missing_heading_scope() -> None:
         (("page-1", "page-2"), ("heading-1", "heading-2")),
         (("page-2",), ("heading-2",)),
     ]
-    assert {operation.node_id for operation in patch.operations} == {
-        "heading-1",
-        "heading-2",
-    }
+    assert tuple(
+        (operation.node_id, operation.kind)
+        for operation in patch.operations
+    ) == (
+        ("heading-1", RefinementOperationKind.RECLASSIFY_NODE),
+        ("heading-2", RefinementOperationKind.RECLASSIFY_NODE),
+    )
     scheduled = next(
         fields
         for event, fields in events
