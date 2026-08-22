@@ -123,6 +123,9 @@ def main() -> None:
         from scripts.apply_structure_refinement_batch_budgeting import (
             main as apply_structure_refinement_batch_budgeting,
         )
+        from scripts.apply_structure_refinement_heading_batch_atomicity import (
+            main as apply_structure_refinement_heading_batch_atomicity,
+        )
         from scripts.apply_structure_refinement_batch_safety import (
             main as apply_structure_refinement_batch_safety,
         )
@@ -154,15 +157,19 @@ def main() -> None:
         from apply_structure_refinement_batch_budgeting import (
             main as apply_structure_refinement_batch_budgeting,
         )
+        from apply_structure_refinement_heading_batch_atomicity import (
+            main as apply_structure_refinement_heading_batch_atomicity,
+        )
         from apply_structure_refinement_batch_safety import (
             main as apply_structure_refinement_batch_safety,
         )
 
-    # Structure-refinement budgeting and scoped-reference safety are independent
-    # of the historical provider rewrite chain, so install them before the
-    # provider-composition no-op guard. This lets an already-composed checkout
-    # gain the new bounded batching without replaying legacy one-way overlays.
+    # Structure-refinement budgeting, heading-page atomicity, and scoped-reference
+    # safety are independent of the historical provider rewrite chain, so install
+    # them before the provider-composition no-op guard. This lets an already-
+    # composed checkout gain the bounded batching without replaying legacy overlays.
     apply_structure_refinement_batch_budgeting()
+    apply_structure_refinement_heading_batch_atomicity()
     apply_structure_refinement_batch_safety()
 
     # The source-rewrite stack below is a composition step, not a migration that
