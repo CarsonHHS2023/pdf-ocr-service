@@ -120,6 +120,9 @@ def main() -> None:
         from scripts.apply_staging_classification_summary_highres_fix import (
             main as apply_staging_classification_summary_highres_fix,
         )
+        from scripts.apply_structure_refinement_batch_budgeting import (
+            main as apply_structure_refinement_batch_budgeting,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -145,6 +148,15 @@ def main() -> None:
         from apply_staging_classification_summary_highres_fix import (
             main as apply_staging_classification_summary_highres_fix,
         )
+        from apply_structure_refinement_batch_budgeting import (
+            main as apply_structure_refinement_batch_budgeting,
+        )
+
+    # Structure-refinement budgeting is independent of the historical provider
+    # rewrite chain, so install it before the provider-composition no-op guard.
+    # This lets an already-composed checkout gain the new bounded batching without
+    # replaying legacy one-way provider overlays.
+    apply_structure_refinement_batch_budgeting()
 
     # The source-rewrite stack below is a composition step, not a migration that
     # should keep editing an already composed checkout. Once every final runtime
