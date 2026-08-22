@@ -12,6 +12,9 @@ PROVIDER_SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
 PROVIDER_SHARDING_COMPAT_PATH = Path(
     "app/processing/pdf_provider_sharding_compat.py"
 )
+CLASSIFICATION_OBSERVABILITY_PATH = Path(
+    "app/processing/pdf_page_classification_observability_compat.py"
+)
 _ANCHOR = "from app.database import SessionLocal\n"
 _INSTALL = (
     "from app.processing.s0_v5_shadow_geometry import "
@@ -59,6 +62,7 @@ def _final_staging_composition_installed() -> bool:
     lifecycle = PRESENTATION_LIFECYCLE_PATH.read_text(encoding="utf-8")
     sharding = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
     compat = PROVIDER_SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
+    classification = CLASSIFICATION_OBSERVABILITY_PATH.read_text(encoding="utf-8")
 
     return (
         _INSTALL in ingestion
@@ -71,9 +75,15 @@ def _final_staging_composition_installed() -> bool:
         and "poll_count: int = 0" in sharding
         and "total_poll_count += max(0, int(outcome.poll_count or 0))" in sharding
         and sharding.count("poll_count=total_poll_count") >= 1
+        and "PDF_PROVIDER_SHARD_INPUT_ALREADY_DELETED" in sharding
+        and "already_missing=False" in sharding
         and compat.count("poll_count=result.poll_count") == 2
         and "PdfCanonicalizationError" in compat
         and "IntegrationErrorCategory.CANONICALIZATION_FAILURE" in compat
+        and "def _logical_terminal_diagnostic_fields(outcome: Any)" in compat
+        and "failure_fields = _logical_terminal_diagnostic_fields(outcome)" in compat
+        and "print(message, file=sys.stderr, flush=True)" in classification
+        and classification.count("_diagnostic(") >= 4
     )
 
 
@@ -95,6 +105,9 @@ def main() -> None:
         from scripts.apply_provider_terminal_poll_diagnostic import (
             main as apply_provider_terminal_poll_diagnostic,
         )
+        from scripts.apply_staging_baseline_observability_hotfix import (
+            main as apply_staging_baseline_observability_hotfix,
+        )
     else:
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
@@ -107,6 +120,9 @@ def main() -> None:
         )
         from apply_provider_terminal_poll_diagnostic import (
             main as apply_provider_terminal_poll_diagnostic,
+        )
+        from apply_staging_baseline_observability_hotfix import (
+            main as apply_staging_baseline_observability_hotfix,
         )
 
     # The source-rewrite stack below is a composition step, not a migration that
@@ -128,6 +144,7 @@ def main() -> None:
         apply_provider_20mib_observability()
     apply_provider_20mib_poll_count_fix()
     apply_provider_terminal_poll_diagnostic()
+    apply_staging_baseline_observability_hotfix()
 
 
 if __name__ == "__main__":
