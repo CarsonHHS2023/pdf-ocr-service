@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Document, decode_json_text
+from app.models import Base, Document, decode_json_text, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
 from app.processing import processing_events
 
@@ -80,6 +80,7 @@ def test_payload_is_bounded_and_sensitive_fields_are_removed(tmp_path, monkeypat
             "authorization": "Bearer should-never-persist",
             "api_key": "should-never-persist",
             "signed_url": "https://example.invalid/secret",
+            "safe_field_with_url_value": "https://example.invalid/also-secret",
             "nested": {
                 "safe_reason": "bounded",
                 "password": "should-never-persist",
@@ -100,11 +101,21 @@ def test_payload_is_bounded_and_sensitive_fields_are_removed(tmp_path, monkeypat
         assert "authorization" not in payload
         assert "api_key" not in payload
         assert "signed_url" not in payload
+        assert "safe_field_with_url_value" not in payload
         assert "not_finite" not in payload
         assert len(row.payload_json.encode("utf-8")) <= processing_events.MAX_EVENT_PAYLOAD_BYTES
         assert row.page_number == 2
     finally:
         db.close()
+
+
+def test_payload_byte_ceiling_is_strict():
+    payload = processing_events.sanitize_processing_event_payload(
+        {f"field_{index:02d}": "z" * 2000 for index in range(40)}
+    )
+    encoded = encode_json_text(payload) or "{}"
+    assert len(payload) <= processing_events.MAX_PAYLOAD_FIELDS
+    assert len(encoded.encode("utf-8")) <= processing_events.MAX_EVENT_PAYLOAD_BYTES
 
 
 def test_missing_or_invalid_staging_marker_disables_persistence(tmp_path, monkeypatch):
