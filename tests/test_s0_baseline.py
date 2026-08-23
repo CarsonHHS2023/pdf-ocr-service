@@ -169,6 +169,31 @@ def test_run_without_retained_events_does_not_claim_zero_event_signals() -> None
     assert _metric(snapshot, "max_observed_peak_rss_mb").status == "not_available"
 
 
+def test_single_event_has_observed_zero_length_event_span() -> None:
+    db = _session()
+    run_id = _seed_run(db, with_events=False)
+    created_at = datetime(2026, 8, 23, 12, 0, 5)
+    db.add(
+        ProcessingEvent(
+            id="event-single-span",
+            processing_run_id=run_id,
+            document_id="doc-s0",
+            schema_version="atlas.processing.event.v1",
+            event_name="PDF_S0_RESOURCE_HEARTBEAT",
+            severity="info",
+            payload_json=encode_json_text({"peak_rss_mb": 123.0}),
+            created_at=created_at,
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    event_span = _metric(snapshot, "durable_event_span_seconds")
+    assert event_span.status == "observed"
+    assert event_span.value == 0.0
+
+
 def test_event_window_is_bounded_and_marks_event_aggregates_partial() -> None:
     db = _session()
     run_id = _seed_run(db)
@@ -212,6 +237,23 @@ def test_legacy_run_without_source_file_id_does_not_infer_document_source() -> N
     assert source_size.value is None
     assert snapshot.source_file_id is None
     assert snapshot.source_checksum_sha256 is None
+
+
+@pytest.mark.parametrize("invalid_page_count", [0, -1])
+def test_non_positive_page_count_is_not_baseline_evidence(invalid_page_count: int) -> None:
+    db = _session()
+    run_id = _seed_run(db, with_events=False)
+    document = db.get(Document, "doc-s0")
+    assert document is not None
+    document.pages_count = invalid_page_count
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    page_count = _metric(snapshot, "page_count")
+    assert page_count.status == "not_available"
+    assert page_count.value is None
+    assert "positive page count" in (page_count.note or "")
 
 
 def test_event_metadata_output_is_allowlisted() -> None:
