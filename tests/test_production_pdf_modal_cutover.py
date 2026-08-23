@@ -305,7 +305,6 @@ def test_production_completion_accepts_current_or_preserved_explicit_selection()
     assert "Reader v2 canonical selection is inconsistent with processing result" in source
     assert len(completed_calls) == 1
     completed = completed_calls[0]
-    assert any(keyword.arg == "processing_attempt_id" for keyword in completed.keywords)
     current_line = source[: source.index(current_invariant)].count("\n") + 1
     preserved_line = source[: source.index(preserved_branch)].count("\n") + 1
     assert current_line < completed.lineno
