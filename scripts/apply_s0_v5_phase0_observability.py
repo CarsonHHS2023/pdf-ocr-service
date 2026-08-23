@@ -90,6 +90,26 @@ def _final_staging_composition_installed() -> bool:
     )
 
 
+def _make_shard_document_correlation_optional() -> None:
+    """Never make a telemetry-only document field part of the Provider runner contract."""
+    source = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
+    safe = (
+        'document_id=descriptor.document_id if hasattr(descriptor, "document_id") '
+        'else None,'
+    )
+    if safe in source:
+        return
+    old = "document_id=descriptor.document_id,"
+    if old not in source:
+        if "shard_source_url_factory = build_provider_input_source_url_factory(" in source:
+            raise RuntimeError("final shard source factory lacks document correlation hook")
+        return
+    PROVIDER_SHARDING_PATH.write_text(
+        source.replace(old, safe, 1),
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     # Staging executes this script after the heartbeat and provider-preflight
     # overlays. Keep the reusable Phase0 patch function independent for focused
@@ -192,6 +212,7 @@ def main() -> None:
     # restores only observability correlation on the exact final runtime.
     if _final_staging_composition_installed():
         patch_durable_processing_events()
+        _make_shard_document_correlation_optional()
         print("staging provider composition already installed: no changes")
         return
 
@@ -206,6 +227,7 @@ def main() -> None:
     apply_staging_post_provider_terminal_fix()
     apply_staging_classification_summary_highres_fix()
     patch_durable_processing_events()
+    _make_shard_document_correlation_optional()
 
 
 if __name__ == "__main__":
