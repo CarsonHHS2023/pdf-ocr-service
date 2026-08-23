@@ -197,6 +197,7 @@ def test_invalid_retained_checksum_is_not_exposed(checksum: str) -> None:
     assert snapshot.source_checksum_sha256 is None
     assert checksum not in str(snapshot.to_dict())
     assert checksum not in markdown
+    assert f"document ID: `{run.document_id}`" in markdown
     assert "source checksum SHA-256: `unavailable`" in markdown
 
 
@@ -210,4 +211,5 @@ def test_exact_64_hex_checksum_remains_available() -> None:
     markdown = render_s0_markdown([snapshot])
 
     assert snapshot.source_checksum_sha256 == checksum
+    assert f"document ID: `{run.document_id}`" in markdown
     assert f"source checksum SHA-256: `{checksum}`" in markdown
