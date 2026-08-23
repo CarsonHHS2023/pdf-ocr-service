@@ -1,0 +1,449 @@
+"""Read-only S0 baseline extraction from durable Atlas processing state.
+
+This module deliberately does not add runtime instrumentation or mutate processing
+state. It turns already-persisted Document/SourceFile/ProcessingRun/ProcessingEvent
+records into a stable, explicit baseline snapshot and marks missing S0 measurements
+as missing instead of inferring them from unrelated signals.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime
+import math
+from typing import Any, Iterable
+
+from sqlalchemy import select
+
+from app.models import Document, ProcessingRun, SourceFile, decode_json_text
+from app.processing.processing_event_model import ProcessingEvent
+
+
+S0_BASELINE_SCHEMA_VERSION = "atlas.s0.baseline.v1"
+DEFAULT_MAX_EVENTS = 5000
+
+
+@dataclass(frozen=True, slots=True)
+class MetricReading:
+    key: str
+    label: str
+    unit: str | None
+    status: str
+    value: object | None
+    source: str
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class S0RunSnapshot:
+    schema_version: str
+    processing_run_id: str
+    document_id: str
+    run_status: str
+    file_type: str
+    source_file_id: str | None
+    source_checksum_sha256: str | None
+    started_at: str | None
+    terminal_at: str | None
+    event_window_truncated: bool
+    required_metrics: tuple[MetricReading, ...]
+    auxiliary_metrics: tuple[MetricReading, ...]
+    observed_event_names: tuple[str, ...]
+    observed_numeric_event_fields: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+_REQUIRED_METRIC_META: tuple[tuple[str, str, str | None], ...] = (
+    ("source_byte_size", "Source byte size", "bytes"),
+    ("page_count", "Source page count", "pages"),
+    ("backend_upload_peak_memory_mb", "Backend upload peak memory", "MiB"),
+    ("upload_duration_seconds", "Upload duration", "seconds"),
+    ("backend_object_store_bytes", "Backend source/object-store bytes read/written", "bytes"),
+    ("preprocessing_wall_seconds", "Preprocessing wall time", "seconds"),
+    ("preprocessing_cpu_seconds", "Preprocessing CPU time", "seconds"),
+    ("backend_to_modal_transport_bytes", "Backend to Modal source transport", "bytes"),
+    ("modal_download_seconds", "Modal source download time", "seconds"),
+    ("ocr_batch_duration_seconds", "OCR page/batch duration", "seconds"),
+    ("gpu_busy_idle_proxy", "GPU busy/idle or bounded proxy", None),
+    ("raw_result_shard_bytes", "Raw result/shard size", "bytes"),
+    ("canonicalization_duration_seconds", "Canonicalization duration", "seconds"),
+    ("visual_asset_generation_seconds", "Visual asset generation duration", "seconds"),
+    ("object_store_stage_io", "Object-store reads/writes by stage", None),
+    ("reader_open_latency_seconds", "Reader-open latency", "seconds"),
+    ("reader_bounded_query_count", "Reader bounded query count", "queries"),
+    ("upload_to_reader_ready_seconds", "Upload-to-Reader-ready latency", "seconds"),
+    ("failure_retry_counts", "Failure/retry counts", "count"),
+)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _seconds(start: datetime | None, end: datetime | None) -> float | None:
+    if start is None or end is None:
+        return None
+    value = (end - start).total_seconds()
+    return round(value, 6) if value >= 0 else None
+
+
+def _terminal_at(run: ProcessingRun) -> datetime | None:
+    if run.completed_at is not None:
+        return run.completed_at
+    if run.failed_at is not None:
+        return run.failed_at
+    return None
+
+
+def _decode_event_payload(row: ProcessingEvent) -> dict[str, Any]:
+    try:
+        value = decode_json_text(row.payload_json)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _max_numeric_field(
+    decoded_events: Iterable[tuple[ProcessingEvent, dict[str, Any]]],
+    field: str,
+) -> float | None:
+    values = [
+        number
+        for _, payload in decoded_events
+        if (number := _finite_number(payload.get(field))) is not None
+    ]
+    return max(values) if values else None
+
+
+def _metric(
+    key: str,
+    *,
+    value: object | None,
+    status: str,
+    source: str,
+    note: str | None = None,
+) -> MetricReading:
+    metadata = {item[0]: item[1:] for item in _REQUIRED_METRIC_META}
+    label, unit = metadata[key]
+    return MetricReading(
+        key=key,
+        label=label,
+        unit=unit,
+        status=status,
+        value=value,
+        source=source,
+        note=note,
+    )
+
+
+def _missing_metric(key: str, *, source: str, note: str) -> MetricReading:
+    return _metric(
+        key,
+        value=None,
+        status="not_instrumented",
+        source=source,
+        note=note,
+    )
+
+
+def _find_source_file(session, run: ProcessingRun) -> SourceFile | None:
+    if run.source_file_id:
+        source = session.get(SourceFile, run.source_file_id)
+        if source is not None:
+            return source
+    return session.execute(
+        select(SourceFile)
+        .where(SourceFile.document_id == run.document_id)
+        .order_by(SourceFile.is_primary.desc(), SourceFile.created_at.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def collect_s0_run_snapshot(
+    session,
+    *,
+    processing_run_id: str,
+    max_events: int = DEFAULT_MAX_EVENTS,
+) -> S0RunSnapshot:
+    """Collect one read-only S0 snapshot for an existing ProcessingRun."""
+    normalized_run_id = str(processing_run_id).strip()
+    if not normalized_run_id:
+        raise ValueError("processing_run_id is required")
+    if max_events <= 0:
+        raise ValueError("max_events must be positive")
+
+    run = session.execute(
+        select(ProcessingRun).where(ProcessingRun.processing_run_id == normalized_run_id)
+    ).scalar_one_or_none()
+    if run is None:
+        raise LookupError(f"ProcessingRun not found: {normalized_run_id}")
+
+    document = session.get(Document, run.document_id)
+    if document is None:
+        raise LookupError(f"Document not found for ProcessingRun: {normalized_run_id}")
+    source = _find_source_file(session, run)
+
+    rows = session.execute(
+        select(ProcessingEvent)
+        .where(ProcessingEvent.processing_run_id == normalized_run_id)
+        .order_by(ProcessingEvent.created_at.asc(), ProcessingEvent.id.asc())
+        .limit(max_events + 1)
+    ).scalars().all()
+    event_window_truncated = len(rows) > max_events
+    rows = rows[:max_events]
+    decoded_events = tuple((row, _decode_event_payload(row)) for row in rows)
+
+    event_names = tuple(sorted({row.event_name for row in rows}))
+    numeric_fields = tuple(
+        sorted(
+            {
+                key
+                for _, payload in decoded_events
+                for key, value in payload.items()
+                if _finite_number(value) is not None
+            }
+        )
+    )
+
+    source_size = source.byte_size if source is not None else None
+    page_count = document.pages_count
+    error_count = sum(1 for row in rows if row.severity == "error")
+    retry_event_count = sum(
+        1
+        for row in rows
+        if "RETRY" in row.event_name or "RETRIED" in row.event_name
+    )
+    retryable_signal_count = sum(
+        1 for _, payload in decoded_events if payload.get("retryable") is True
+    )
+    peak_rss = _max_numeric_field(decoded_events, "peak_rss_mb")
+
+    required: list[MetricReading] = []
+    required.append(
+        _metric(
+            "source_byte_size",
+            value=int(source_size) if isinstance(source_size, int) else None,
+            status="observed" if isinstance(source_size, int) else "not_available",
+            source="SourceFile.byte_size",
+            note=None if isinstance(source_size, int) else "No retained source byte size is available.",
+        )
+    )
+    if isinstance(page_count, int):
+        required.append(
+            _metric(
+                "page_count",
+                value=page_count,
+                status="observed",
+                source="Document.pages_count",
+            )
+        )
+    else:
+        required.append(
+            _metric(
+                "page_count",
+                value=None,
+                status="not_available",
+                source="Document.pages_count",
+                note="No page count is persisted for this document type/run.",
+            )
+        )
+
+    for key, source_name, note in (
+        (
+            "backend_upload_peak_memory_mb",
+            "upload instrumentation",
+            "Generic processing RSS must not be substituted for upload-specific peak memory.",
+        ),
+        ("upload_duration_seconds", "upload instrumentation", "Upload start/end timing is not durably persisted."),
+        ("backend_object_store_bytes", "object-store instrumentation", "Per-stage backend object-store byte counters are not durably persisted."),
+        ("preprocessing_wall_seconds", "preprocessing instrumentation", "A dedicated durable preprocessing wall-time metric is not yet persisted."),
+        ("preprocessing_cpu_seconds", "preprocessing instrumentation", "A dedicated durable preprocessing CPU-time metric is not yet persisted."),
+        ("backend_to_modal_transport_bytes", "transport instrumentation", "Backend-to-Modal bytes are not durably separated from other provider/source routes."),
+        ("modal_download_seconds", "Modal instrumentation", "Modal download timing is not available in backend durable state."),
+        ("ocr_batch_duration_seconds", "OCR instrumentation", "OCR page/batch duration is not yet normalized into a durable S0 metric."),
+        ("gpu_busy_idle_proxy", "GPU instrumentation", "No durable GPU busy/idle proxy is currently available."),
+        ("raw_result_shard_bytes", "artifact instrumentation", "Raw-result/shard sizes are not normalized into a durable S0 metric."),
+        ("canonicalization_duration_seconds", "canonicalization instrumentation", "Canonicalization duration is not durably normalized."),
+        ("visual_asset_generation_seconds", "visual instrumentation", "Visual asset generation duration is not durably normalized."),
+        ("object_store_stage_io", "object-store instrumentation", "Stage-specific object-store read/write counters are not durably normalized."),
+        ("reader_open_latency_seconds", "Reader instrumentation", "Reader-open latency is outside ProcessingRun durable state today."),
+        ("reader_bounded_query_count", "Reader instrumentation", "Reader query count is outside ProcessingRun durable state today."),
+        ("upload_to_reader_ready_seconds", "cross-stage instrumentation", "Document acceptance/processing timestamps are not equivalent to upload-start -> Reader-ready latency."),
+    ):
+        required.append(_missing_metric(key, source=source_name, note=note))
+
+    if rows:
+        required.append(
+            _metric(
+                "failure_retry_counts",
+                value={
+                    "error_events": error_count,
+                    "retry_events": retry_event_count,
+                    "retryable_signals": retryable_signal_count,
+                },
+                status="observed",
+                source="processing_events",
+                note=(
+                    "Counts durable diagnostic signals only; they are not a substitute for a future explicit retry counter."
+                ),
+            )
+        )
+    else:
+        required.append(
+            _metric(
+                "failure_retry_counts",
+                value=None,
+                status="not_available",
+                source="processing_events",
+                note="No durable events are retained for this run.",
+            )
+        )
+
+    terminal = _terminal_at(run)
+    processing_wall = _seconds(run.started_at, terminal)
+    acceptance_to_terminal = _seconds(document.created_at, terminal)
+    event_span = _seconds(rows[0].created_at, rows[-1].created_at) if rows else None
+
+    auxiliary: list[MetricReading] = [
+        MetricReading(
+            key="processing_run_wall_seconds",
+            label="ProcessingRun start-to-terminal wall time",
+            unit="seconds",
+            status="observed" if processing_wall is not None else "not_available",
+            value=processing_wall,
+            source="ProcessingRun.started_at -> completed_at/failed_at",
+            note="Useful lifecycle baseline; not equivalent to upload-to-Reader-ready latency.",
+        ),
+        MetricReading(
+            key="document_acceptance_to_terminal_seconds",
+            label="Document acceptance-to-processing-terminal wall time",
+            unit="seconds",
+            status="observed" if acceptance_to_terminal is not None else "not_available",
+            value=acceptance_to_terminal,
+            source="Document.created_at -> ProcessingRun terminal timestamp",
+            note="A lower-bound lifecycle proxy, not upload-start timing.",
+        ),
+        MetricReading(
+            key="durable_event_count",
+            label="Durable event count in snapshot window",
+            unit="events",
+            status="observed",
+            value=len(rows),
+            source="processing_events",
+        ),
+        MetricReading(
+            key="durable_event_span_seconds",
+            label="First-to-last durable event span",
+            unit="seconds",
+            status="observed" if event_span is not None else "not_available",
+            value=event_span,
+            source="processing_events.created_at",
+        ),
+        MetricReading(
+            key="max_observed_peak_rss_mb",
+            label="Maximum observed generic peak RSS signal",
+            unit="MiB",
+            status="observed" if peak_rss is not None else "not_available",
+            value=peak_rss,
+            source="processing_events.payload.peak_rss_mb",
+            note="Generic processing signal only; not promoted to upload peak memory.",
+        ),
+    ]
+
+    return S0RunSnapshot(
+        schema_version=S0_BASELINE_SCHEMA_VERSION,
+        processing_run_id=run.processing_run_id,
+        document_id=run.document_id,
+        run_status=run.status,
+        file_type=document.file_type,
+        source_file_id=source.id if source is not None else None,
+        source_checksum_sha256=(
+            source.checksum_sha256 if source is not None else None
+        ),
+        started_at=_iso(run.started_at),
+        terminal_at=_iso(terminal),
+        event_window_truncated=event_window_truncated,
+        required_metrics=tuple(required),
+        auxiliary_metrics=tuple(auxiliary),
+        observed_event_names=event_names,
+        observed_numeric_event_fields=numeric_fields,
+    )
+
+
+def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
+    """Render deterministic operator-facing Markdown for one or more snapshots."""
+    items = tuple(snapshots)
+    lines = [
+        "# Atlas S0 Baseline Snapshot",
+        "",
+        f"Schema: `{S0_BASELINE_SCHEMA_VERSION}`",
+        "",
+        "This report is read-only. `not_instrumented` means Atlas does not yet persist a durable metric that can support the S0 claim; it must not be inferred from an unrelated signal.",
+        "",
+    ]
+    for snapshot in items:
+        lines.extend(
+            [
+                f"## `{snapshot.processing_run_id}`",
+                "",
+                f"- status: `{snapshot.run_status}`",
+                f"- file type: `{snapshot.file_type}`",
+                f"- event window truncated: `{str(snapshot.event_window_truncated).lower()}`",
+                "",
+                "### Required S0 metrics",
+                "",
+                "| Metric | Status | Value | Unit | Source | Note |",
+                "|---|---|---:|---|---|---|",
+            ]
+        )
+        for metric in snapshot.required_metrics:
+            value = "—" if metric.value is None else str(metric.value)
+            note = (metric.note or "").replace("|", "\\|")
+            source = metric.source.replace("|", "\\|")
+            lines.append(
+                f"| {metric.label} | `{metric.status}` | {value} | {metric.unit or '—'} | `{source}` | {note} |"
+            )
+        lines.extend(
+            [
+                "",
+                "### Auxiliary lifecycle/observability metrics",
+                "",
+                "| Metric | Status | Value | Unit | Source |",
+                "|---|---|---:|---|---|",
+            ]
+        )
+        for metric in snapshot.auxiliary_metrics:
+            value = "—" if metric.value is None else str(metric.value)
+            lines.append(
+                f"| {metric.label} | `{metric.status}` | {value} | {metric.unit or '—'} | `{metric.source}` |"
+            )
+        lines.extend(
+            [
+                "",
+                "Observed durable event names: "
+                + (", ".join(f"`{name}`" for name in snapshot.observed_event_names) or "none"),
+                "",
+                "Observed numeric event fields: "
+                + (", ".join(f"`{name}`" for name in snapshot.observed_numeric_event_fields) or "none"),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+__all__ = [
+    "DEFAULT_MAX_EVENTS",
+    "MetricReading",
+    "S0_BASELINE_SCHEMA_VERSION",
+    "S0RunSnapshot",
+    "collect_s0_run_snapshot",
+    "render_s0_markdown",
+]
