@@ -11,6 +11,7 @@ from scripts.cleanup_hf_buckets import (
     PRODUCTION_CLEANUP_TOKEN_ENV,
     PRODUCTION_DIAGNOSTIC_PREFIXES,
     STAGING_CLEANUP_TOKEN_ENV,
+    _token_for_target,
     build_targets,
     chunked,
     scope_items_to_prefix,
@@ -45,6 +46,30 @@ def test_scheduled_targets_keep_production_policy_and_extend_staging_retention()
     assert all(target.cutoff == now - timedelta(days=14) for target in production)
     assert all(target.prefix is not None for target in production)
     assert all(target.token_env == PRODUCTION_CLEANUP_TOKEN_ENV for target in production)
+
+
+def test_target_credentials_are_isolated_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    targets = build_targets(
+        mode="scheduled",
+        now=datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc),
+    )
+    staging = targets[0]
+    production = targets[1:]
+
+    monkeypatch.setenv(STAGING_CLEANUP_TOKEN_ENV, "staging-token")
+    monkeypatch.setenv(PRODUCTION_CLEANUP_TOKEN_ENV, "production-token")
+
+    assert _token_for_target(staging) == "staging-token"
+    assert all(_token_for_target(target) == "production-token" for target in production)
+
+    monkeypatch.delenv(STAGING_CLEANUP_TOKEN_ENV)
+    with pytest.raises(SystemExit, match=STAGING_CLEANUP_TOKEN_ENV):
+        _token_for_target(staging)
+
+    monkeypatch.setenv(STAGING_CLEANUP_TOKEN_ENV, "staging-token")
+    monkeypatch.delenv(PRODUCTION_CLEANUP_TOKEN_ENV)
+    with pytest.raises(SystemExit, match=PRODUCTION_CLEANUP_TOKEN_ENV):
+        _token_for_target(production[0])
 
 
 def test_purge_test_never_targets_production_and_uses_staging_token() -> None:
