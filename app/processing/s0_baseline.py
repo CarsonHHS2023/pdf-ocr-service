@@ -176,7 +176,12 @@ def _seconds(start: datetime | None, end: datetime | None) -> float | None:
 
 
 def _terminal_at(run: ProcessingRun) -> datetime | None:
-    return run.completed_at if run.completed_at is not None else run.failed_at
+    """Return only the timestamp that matches the run's authoritative status."""
+    if run.status == "succeeded":
+        return run.completed_at
+    if run.status == "failed":
+        return run.failed_at
+    return None
 
 
 def _decode_event_payload(row: ProcessingEvent) -> dict[str, Any]:
@@ -433,7 +438,7 @@ def collect_s0_run_snapshot(
             unit="seconds",
             status="observed" if processing_wall is not None else "not_available",
             value=processing_wall,
-            source="ProcessingRun.started_at -> completed_at/failed_at",
+            source="ProcessingRun.started_at -> status-selected terminal timestamp",
             note="Useful lifecycle baseline; not equivalent to upload-to-Reader-ready latency.",
         ),
         MetricReading(
@@ -442,7 +447,7 @@ def collect_s0_run_snapshot(
             unit="seconds",
             status="observed" if acceptance_to_terminal is not None else "not_available",
             value=acceptance_to_terminal,
-            source="Document.created_at -> ProcessingRun terminal timestamp",
+            source="Document.created_at -> status-selected ProcessingRun terminal timestamp",
             note="A lower-bound lifecycle proxy, not upload-start timing.",
         ),
         MetricReading(
