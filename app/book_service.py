@@ -9,7 +9,20 @@ from pathlib import Path
 from datetime import date
 from sqlalchemy.orm import Session
 
-from app.models import Document, DocumentType
+from app.models import (
+    Document,
+    DocumentType,
+    StructuredContentCandidate,
+    StructuredContentNode,
+    StructuredContentSelection,
+)
+from app.models_v2 import (
+    StructuredContentAnchorV2Record,
+    StructuredContentCandidateV2Record,
+    StructuredContentEvidenceV2Record,
+    StructuredContentNodeV2Record,
+)
+from app.models_v2_selection import StructuredContentSelectionV2Record
 from app.processing.ingestion_dispatch_model import IngestionDispatch
 from app.storage.base import StorageProvider
 from app.storage.errors import ObjectNotFound
@@ -23,6 +36,85 @@ _ACTIVE_INGESTION_DISPATCH_STATUSES = {"queued", "claimed", "running"}
 
 class BookDeletionConflict(RuntimeError):
     """Raised when a book cannot be safely deleted while processing is active."""
+
+
+def _purge_structured_content(db: Session, document_id: str) -> tuple[int, int]:
+    """Explicitly purge canonical structured-content aggregates for a Document.
+
+    Structured Content v1/v2 intentionally use RESTRICT from candidate/selection
+    rows to ``documents`` so canonical content cannot disappear implicitly. A
+    user-initiated book delete is an explicit aggregate purge, so it removes the
+    selection first, breaks internal RESTRICT edges, and then removes candidates.
+    Candidate-owned rows that are protected only by CASCADE remain database-owned.
+    """
+
+    v1_candidate_ids = [
+        candidate_id
+        for (candidate_id,) in (
+            db.query(StructuredContentCandidate.id)
+            .filter(StructuredContentCandidate.document_id == document_id)
+            .all()
+        )
+    ]
+    v2_candidate_ids = [
+        candidate_id
+        for (candidate_id,) in (
+            db.query(StructuredContentCandidateV2Record.id)
+            .filter(StructuredContentCandidateV2Record.document_id == document_id)
+            .all()
+        )
+    ]
+
+    # Selection rows RESTRICT both Document and selected candidate deletion.
+    db.query(StructuredContentSelection).filter(
+        StructuredContentSelection.document_id == document_id
+    ).delete(synchronize_session=False)
+    db.query(StructuredContentSelectionV2Record).filter(
+        StructuredContentSelectionV2Record.document_id == document_id
+    ).delete(synchronize_session=False)
+
+    if v1_candidate_ids:
+        # Hierarchical nodes have a self-RESTRICT parent edge. Clear that edge;
+        # candidate -> node/page/evidence/warning/asset ownership then cascades.
+        db.query(StructuredContentNode).filter(
+            StructuredContentNode.candidate_id.in_(v1_candidate_ids)
+        ).update(
+            {StructuredContentNode.parent_node_id: None},
+            synchronize_session=False,
+        )
+        db.query(StructuredContentCandidate).filter(
+            StructuredContentCandidate.id.in_(v1_candidate_ids)
+        ).delete(synchronize_session=False)
+
+    if v2_candidate_ids:
+        # v2 anchors/evidence RESTRICT their referenced source unit. Remove those
+        # records before candidate-owned source units are cascaded away.
+        db.query(StructuredContentAnchorV2Record).filter(
+            StructuredContentAnchorV2Record.candidate_id.in_(v2_candidate_ids)
+        ).delete(synchronize_session=False)
+        db.query(StructuredContentEvidenceV2Record).filter(
+            StructuredContentEvidenceV2Record.candidate_id.in_(v2_candidate_ids)
+        ).delete(synchronize_session=False)
+        db.query(StructuredContentNodeV2Record).filter(
+            StructuredContentNodeV2Record.candidate_id.in_(v2_candidate_ids)
+        ).update(
+            {StructuredContentNodeV2Record.parent_node_record_id: None},
+            synchronize_session=False,
+        )
+        db.query(StructuredContentCandidateV2Record).filter(
+            StructuredContentCandidateV2Record.id.in_(v2_candidate_ids)
+        ).delete(synchronize_session=False)
+
+    if v1_candidate_ids or v2_candidate_ids:
+        db.flush()
+        logger.info(
+            "Purged structured content before deleting book %s: v1_candidates=%s v2_candidates=%s",
+            document_id,
+            len(v1_candidate_ids),
+            len(v2_candidate_ids),
+        )
+
+    return len(v1_candidate_ids), len(v2_candidate_ids)
 
 
 class BookService:
@@ -54,21 +146,17 @@ class BookService:
             Tuple of (book_id, processed_file_path)
         """
         try:
-            # Ensure output directory exists
             output_dir = Path(settings.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create filepath with sanitized title to ensure filesystem safety
             safe_title = re.sub(r'[^\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\-_. ]', '_', book_title)
-            safe_title = safe_title.strip()[:100]  # limit length
+            safe_title = safe_title.strip()[:100]
             filename = f"{uuid.uuid4().hex[:8]}_{safe_title}.txt"
             processed_file_path = str(output_dir / filename)
 
-            # Save TXT file
             with open(processed_file_path, "w", encoding="utf-8") as f:
                 f.write(txt_content)
 
-            # Create database record
             book = Document(
                 document_type=DocumentType.BOOK,
                 title=book_title,
@@ -95,16 +183,6 @@ class BookService:
 
     @staticmethod
     def get_book(db: Session, book_id: str) -> Document | None:
-        """
-        Get book by ID.
-
-        Args:
-            db: Database session
-            book_id: Book ID
-
-        Returns:
-            Document object or None
-        """
         return (
             db.query(Document)
             .filter(Document.id == book_id, Document.document_type == DocumentType.BOOK.value)
@@ -113,15 +191,6 @@ class BookService:
 
     @staticmethod
     def get_all_books(db: Session) -> list[Document]:
-        """
-        Get all books from bookshelf.
-
-        Args:
-            db: Database session
-
-        Returns:
-            List of Document objects
-        """
         return (
             db.query(Document)
             .filter(Document.document_type == DocumentType.BOOK.value)
@@ -131,16 +200,6 @@ class BookService:
 
     @staticmethod
     def get_book_content(db: Session, book_id: str) -> str | None:
-        """
-        Get book content from processed file.
-
-        Args:
-            db: Database session
-            book_id: Book ID
-
-        Returns:
-            Book content or None
-        """
         try:
             book = BookService.get_book(db, book_id)
             if not book:
@@ -169,22 +228,7 @@ class BookService:
 
     @staticmethod
     def delete_book(db: Session, book_id: str, storage: StorageProvider | None = None) -> bool:
-        """
-        Delete book and associated files.
-
-        ProcessingRun is durable provenance and therefore remains protected by
-        RESTRICT at the schema boundary. IngestionDispatch is durable queue truth
-        and can exist before ProcessingRun has started. A user-initiated delete
-        therefore rejects either active processing representation; terminal rows
-        may be purged/cascaded with the aggregate.
-
-        Args:
-            db: Database session
-            book_id: Book ID
-
-        Returns:
-            True if deleted, False otherwise
-        """
+        """Delete a book after explicitly purging protected durable aggregates."""
         try:
             book = BookService.get_book(db, book_id)
             if not book:
@@ -225,9 +269,6 @@ class BookService:
                     "Book is still being processed and cannot be deleted yet"
                 )
 
-            # Delete associated compatibility files only. Opaque retained-source
-            # storage references are deleted explicitly through Storage below,
-            # never parsed as filesystem paths.
             for filepath in [book.processed_file_path, book.original_file_path]:
                 if filepath:
                     p = Path(filepath)
@@ -268,10 +309,13 @@ class BookService:
                     raise
 
             try:
-                # ProcessingRun intentionally uses ON DELETE RESTRICT so provenance
-                # cannot disappear implicitly. A user-initiated purge removes only
-                # terminal runs explicitly, in the same DB transaction, before the
-                # Document/SourceFile aggregate is deleted.
+                # Structured Content candidates/selections are canonical Reader
+                # state and intentionally use RESTRICT. User deletion explicitly
+                # purges that protected aggregate in this transaction.
+                _purge_structured_content(db, book_id)
+
+                # ProcessingRun also intentionally uses RESTRICT; remove only
+                # terminal provenance after the active-run guard above.
                 for run in processing_runs:
                     db.delete(run)
                 if processing_runs:
@@ -282,9 +326,7 @@ class BookService:
                         book_id,
                     )
 
-                # Delete database record (cascades to source files, ingestion
-                # dispatches, images, pages, content blocks, and other
-                # aggregate-owned compatibility rows).
+                # Remaining aggregate-owned compatibility rows use CASCADE.
                 db.delete(book)
                 db.commit()
             except Exception:
