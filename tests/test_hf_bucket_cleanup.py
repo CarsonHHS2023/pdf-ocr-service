@@ -26,7 +26,7 @@ def _item(path: str, *, age_days: int, now: datetime, item_type: str = "file", s
     )
 
 
-def test_scheduled_target_is_staging_bucket_root_with_30_day_retention() -> None:
+def test_target_is_hard_locked_to_staging_bucket_with_30_day_retention() -> None:
     now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
 
     target = build_target(now=now)
@@ -35,15 +35,7 @@ def test_scheduled_target_is_staging_bucket_root_with_30_day_retention() -> None
     assert DEFAULT_STAGING_RETENTION_DAYS == 30
     assert target.bucket_id == DEFAULT_STAGING_BUCKET
     assert target.cutoff == now - timedelta(days=30)
-    assert "Staging artifacts older than 30 days" == target.reason
-
-
-def test_build_target_rejects_invalid_configuration() -> None:
-    now = datetime.now(timezone.utc)
-    with pytest.raises(ValueError, match="staging bucket must be non-empty"):
-        build_target(now=now, staging_bucket="  ")
-    with pytest.raises(ValueError, match="retention days must be positive"):
-        build_target(now=now, retention_days=0)
+    assert target.reason == "Staging artifacts older than 30 days"
 
 
 def test_select_expired_files_deletes_only_files_older_than_30_days() -> None:
@@ -63,12 +55,49 @@ def test_select_expired_files_deletes_only_files_older_than_30_days() -> None:
     assert [item.path for item in selected] == ["old.bin"]
 
 
-def test_inaccessible_private_staging_bucket_fails_with_actionable_error(monkeypatch) -> None:
+def test_execute_target_rejects_any_non_staging_bucket_before_listing(monkeypatch) -> None:
     target = CleanupTarget(
-        bucket_id=DEFAULT_STAGING_BUCKET,
+        bucket_id="carsonhhs/pdf-ocr-service-storage",
         cutoff=datetime(2026, 7, 24, tzinfo=timezone.utc),
-        reason="Staging artifacts older than 30 days",
+        reason="tampered target",
     )
+    listed = False
+
+    def should_not_list(*_args, **_kwargs):
+        nonlocal listed
+        listed = True
+        return []
+
+    monkeypatch.setattr(cleanup, "_list_target_files", should_not_list)
+
+    with pytest.raises(ValueError, match="exact Staging bucket"):
+        execute_target(target, token="test-token", apply=True)
+
+    assert listed is False
+
+
+def test_delete_paths_rejects_non_staging_bucket(monkeypatch) -> None:
+    called = False
+
+    def fake_batch(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    # The guard executes before importing/calling the Hugging Face mutator.
+    monkeypatch.setattr(cleanup, "chunked", lambda *_args, **_kwargs: [["old.bin"]])
+
+    with pytest.raises(ValueError, match="exact Staging bucket"):
+        cleanup._delete_paths(
+            "carsonhhs/pdf-ocr-service-storage",
+            ["old.bin"],
+            token="test-token",
+        )
+
+    assert called is False
+
+
+def test_inaccessible_private_staging_bucket_fails_with_actionable_error(monkeypatch) -> None:
+    target = build_target(now=datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc))
     inaccessible = RuntimeError("bucket hidden by private access")
 
     def raise_inaccessible(*_args, **_kwargs):
