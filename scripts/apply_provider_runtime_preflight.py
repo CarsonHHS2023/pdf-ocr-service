@@ -94,8 +94,22 @@ def _presigned_lifecycle_installer():
     return patch_provider_input_presigned_read
 
 
+def _durable_processing_event_installer():
+    """Resolve the Staging-only durable processing-event composition step."""
+    if __package__:
+        from scripts.apply_durable_processing_events import patch_durable_processing_events
+    else:
+        from apply_durable_processing_events import patch_durable_processing_events
+    return patch_durable_processing_events
+
+
 def main() -> None:
     patch_provider_runtime_preflight()
+
+    # Durable event hooks are a Staging composition concern. They remain runtime
+    # gated by the deployment-owned staging-revision.txt marker and preserve the
+    # existing stdout diagnostics as the immediate live stream.
+    _durable_processing_event_installer()()
 
     # Staging CI invokes this script only after the heartbeat and sharding
     # overlays.  At that point install the complete provider-delivery lifecycle
