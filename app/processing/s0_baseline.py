@@ -12,10 +12,11 @@ from datetime import datetime
 import math
 from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import LargeBinary, case, cast, func, select
 
 from app.models import Document, ProcessingRun, SourceFile, decode_json_text
 from app.processing.processing_event_model import ProcessingEvent
+from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES
 
 
 S0_BASELINE_SCHEMA_VERSION = "atlas.s0.baseline.v1"
@@ -26,8 +27,9 @@ _METRIC_STATUSES = frozenset(
 )
 
 # Event metadata is operator-visible output. Keep it fail-closed even though the
-# durable event payload itself is already bounded/sanitized: legacy or accidental
-# producers may still use arbitrary event names or payload keys.
+# current producer sanitizes/bounds payloads: retained legacy or abnormal rows may
+# still contain arbitrary event names, payload keys, malformed JSON, or oversized
+# Text values.
 _SAFE_EVENT_NAMES = frozenset(
     {
         "PDF_DOCUMENT_TERMINAL_STATE",
@@ -80,6 +82,7 @@ class S0RunSnapshot:
     terminal_at: str | None
     event_window_truncated: bool
     event_payload_decode_incomplete: bool
+    event_payload_oversized_incomplete: bool
     required_metrics: tuple[MetricReading, ...]
     auxiliary_metrics: tuple[MetricReading, ...]
     observed_event_names: tuple[str, ...]
@@ -87,6 +90,17 @@ class S0RunSnapshot:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundedEventRow:
+    """Only the small event fields S0 may materialize in the operator process."""
+
+    event_name: str
+    severity: str
+    created_at: datetime
+    payload_json: str | None
+    payload_oversized: bool
 
 
 _REQUIRED_METRIC_META: tuple[tuple[str, str, str | None], ...] = (
@@ -173,7 +187,9 @@ def _seconds(start: datetime | None, end: datetime | None) -> float | None:
     if start is None or end is None:
         return None
     value = (end - start).total_seconds()
-    return round(value, 6) if value >= 0 else None
+    # Equal timestamps are retained in some legacy rows that are explicitly not
+    # suitable timing evidence. Never promote zero/negative intervals to observed.
+    return round(value, 6) if value > 0 else None
 
 
 def _terminal_at(run: ProcessingRun) -> datetime | None:
@@ -185,15 +201,17 @@ def _terminal_at(run: ProcessingRun) -> datetime | None:
     return None
 
 
-def _decode_event_payload(row: ProcessingEvent) -> tuple[dict[str, Any], bool]:
-    """Return a decoded mapping plus whether this retained payload was usable."""
+def _decode_event_payload(value: str | None) -> tuple[dict[str, Any], bool]:
+    """Return a decoded mapping plus whether this bounded payload was usable."""
+    if value is None:
+        return {}, False
     try:
-        value = decode_json_text(row.payload_json)
+        decoded = decode_json_text(value)
     except Exception:
         return {}, False
-    if not isinstance(value, dict):
+    if not isinstance(decoded, dict):
         return {}, False
-    return value, True
+    return decoded, True
 
 
 def _finite_number(value: object) -> float | None:
@@ -204,12 +222,12 @@ def _finite_number(value: object) -> float | None:
 
 
 def _max_numeric_field(
-    decoded_events: Iterable[tuple[ProcessingEvent, dict[str, Any]]],
+    decoded_payloads: Iterable[dict[str, Any]],
     field: str,
 ) -> float | None:
     values = [
         number
-        for _, payload in decoded_events
+        for payload in decoded_payloads
         if (number := _finite_number(payload.get(field))) is not None
     ]
     return max(values) if values else None
@@ -244,6 +262,73 @@ def _validate_event_limit(max_events: int) -> None:
         )
 
 
+def _payload_byte_length_expression(session):
+    """Return a DB-side UTF-8 byte-length expression for supported S0 databases."""
+    bind = session.get_bind()
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+    if dialect_name == "postgresql":
+        return func.octet_length(ProcessingEvent.payload_json)
+    if dialect_name == "sqlite":
+        # SQLite length(TEXT) counts characters, not bytes. CAST AS BLOB makes the
+        # bound use encoded bytes, matching the producer's 8192-byte contract.
+        return func.length(cast(ProcessingEvent.payload_json, LargeBinary))
+    raise RuntimeError(
+        f"S0 bounded event payload reads do not support database dialect: {dialect_name!r}"
+    )
+
+
+def _load_bounded_event_rows(
+    session,
+    *,
+    processing_run_id: str,
+    document_id: str,
+    max_events: int,
+) -> tuple[tuple[_BoundedEventRow, ...], bool]:
+    """Load a bounded event window without materializing oversized Text payloads."""
+    payload_bytes = _payload_byte_length_expression(session)
+    payload_within_limit = payload_bytes <= MAX_EVENT_PAYLOAD_BYTES
+    bounded_payload = case(
+        (payload_within_limit, ProcessingEvent.payload_json),
+        else_=None,
+    ).label("bounded_payload_json")
+    payload_oversized = case(
+        (payload_bytes > MAX_EVENT_PAYLOAD_BYTES, True),
+        else_=False,
+    ).label("payload_oversized")
+
+    # Do not select ProcessingEvent ORM entities here: doing so would materialize
+    # the unconstrained Text column before Python could enforce a size check.
+    result_rows = session.execute(
+        select(
+            ProcessingEvent.event_name.label("event_name"),
+            ProcessingEvent.severity.label("severity"),
+            ProcessingEvent.created_at.label("created_at"),
+            bounded_payload,
+            payload_oversized,
+        )
+        .where(
+            ProcessingEvent.processing_run_id == processing_run_id,
+            ProcessingEvent.document_id == document_id,
+        )
+        .order_by(ProcessingEvent.created_at.asc(), ProcessingEvent.id.asc())
+        .limit(max_events + 1)
+    ).all()
+
+    event_window_truncated = len(result_rows) > max_events
+    retained_rows = result_rows[:max_events]
+    rows = tuple(
+        _BoundedEventRow(
+            event_name=row.event_name,
+            severity=row.severity,
+            created_at=row.created_at,
+            payload_json=row.bounded_payload_json,
+            payload_oversized=bool(row.payload_oversized),
+        )
+        for row in retained_rows
+    )
+    return rows, event_window_truncated
+
+
 def collect_s0_run_snapshot(
     session,
     *,
@@ -269,30 +354,26 @@ def collect_s0_run_snapshot(
         raise LookupError(f"Document not found for ProcessingRun: {normalized_run_id}")
     source = _source_file_for_run(session, run)
 
-    rows = session.execute(
-        select(ProcessingEvent)
-        .where(
-            ProcessingEvent.processing_run_id == normalized_run_id,
-            ProcessingEvent.document_id == run.document_id,
-        )
-        .order_by(ProcessingEvent.created_at.asc(), ProcessingEvent.id.asc())
-        .limit(max_events + 1)
-    ).scalars().all()
-    event_window_truncated = len(rows) > max_events
-    rows = rows[:max_events]
+    rows, event_window_truncated = _load_bounded_event_rows(
+        session,
+        processing_run_id=normalized_run_id,
+        document_id=run.document_id,
+        max_events=max_events,
+    )
 
-    decoded_rows = tuple(
-        (row, *_decode_event_payload(row))
-        for row in rows
-    )
-    event_payload_decode_incomplete = any(
-        not decode_valid for _, _, decode_valid in decoded_rows
-    )
-    decoded_events = tuple(
-        (row, payload)
-        for row, payload, decode_valid in decoded_rows
-        if decode_valid
-    )
+    decoded_payloads: list[dict[str, Any]] = []
+    event_payload_decode_incomplete = False
+    event_payload_oversized_incomplete = False
+    for row in rows:
+        if row.payload_oversized:
+            event_payload_oversized_incomplete = True
+            continue
+        payload, decode_valid = _decode_event_payload(row.payload_json)
+        if not decode_valid:
+            event_payload_decode_incomplete = True
+            continue
+        decoded_payloads.append(payload)
+    decoded_payloads_tuple = tuple(decoded_payloads)
 
     event_names = tuple(
         sorted({row.event_name for row in rows if row.event_name in _SAFE_EVENT_NAMES})
@@ -301,7 +382,7 @@ def collect_s0_run_snapshot(
         sorted(
             {
                 key
-                for _, payload in decoded_events
+                for payload in decoded_payloads_tuple
                 for key, value in payload.items()
                 if key in _SAFE_NUMERIC_EVENT_FIELDS
                 and _finite_number(value) is not None
@@ -313,9 +394,9 @@ def collect_s0_run_snapshot(
     page_count = document.pages_count
     error_count = sum(1 for row in rows if row.severity == "error")
     retryable_signal_count = sum(
-        1 for _, payload in decoded_events if payload.get("retryable") is True
+        1 for payload in decoded_payloads_tuple if payload.get("retryable") is True
     )
-    peak_rss = _max_numeric_field(decoded_events, "peak_rss_mb")
+    peak_rss = _max_numeric_field(decoded_payloads_tuple, "peak_rss_mb")
 
     required: list[MetricReading] = [
         _metric(
@@ -436,20 +517,22 @@ def collect_s0_run_snapshot(
     acceptance_to_terminal = _seconds(document.created_at, terminal)
     event_span = _seconds(rows[0].created_at, rows[-1].created_at) if rows else None
     row_aggregate_incomplete = event_window_truncated
-    payload_aggregate_incomplete = (
-        event_window_truncated or event_payload_decode_incomplete
+    payload_evidence_incomplete = (
+        event_window_truncated
+        or event_payload_decode_incomplete
+        or event_payload_oversized_incomplete
     )
     event_signal_status = _event_aggregate_status(
         available=bool(rows),
         incomplete=row_aggregate_incomplete,
     )
     retryable_signal_status = _event_aggregate_status(
-        available=bool(decoded_events),
-        incomplete=payload_aggregate_incomplete,
+        available=bool(decoded_payloads_tuple),
+        incomplete=payload_evidence_incomplete,
     )
     peak_rss_status = _event_aggregate_status(
         available=peak_rss is not None,
-        incomplete=payload_aggregate_incomplete,
+        incomplete=payload_evidence_incomplete,
     )
 
     retryable_signal_note = (
@@ -458,7 +541,12 @@ def collect_s0_run_snapshot(
     if event_payload_decode_incomplete:
         retryable_signal_note += (
             " Payload-derived aggregate is incomplete because at least one retained "
-            "event payload could not be decoded."
+            "bounded event payload could not be decoded."
+        )
+    if event_payload_oversized_incomplete:
+        retryable_signal_note += (
+            " At least one retained payload exceeded the service-owned byte limit and "
+            "was omitted by the database projection before materialization."
         )
     if event_window_truncated:
         retryable_signal_note += " Snapshot event window is also truncated."
@@ -466,8 +554,13 @@ def collect_s0_run_snapshot(
     peak_rss_note = "Generic processing signal only; not promoted to upload peak memory."
     if event_payload_decode_incomplete:
         peak_rss_note += (
-            " Maximum is incomplete because at least one retained event payload "
+            " Maximum is incomplete because at least one retained bounded event payload "
             "could not be decoded."
+        )
+    if event_payload_oversized_incomplete:
+        peak_rss_note += (
+            " Maximum is incomplete because at least one retained payload exceeded the "
+            "service-owned byte limit and was omitted before materialization."
         )
     if peak_rss is not None and event_window_truncated:
         peak_rss_note += " Maximum is partial because the durable event window is truncated."
@@ -531,7 +624,7 @@ def collect_s0_run_snapshot(
             label="Durable retryable=true signal count in snapshot window",
             unit="signals",
             status=retryable_signal_status,
-            value=retryable_signal_count if decoded_events else None,
+            value=retryable_signal_count if decoded_payloads_tuple else None,
             source="processing_events.payload.retryable",
             note=retryable_signal_note,
         ),
@@ -558,6 +651,7 @@ def collect_s0_run_snapshot(
         terminal_at=_iso(terminal),
         event_window_truncated=event_window_truncated,
         event_payload_decode_incomplete=event_payload_decode_incomplete,
+        event_payload_oversized_incomplete=event_payload_oversized_incomplete,
         required_metrics=tuple(required),
         auxiliary_metrics=tuple(auxiliary),
         observed_event_names=event_names,
@@ -585,6 +679,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
                 f"- file type: `{snapshot.file_type}`",
                 f"- event window truncated: `{str(snapshot.event_window_truncated).lower()}`",
                 f"- event payload decode incomplete: `{str(snapshot.event_payload_decode_incomplete).lower()}`",
+                f"- event payload oversized/incomplete: `{str(snapshot.event_payload_oversized_incomplete).lower()}`",
                 "",
                 "### Required S0 metrics",
                 "",
@@ -619,7 +714,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
                 "Allowlisted observed durable event names: "
                 + (", ".join(f"`{name}`" for name in snapshot.observed_event_names) or "none"),
                 "",
-                "Allowlisted observed numeric event fields: "
+                "Allowlisted observed numeric event fields from bounded decodable payloads: "
                 + (", ".join(f"`{name}`" for name in snapshot.observed_numeric_event_fields) or "none"),
                 "",
             ]
