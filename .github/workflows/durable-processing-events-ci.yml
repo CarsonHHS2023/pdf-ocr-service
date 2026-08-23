@@ -68,24 +68,21 @@ jobs:
             app/processing/processing_events.py \
             app/processing/pdf_ingestion.py \
             app/processing/pdf_page_presentation_bridge.py \
-            app/processing/s0_v5_observability.py \
             app/routers/processing_events.py \
             app/main.py \
             scripts/apply_durable_processing_events.py
           grep -q 'record_processing_event(' app/processing/pdf_ingestion.py
           grep -q 'record_processing_event(' app/processing/pdf_page_presentation_bridge.py
-          grep -q 'event_name="PDF_S0_PROFILE"' app/processing/s0_v5_observability.py
+          grep -q 'PDF_PAGE_CLASSIFICATION_SUMMARY' scripts/apply_durable_processing_events.py
           grep -q 'app.include_router(processing_events.router)' app/main.py
           sha256sum \
             app/processing/pdf_ingestion.py \
             app/processing/pdf_page_presentation_bridge.py \
-            app/processing/s0_v5_observability.py \
             app/main.py > /tmp/processing-events-before.sha256
           python scripts/apply_durable_processing_events.py
           sha256sum \
             app/processing/pdf_ingestion.py \
             app/processing/pdf_page_presentation_bridge.py \
-            app/processing/s0_v5_observability.py \
             app/main.py > /tmp/processing-events-after.sha256
           diff -u /tmp/processing-events-before.sha256 /tmp/processing-events-after.sha256
           git diff --check
