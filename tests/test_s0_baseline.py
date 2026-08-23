@@ -119,6 +119,7 @@ def test_collect_s0_snapshot_uses_only_durable_authoritative_fields() -> None:
     assert _metric(snapshot, "durable_event_count").value == 3
     assert _metric(snapshot, "durable_event_span_seconds").value == 25.0
     assert _metric(snapshot, "max_observed_peak_rss_mb").value == 526.25
+    assert _metric(snapshot, "max_observed_peak_rss_mb").status == "observed"
 
     failure_retry = _metric(snapshot, "failure_retry_counts")
     assert failure_retry.status == "observed"
@@ -156,7 +157,7 @@ def test_run_without_retained_events_does_not_claim_zero_failures_or_retries() -
     assert _metric(snapshot, "max_observed_peak_rss_mb").status == "not_available"
 
 
-def test_event_window_is_bounded_and_reports_truncation() -> None:
+def test_event_window_is_bounded_and_marks_event_aggregates_partial() -> None:
     db = _session()
     run_id = _seed_run(db)
 
@@ -164,6 +165,24 @@ def test_event_window_is_bounded_and_reports_truncation() -> None:
 
     assert snapshot.event_window_truncated is True
     assert _metric(snapshot, "durable_event_count").value == 2
+
+    failure_retry = _metric(snapshot, "failure_retry_counts")
+    assert failure_retry.status == "partial"
+    assert failure_retry.value == {
+        "error_events": 0,
+        "retry_events": 1,
+        "retryable_signals": 1,
+    }
+    assert "truncated" in (failure_retry.note or "")
+
+    peak_rss = _metric(snapshot, "max_observed_peak_rss_mb")
+    assert peak_rss.status == "partial"
+    assert peak_rss.value == 526.25
+    assert "truncated" in (peak_rss.note or "")
+
+    event_span = _metric(snapshot, "durable_event_span_seconds")
+    assert event_span.value == 15.0
+    assert "snapshot window" in event_span.label
 
 
 def test_markdown_does_not_emit_document_title_or_filename() -> None:
@@ -177,6 +196,9 @@ def test_markdown_does_not_emit_document_title_or_filename() -> None:
     assert "private.pdf" not in markdown
     assert "Source byte size" in markdown
     assert "not_instrumented" in markdown
+    assert "`partial`" in render_s0_markdown(
+        [collect_s0_run_snapshot(db, processing_run_id=run_id, max_events=2)]
+    )
 
 
 def test_unknown_processing_run_fails_closed() -> None:
