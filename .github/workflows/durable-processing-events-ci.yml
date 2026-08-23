@@ -1,0 +1,91 @@
+name: Durable Processing Events CI
+
+on:
+  pull_request:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  durable-events:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/atlas_processing_events_ci
+      ATLAS_POSTGRESQL_SCHEMA_TEST: '1'
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: atlas_processing_events_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d atlas_processing_events_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-test.txt
+
+      - name: Install CI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt -r requirements-test.txt
+
+      - name: Upgrade schema and run durable event regressions
+        run: |
+          alembic upgrade head
+          alembic current
+          python -m pytest -q \
+            tests/test_processing_events.py \
+            tests/test_postgresql_readiness.py
+
+      - name: Verify composition and idempotence
+        run: |
+          set -euo pipefail
+          python scripts/apply_durable_processing_events.py
+          python -m py_compile \
+            app/processing/processing_event_model.py \
+            app/processing/processing_events.py \
+            app/processing/pdf_ingestion.py \
+            app/processing/pdf_page_presentation_bridge.py \
+            app/processing/s0_v5_observability.py \
+            app/routers/processing_events.py \
+            app/main.py \
+            scripts/apply_durable_processing_events.py
+          grep -q 'record_processing_event(' app/processing/pdf_ingestion.py
+          grep -q 'record_processing_event(' app/processing/pdf_page_presentation_bridge.py
+          grep -q 'event_name="PDF_S0_PROFILE"' app/processing/s0_v5_observability.py
+          grep -q 'app.include_router(processing_events.router)' app/main.py
+          sha256sum \
+            app/processing/pdf_ingestion.py \
+            app/processing/pdf_page_presentation_bridge.py \
+            app/processing/s0_v5_observability.py \
+            app/main.py > /tmp/processing-events-before.sha256
+          python scripts/apply_durable_processing_events.py
+          sha256sum \
+            app/processing/pdf_ingestion.py \
+            app/processing/pdf_page_presentation_bridge.py \
+            app/processing/s0_v5_observability.py \
+            app/main.py > /tmp/processing-events-after.sha256
+          diff -u /tmp/processing-events-before.sha256 /tmp/processing-events-after.sha256
+          git diff --check
