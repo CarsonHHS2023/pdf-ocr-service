@@ -2,8 +2,8 @@
 
 This module deliberately does not add runtime instrumentation or mutate processing
 state. It turns already-persisted Document/SourceFile/ProcessingRun/ProcessingEvent
-records into a stable, explicit baseline snapshot and marks missing S0 measurements
-as missing instead of inferring them from unrelated signals.
+records into a stable, explicit baseline snapshot and marks missing or partial S0
+measurements honestly instead of inferring them from unrelated signals.
 """
 from __future__ import annotations
 
@@ -20,6 +20,9 @@ from app.processing.processing_event_model import ProcessingEvent
 
 S0_BASELINE_SCHEMA_VERSION = "atlas.s0.baseline.v1"
 DEFAULT_MAX_EVENTS = 5000
+_METRIC_STATUSES = frozenset(
+    {"observed", "partial", "not_available", "not_instrumented"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,22 +62,75 @@ _REQUIRED_METRIC_META: tuple[tuple[str, str, str | None], ...] = (
     ("page_count", "Source page count", "pages"),
     ("backend_upload_peak_memory_mb", "Backend upload peak memory", "MiB"),
     ("upload_duration_seconds", "Upload duration", "seconds"),
-    ("backend_object_store_bytes", "Backend source/object-store bytes read/written", "bytes"),
+    (
+        "backend_object_store_bytes",
+        "Backend source/object-store bytes read/written",
+        "bytes",
+    ),
     ("preprocessing_wall_seconds", "Preprocessing wall time", "seconds"),
     ("preprocessing_cpu_seconds", "Preprocessing CPU time", "seconds"),
-    ("backend_to_modal_transport_bytes", "Backend to Modal source transport", "bytes"),
+    (
+        "backend_to_modal_transport_bytes",
+        "Backend to Modal source transport",
+        "bytes",
+    ),
     ("modal_download_seconds", "Modal source download time", "seconds"),
     ("ocr_batch_duration_seconds", "OCR page/batch duration", "seconds"),
     ("gpu_busy_idle_proxy", "GPU busy/idle or bounded proxy", None),
     ("raw_result_shard_bytes", "Raw result/shard size", "bytes"),
-    ("canonicalization_duration_seconds", "Canonicalization duration", "seconds"),
-    ("visual_asset_generation_seconds", "Visual asset generation duration", "seconds"),
+    (
+        "canonicalization_duration_seconds",
+        "Canonicalization duration",
+        "seconds",
+    ),
+    (
+        "visual_asset_generation_seconds",
+        "Visual asset generation duration",
+        "seconds",
+    ),
     ("object_store_stage_io", "Object-store reads/writes by stage", None),
     ("reader_open_latency_seconds", "Reader-open latency", "seconds"),
     ("reader_bounded_query_count", "Reader bounded query count", "queries"),
-    ("upload_to_reader_ready_seconds", "Upload-to-Reader-ready latency", "seconds"),
+    (
+        "upload_to_reader_ready_seconds",
+        "Upload-to-Reader-ready latency",
+        "seconds",
+    ),
     ("failure_retry_counts", "Failure/retry counts", "count"),
 )
+_REQUIRED_META_BY_KEY = {key: (label, unit) for key, label, unit in _REQUIRED_METRIC_META}
+
+
+def _metric(
+    key: str,
+    *,
+    value: object | None,
+    status: str,
+    source: str,
+    note: str | None = None,
+) -> MetricReading:
+    if status not in _METRIC_STATUSES:
+        raise ValueError(f"unsupported S0 metric status: {status}")
+    label, unit = _REQUIRED_META_BY_KEY[key]
+    return MetricReading(
+        key=key,
+        label=label,
+        unit=unit,
+        status=status,
+        value=value,
+        source=source,
+        note=note,
+    )
+
+
+def _missing_metric(key: str, *, source: str, note: str) -> MetricReading:
+    return _metric(
+        key,
+        value=None,
+        status="not_instrumented",
+        source=source,
+        note=note,
+    )
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -89,11 +145,7 @@ def _seconds(start: datetime | None, end: datetime | None) -> float | None:
 
 
 def _terminal_at(run: ProcessingRun) -> datetime | None:
-    if run.completed_at is not None:
-        return run.completed_at
-    if run.failed_at is not None:
-        return run.failed_at
-    return None
+    return run.completed_at if run.completed_at is not None else run.failed_at
 
 
 def _decode_event_payload(row: ProcessingEvent) -> dict[str, Any]:
@@ -123,37 +175,6 @@ def _max_numeric_field(
     return max(values) if values else None
 
 
-def _metric(
-    key: str,
-    *,
-    value: object | None,
-    status: str,
-    source: str,
-    note: str | None = None,
-) -> MetricReading:
-    metadata = {item[0]: item[1:] for item in _REQUIRED_METRIC_META}
-    label, unit = metadata[key]
-    return MetricReading(
-        key=key,
-        label=label,
-        unit=unit,
-        status=status,
-        value=value,
-        source=source,
-        note=note,
-    )
-
-
-def _missing_metric(key: str, *, source: str, note: str) -> MetricReading:
-    return _metric(
-        key,
-        value=None,
-        status="not_instrumented",
-        source=source,
-        note=note,
-    )
-
-
 def _find_source_file(session, run: ProcessingRun) -> SourceFile | None:
     if run.source_file_id:
         source = session.get(SourceFile, run.source_file_id)
@@ -165,6 +186,12 @@ def _find_source_file(session, run: ProcessingRun) -> SourceFile | None:
         .order_by(SourceFile.is_primary.desc(), SourceFile.created_at.asc())
         .limit(1)
     ).scalar_one_or_none()
+
+
+def _event_aggregate_status(*, available: bool, truncated: bool) -> str:
+    if not available:
+        return "not_available"
+    return "partial" if truncated else "observed"
 
 
 def collect_s0_run_snapshot(
@@ -181,7 +208,9 @@ def collect_s0_run_snapshot(
         raise ValueError("max_events must be positive")
 
     run = session.execute(
-        select(ProcessingRun).where(ProcessingRun.processing_run_id == normalized_run_id)
+        select(ProcessingRun).where(
+            ProcessingRun.processing_run_id == normalized_run_id
+        )
     ).scalar_one_or_none()
     if run is None:
         raise LookupError(f"ProcessingRun not found: {normalized_run_id}")
@@ -217,44 +246,39 @@ def collect_s0_run_snapshot(
     page_count = document.pages_count
     error_count = sum(1 for row in rows if row.severity == "error")
     retry_event_count = sum(
-        1
-        for row in rows
-        if "RETRY" in row.event_name or "RETRIED" in row.event_name
+        1 for row in rows if "RETRY" in row.event_name or "RETRIED" in row.event_name
     )
     retryable_signal_count = sum(
         1 for _, payload in decoded_events if payload.get("retryable") is True
     )
     peak_rss = _max_numeric_field(decoded_events, "peak_rss_mb")
 
-    required: list[MetricReading] = []
-    required.append(
+    required: list[MetricReading] = [
         _metric(
             "source_byte_size",
             value=int(source_size) if isinstance(source_size, int) else None,
             status="observed" if isinstance(source_size, int) else "not_available",
             source="SourceFile.byte_size",
-            note=None if isinstance(source_size, int) else "No retained source byte size is available.",
+            note=(
+                None
+                if isinstance(source_size, int)
+                else "No retained source byte size is available."
+            ),
+        )
+    ]
+    required.append(
+        _metric(
+            "page_count",
+            value=page_count if isinstance(page_count, int) else None,
+            status="observed" if isinstance(page_count, int) else "not_available",
+            source="Document.pages_count",
+            note=(
+                None
+                if isinstance(page_count, int)
+                else "No page count is persisted for this document type/run."
+            ),
         )
     )
-    if isinstance(page_count, int):
-        required.append(
-            _metric(
-                "page_count",
-                value=page_count,
-                status="observed",
-                source="Document.pages_count",
-            )
-        )
-    else:
-        required.append(
-            _metric(
-                "page_count",
-                value=None,
-                status="not_available",
-                source="Document.pages_count",
-                note="No page count is persisted for this document type/run.",
-            )
-        )
 
     for key, source_name, note in (
         (
@@ -262,25 +286,90 @@ def collect_s0_run_snapshot(
             "upload instrumentation",
             "Generic processing RSS must not be substituted for upload-specific peak memory.",
         ),
-        ("upload_duration_seconds", "upload instrumentation", "Upload start/end timing is not durably persisted."),
-        ("backend_object_store_bytes", "object-store instrumentation", "Per-stage backend object-store byte counters are not durably persisted."),
-        ("preprocessing_wall_seconds", "preprocessing instrumentation", "A dedicated durable preprocessing wall-time metric is not yet persisted."),
-        ("preprocessing_cpu_seconds", "preprocessing instrumentation", "A dedicated durable preprocessing CPU-time metric is not yet persisted."),
-        ("backend_to_modal_transport_bytes", "transport instrumentation", "Backend-to-Modal bytes are not durably separated from other provider/source routes."),
-        ("modal_download_seconds", "Modal instrumentation", "Modal download timing is not available in backend durable state."),
-        ("ocr_batch_duration_seconds", "OCR instrumentation", "OCR page/batch duration is not yet normalized into a durable S0 metric."),
-        ("gpu_busy_idle_proxy", "GPU instrumentation", "No durable GPU busy/idle proxy is currently available."),
-        ("raw_result_shard_bytes", "artifact instrumentation", "Raw-result/shard sizes are not normalized into a durable S0 metric."),
-        ("canonicalization_duration_seconds", "canonicalization instrumentation", "Canonicalization duration is not durably normalized."),
-        ("visual_asset_generation_seconds", "visual instrumentation", "Visual asset generation duration is not durably normalized."),
-        ("object_store_stage_io", "object-store instrumentation", "Stage-specific object-store read/write counters are not durably normalized."),
-        ("reader_open_latency_seconds", "Reader instrumentation", "Reader-open latency is outside ProcessingRun durable state today."),
-        ("reader_bounded_query_count", "Reader instrumentation", "Reader query count is outside ProcessingRun durable state today."),
-        ("upload_to_reader_ready_seconds", "cross-stage instrumentation", "Document acceptance/processing timestamps are not equivalent to upload-start -> Reader-ready latency."),
+        (
+            "upload_duration_seconds",
+            "upload instrumentation",
+            "Upload start/end timing is not durably persisted.",
+        ),
+        (
+            "backend_object_store_bytes",
+            "object-store instrumentation",
+            "Per-stage backend object-store byte counters are not durably persisted.",
+        ),
+        (
+            "preprocessing_wall_seconds",
+            "preprocessing instrumentation",
+            "A dedicated durable preprocessing wall-time metric is not yet persisted.",
+        ),
+        (
+            "preprocessing_cpu_seconds",
+            "preprocessing instrumentation",
+            "A dedicated durable preprocessing CPU-time metric is not yet persisted.",
+        ),
+        (
+            "backend_to_modal_transport_bytes",
+            "transport instrumentation",
+            "Backend-to-Modal bytes are not durably separated from other provider/source routes.",
+        ),
+        (
+            "modal_download_seconds",
+            "Modal instrumentation",
+            "Modal download timing is not available in backend durable state.",
+        ),
+        (
+            "ocr_batch_duration_seconds",
+            "OCR instrumentation",
+            "OCR page/batch duration is not yet normalized into a durable S0 metric.",
+        ),
+        (
+            "gpu_busy_idle_proxy",
+            "GPU instrumentation",
+            "No durable GPU busy/idle proxy is currently available.",
+        ),
+        (
+            "raw_result_shard_bytes",
+            "artifact instrumentation",
+            "Raw-result/shard sizes are not normalized into a durable S0 metric.",
+        ),
+        (
+            "canonicalization_duration_seconds",
+            "canonicalization instrumentation",
+            "Canonicalization duration is not durably normalized.",
+        ),
+        (
+            "visual_asset_generation_seconds",
+            "visual instrumentation",
+            "Visual asset generation duration is not durably normalized.",
+        ),
+        (
+            "object_store_stage_io",
+            "object-store instrumentation",
+            "Stage-specific object-store read/write counters are not durably normalized.",
+        ),
+        (
+            "reader_open_latency_seconds",
+            "Reader instrumentation",
+            "Reader-open latency is outside ProcessingRun durable state today.",
+        ),
+        (
+            "reader_bounded_query_count",
+            "Reader instrumentation",
+            "Reader query count is outside ProcessingRun durable state today.",
+        ),
+        (
+            "upload_to_reader_ready_seconds",
+            "cross-stage instrumentation",
+            "Document acceptance/processing timestamps are not equivalent to upload-start -> Reader-ready latency.",
+        ),
     ):
         required.append(_missing_metric(key, source=source_name, note=note))
 
     if rows:
+        counts_note = (
+            "Counts only the bounded durable event window; the window is truncated, so these are partial counts."
+            if event_window_truncated
+            else "Counts durable diagnostic signals only; they are not a substitute for a future explicit retry counter."
+        )
         required.append(
             _metric(
                 "failure_retry_counts",
@@ -289,11 +378,12 @@ def collect_s0_run_snapshot(
                     "retry_events": retry_event_count,
                     "retryable_signals": retryable_signal_count,
                 },
-                status="observed",
-                source="processing_events",
-                note=(
-                    "Counts durable diagnostic signals only; they are not a substitute for a future explicit retry counter."
+                status=_event_aggregate_status(
+                    available=True,
+                    truncated=event_window_truncated,
                 ),
+                source="processing_events",
+                note=counts_note,
             )
         )
     else:
@@ -311,6 +401,13 @@ def collect_s0_run_snapshot(
     processing_wall = _seconds(run.started_at, terminal)
     acceptance_to_terminal = _seconds(document.created_at, terminal)
     event_span = _seconds(rows[0].created_at, rows[-1].created_at) if rows else None
+    peak_rss_status = _event_aggregate_status(
+        available=peak_rss is not None,
+        truncated=event_window_truncated,
+    )
+    peak_rss_note = "Generic processing signal only; not promoted to upload peak memory."
+    if peak_rss is not None and event_window_truncated:
+        peak_rss_note += " Maximum is partial because the durable event window is truncated."
 
     auxiliary: list[MetricReading] = [
         MetricReading(
@@ -338,23 +435,33 @@ def collect_s0_run_snapshot(
             status="observed",
             value=len(rows),
             source="processing_events",
+            note=(
+                "Window count only; total run event count is larger."
+                if event_window_truncated
+                else None
+            ),
         ),
         MetricReading(
             key="durable_event_span_seconds",
-            label="First-to-last durable event span",
+            label="Durable event span in snapshot window",
             unit="seconds",
             status="observed" if event_span is not None else "not_available",
             value=event_span,
             source="processing_events.created_at",
+            note=(
+                "Window span only; it is not the complete durable event span."
+                if event_window_truncated and event_span is not None
+                else None
+            ),
         ),
         MetricReading(
             key="max_observed_peak_rss_mb",
             label="Maximum observed generic peak RSS signal",
             unit="MiB",
-            status="observed" if peak_rss is not None else "not_available",
+            status=peak_rss_status,
             value=peak_rss,
             source="processing_events.payload.peak_rss_mb",
-            note="Generic processing signal only; not promoted to upload peak memory.",
+            note=peak_rss_note,
         ),
     ]
 
@@ -365,9 +472,7 @@ def collect_s0_run_snapshot(
         run_status=run.status,
         file_type=document.file_type,
         source_file_id=source.id if source is not None else None,
-        source_checksum_sha256=(
-            source.checksum_sha256 if source is not None else None
-        ),
+        source_checksum_sha256=(source.checksum_sha256 if source is not None else None),
         started_at=_iso(run.started_at),
         terminal_at=_iso(terminal),
         event_window_truncated=event_window_truncated,
@@ -386,7 +491,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
         "",
         f"Schema: `{S0_BASELINE_SCHEMA_VERSION}`",
         "",
-        "This report is read-only. `not_instrumented` means Atlas does not yet persist a durable metric that can support the S0 claim; it must not be inferred from an unrelated signal.",
+        "This report is read-only. `not_instrumented` means Atlas does not yet persist a durable metric that can support the S0 claim; `partial` means a bounded source window is incomplete. Neither may be promoted to a complete measurement.",
         "",
     ]
     for snapshot in items:
