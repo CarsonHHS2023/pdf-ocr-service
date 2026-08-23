@@ -335,10 +335,6 @@ def _patch_presentation_bridge() -> None:
 
 def _patch_provider_sharding_timeline() -> None:
     source = SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
-    if "print(message, file=sys.stderr, flush=True)" not in source:
-        raise RuntimeError(
-            "Durable provider timeline must be composed after Provider shard resilience"
-        )
     if _EVENT_IMPORT not in source:
         anchor = "from app.processing.models import ProviderLifecycleStatus\n"
         if source.count(anchor) != 1:
@@ -346,18 +342,7 @@ def _patch_provider_sharding_timeline() -> None:
         source = source.replace(anchor, anchor + _EVENT_IMPORT, 1)
         SHARDING_COMPAT_PATH.write_text(source, encoding="utf-8")
 
-    old = '''def _diagnostic(event: str, **fields: object) -> None:
-    payload = " ".join(f"{name}={value}" for name, value in fields.items())
-    message = f"{event} {payload}".rstrip()
-    _logger.info(message)
-    print(message, file=sys.stderr, flush=True)
-'''
-    new = '''def _diagnostic(event: str, **fields: object) -> None:
-    payload = " ".join(f"{name}={value}" for name, value in fields.items())
-    message = f"{event} {payload}".rstrip()
-    _logger.info(message)
-    print(message, file=sys.stderr, flush=True)
-    durable_event = (
+    durable_body = '''    durable_event = (
         event in {
             "PDF_PROVIDER_DELIVERY_READY",
             "PDF_PROVIDER_SHARDING_DECISION",
@@ -386,15 +371,39 @@ def _patch_provider_sharding_timeline() -> None:
             payload=fields,
         )
 '''
-    _replace_once(SHARDING_COMPAT_PATH, old, new, label="provider sharding durable timeline")
+    final_old = '''def _diagnostic(event: str, **fields: object) -> None:
+    payload = " ".join(f"{name}={value}" for name, value in fields.items())
+    message = f"{event} {payload}".rstrip()
+    _logger.info(message)
+    print(message, file=sys.stderr, flush=True)
+'''
+    final_new = final_old + durable_body
+    raw_old = '''def _diagnostic(event: str, **fields: object) -> None:
+    payload = " ".join(f"{name}={value}" for name, value in fields.items())
+    _logger.info("%s %s", event, payload)
+'''
+    raw_new = raw_old + durable_body
+
+    source = SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
+    if final_new in source or raw_new in source:
+        return
+    if final_old in source:
+        SHARDING_COMPAT_PATH.write_text(
+            source.replace(final_old, final_new, 1),
+            encoding="utf-8",
+        )
+        return
+    if raw_old in source:
+        SHARDING_COMPAT_PATH.write_text(
+            source.replace(raw_old, raw_new, 1),
+            encoding="utf-8",
+        )
+        return
+    raise RuntimeError("Could not find provider sharding diagnostic shape")
 
 
 def _patch_provider_source_access_timeline() -> None:
     source = SOURCE_ACCESS_PATH.read_text(encoding="utf-8")
-    if "print(message, file=sys.stderr, flush=True)" not in source:
-        raise RuntimeError(
-            "Durable provider source-access timeline must be composed after shard resilience"
-        )
     if _EVENT_IMPORT not in source:
         anchor = "from app.processing.integration import TemporarySourceTransportUrl\n"
         if source.count(anchor) != 1:
@@ -420,11 +429,12 @@ def _patch_provider_source_access_timeline() -> None:
 '''
     _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access correlation")
 
-    old = '''            logger.warning(message)
+    source = SOURCE_ACCESS_PATH.read_text(encoding="utf-8")
+    final_fallback_old = '''            logger.warning(message)
             print(message, file=sys.stderr, flush=True)
             return None
 '''
-    new = '''            logger.warning(message)
+    final_fallback_new = '''            logger.warning(message)
             print(message, file=sys.stderr, flush=True)
             record_processing_event(
                 processing_run_id=processing_run_id,
@@ -440,13 +450,51 @@ def _patch_provider_source_access_timeline() -> None:
             )
             return None
 '''
-    _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access fallback event")
+    raw_fallback_old = '''            logger.warning(
+                "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
+                "byte_size=%s expires_seconds=%s reason=%s",
+                safe_size,
+                expires_seconds,
+                type(exc).__name__,
+            )
+            return None
+'''
+    raw_fallback_new = '''            logger.warning(
+                "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
+                "byte_size=%s expires_seconds=%s reason=%s",
+                safe_size,
+                expires_seconds,
+                type(exc).__name__,
+            )
+            record_processing_event(
+                processing_run_id=processing_run_id,
+                document_id=document_id,
+                event_name="PDF_PROVIDER_SOURCE_ACCESS",
+                severity="warning",
+                payload={
+                    "route": "atlas_source_transport_fallback",
+                    "byte_size": safe_size,
+                    "expires_seconds": expires_seconds,
+                    "reason": type(exc).__name__,
+                },
+            )
+            return None
+'''
+    if final_fallback_new not in source and raw_fallback_new not in source:
+        if final_fallback_old in source:
+            source = source.replace(final_fallback_old, final_fallback_new, 1)
+        elif raw_fallback_old in source:
+            source = source.replace(raw_fallback_old, raw_fallback_new, 1)
+        else:
+            raise RuntimeError("Could not find provider source-access fallback shape")
+        SOURCE_ACCESS_PATH.write_text(source, encoding="utf-8")
 
-    old = '''        logger.info(message)
+    source = SOURCE_ACCESS_PATH.read_text(encoding="utf-8")
+    final_success_old = '''        logger.info(message)
         print(message, file=sys.stderr, flush=True)
         return TemporarySourceTransportUrl(url)
 '''
-    new = '''        logger.info(message)
+    final_success_new = '''        logger.info(message)
         print(message, file=sys.stderr, flush=True)
         record_processing_event(
             processing_run_id=processing_run_id,
@@ -462,7 +510,44 @@ def _patch_provider_source_access_timeline() -> None:
         )
         return TemporarySourceTransportUrl(url)
 '''
-    _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access presigned event")
+    raw_success_old = '''        logger.info(
+            "PDF_PROVIDER_SOURCE_ACCESS route=presigned_object_get "
+            "host=%s byte_size=%s expires_seconds=%s",
+            parsed.hostname or "unknown",
+            safe_size,
+            expires_seconds,
+        )
+        return TemporarySourceTransportUrl(url)
+'''
+    raw_success_new = '''        logger.info(
+            "PDF_PROVIDER_SOURCE_ACCESS route=presigned_object_get "
+            "host=%s byte_size=%s expires_seconds=%s",
+            parsed.hostname or "unknown",
+            safe_size,
+            expires_seconds,
+        )
+        record_processing_event(
+            processing_run_id=processing_run_id,
+            document_id=document_id,
+            event_name="PDF_PROVIDER_SOURCE_ACCESS",
+            severity="info",
+            payload={
+                "route": "presigned_object_get",
+                "host": parsed.hostname or "unknown",
+                "byte_size": safe_size,
+                "expires_seconds": expires_seconds,
+            },
+        )
+        return TemporarySourceTransportUrl(url)
+'''
+    if final_success_new not in source and raw_success_new not in source:
+        if final_success_old in source:
+            source = source.replace(final_success_old, final_success_new, 1)
+        elif raw_success_old in source:
+            source = source.replace(raw_success_old, raw_success_new, 1)
+        else:
+            raise RuntimeError("Could not find provider source-access success shape")
+        SOURCE_ACCESS_PATH.write_text(source, encoding="utf-8")
 
 
 def _patch_main_router() -> None:
