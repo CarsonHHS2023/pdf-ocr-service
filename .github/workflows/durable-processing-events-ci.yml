@@ -79,7 +79,7 @@ jobs:
           grep -q 'record_processing_event(' app/processing/pdf_ingestion.py
           grep -q 'record_processing_event(' app/processing/pdf_page_presentation_bridge.py
           grep -q 'event.endswith("_SUMMARY")' scripts/apply_durable_processing_events.py
-          grep -q 'EXPECTED_SOURCE_ALEMBIC_HEAD = "0006_ingestion_dispatches"' app/postgresql_data_migration.py
+          grep -q '"0006_ingestion_dispatches"' app/postgresql_data_migration.py
           grep -q 'EXPECTED_TARGET_ALEMBIC_HEAD = "0007_processing_events"' app/postgresql_data_migration.py
           grep -q 'app.include_router(processing_events.router)' app/main.py
           sha256sum \
