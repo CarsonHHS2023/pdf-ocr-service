@@ -73,7 +73,7 @@ jobs:
             scripts/apply_durable_processing_events.py
           grep -q 'record_processing_event(' app/processing/pdf_ingestion.py
           grep -q 'record_processing_event(' app/processing/pdf_page_presentation_bridge.py
-          grep -q 'PDF_PAGE_CLASSIFICATION_SUMMARY' scripts/apply_durable_processing_events.py
+          grep -q 'event.endswith("_SUMMARY")' scripts/apply_durable_processing_events.py
           grep -q 'app.include_router(processing_events.router)' app/main.py
           sha256sum \
             app/processing/pdf_ingestion.py \
