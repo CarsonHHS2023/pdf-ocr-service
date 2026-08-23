@@ -217,8 +217,24 @@ def _decode_event_payload(value: str | None) -> tuple[dict[str, Any], bool]:
 def _finite_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
     return number if math.isfinite(number) else None
+
+
+def _numeric_field_has_unusable_value(
+    decoded_payloads: Iterable[dict[str, Any]],
+    field: str,
+) -> bool:
+    """Return whether a retained decoded payload carries unusable numeric evidence."""
+    for payload in decoded_payloads:
+        if field not in payload or payload[field] is None:
+            continue
+        if _finite_number(payload[field]) is None:
+            return True
+    return False
 
 
 def _max_numeric_field(
@@ -397,6 +413,10 @@ def collect_s0_run_snapshot(
         1 for payload in decoded_payloads_tuple if payload.get("retryable") is True
     )
     peak_rss = _max_numeric_field(decoded_payloads_tuple, "peak_rss_mb")
+    peak_rss_numeric_incomplete = _numeric_field_has_unusable_value(
+        decoded_payloads_tuple,
+        "peak_rss_mb",
+    )
 
     required: list[MetricReading] = [
         _metric(
@@ -532,7 +552,7 @@ def collect_s0_run_snapshot(
     )
     peak_rss_status = _event_aggregate_status(
         available=peak_rss is not None,
-        incomplete=payload_evidence_incomplete,
+        incomplete=payload_evidence_incomplete or peak_rss_numeric_incomplete,
     )
 
     retryable_signal_note = (
@@ -561,6 +581,11 @@ def collect_s0_run_snapshot(
         peak_rss_note += (
             " Maximum is incomplete because at least one retained payload exceeded the "
             "service-owned byte limit and was omitted before materialization."
+        )
+    if peak_rss_numeric_incomplete:
+        peak_rss_note += (
+            " Maximum is incomplete because at least one retained bounded payload "
+            "carried an unusable peak_rss_mb numeric value."
         )
     if peak_rss is not None and event_window_truncated:
         peak_rss_note += " Maximum is partial because the durable event window is truncated."
