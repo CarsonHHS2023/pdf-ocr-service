@@ -237,14 +237,18 @@ def main() -> int:
         test_retention_days=args.test_retention_days,
         production_diagnostics_retention_days=args.production_diagnostics_retention_days,
     )
+
+    # Resolve every credential required by this mode before any remote list or
+    # delete operation. A configuration error must not leave a scheduled run
+    # partially applied (for example Staging cleaned but Production skipped).
+    targets_with_tokens = tuple(
+        (target, _token_for_target(target)) for target in targets
+    )
+
     file_count = 0
     byte_count = 0
-    for target in targets:
-        files, size = execute_target(
-            target,
-            token=_token_for_target(target),
-            apply=args.apply,
-        )
+    for target, token in targets_with_tokens:
+        files, size = execute_target(target, token=token, apply=args.apply)
         file_count += files
         byte_count += size
 
