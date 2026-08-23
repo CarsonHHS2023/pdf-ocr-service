@@ -1,11 +1,14 @@
 """Compose Staging durable processing-event hooks into the tested runtime."""
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+import re
 
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 PRESENTATION_BRIDGE_PATH = Path("app/processing/pdf_page_presentation_bridge.py")
+PROVIDER_SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
 SHARDING_COMPAT_PATH = Path("app/processing/pdf_provider_sharding_compat.py")
 SOURCE_ACCESS_PATH = Path("app/processing/provider_input_source_access.py")
 MAIN_PATH = Path("app/main.py")
@@ -21,6 +24,105 @@ def _replace_once(path: Path, old: str, new: str, *, label: str) -> None:
     if source.count(old) != 1:
         raise RuntimeError(f"Could not find unique {label} anchor in {path}")
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+
+def _patch_document_terminal_state_correlation() -> None:
+    source = PDF_INGESTION_PATH.read_text(encoding="utf-8")
+    old_signature = (
+        "def _set_document_terminal_state(document_id: str, *, status: str, "
+        "error_message: str | None) -> None:\n"
+    )
+    new_signature = '''def _set_document_terminal_state(
+    document_id: str,
+    *,
+    processing_attempt_id: str | None = None,
+    status: str,
+    error_message: str | None,
+) -> None:
+'''
+    if new_signature not in source:
+        if source.count(old_signature) != 1:
+            raise RuntimeError("Could not find document terminal state signature")
+        source = source.replace(old_signature, new_signature, 1)
+
+    old_event = '''        _diagnostic(
+            "PDF_DOCUMENT_STATE_UPDATED",
+            document_id=document_id,
+            status=status,
+            has_error=bool(error_message),
+        )
+'''
+    new_event = '''        _diagnostic(
+            "PDF_DOCUMENT_STATE_UPDATED",
+            document_id=document_id,
+            processing_attempt_id=processing_attempt_id,
+            status=status,
+            has_error=bool(error_message),
+        )
+'''
+    if new_event not in source:
+        if source.count(old_event) != 1:
+            raise RuntimeError("Could not find document terminal state diagnostic")
+        source = source.replace(old_event, new_event, 1)
+
+    function_start = source.index("async def process_pdf_document_background(")
+    prefix = source[:function_start]
+    body = source[function_start:]
+
+    multiline = re.compile(
+        r"(_set_document_terminal_state\(\n(?P<indent>[ \t]+)document_id,\n)"
+        r"(?![ \t]+processing_attempt_id=ids\.processing_attempt_id,)"
+    )
+
+    def add_multiline_correlation(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            match.group(1)
+            + indent
+            + "processing_attempt_id=ids.processing_attempt_id,\n"
+        )
+
+    body = multiline.sub(add_multiline_correlation, body)
+    body = body.replace(
+        "_set_document_terminal_state(document_id, status=",
+        "_set_document_terminal_state(\n"
+        "            document_id,\n"
+        "            processing_attempt_id=ids.processing_attempt_id,\n"
+        "            status=",
+    )
+    source = prefix + body
+
+    parsed = ast.parse(source)
+    background = next(
+        (
+            node
+            for node in parsed.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "process_pdf_document_background"
+        ),
+        None,
+    )
+    if background is None:
+        raise RuntimeError("Could not find process_pdf_document_background")
+    calls = [
+        node
+        for node in ast.walk(background)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_set_document_terminal_state"
+    ]
+    if not calls:
+        raise RuntimeError("No document terminal state calls were found")
+    missing = [
+        node.lineno
+        for node in calls
+        if not any(keyword.arg == "processing_attempt_id" for keyword in node.keywords)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Document terminal state calls lack processing correlation at lines {missing}"
+        )
+    PDF_INGESTION_PATH.write_text(source, encoding="utf-8")
 
 
 def _patch_pdf_ingestion() -> None:
@@ -132,9 +234,6 @@ def _record_unhandled_failure_event(
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="durable provider failure metadata")
 
-    # Provider-result diagnostics may have already expanded the surrounding
-    # stdout block. Anchor only on the stable failure marker and leave that
-    # stdout/logging behavior byte-for-byte intact.
     old = '''        print(
             "PDF_INGESTION_UNHANDLED_FAILURE "
 '''
@@ -147,152 +246,7 @@ def _record_unhandled_failure_event(
             "PDF_INGESTION_UNHANDLED_FAILURE "
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="durable ingestion failure event")
-
-    # Document-state events previously lacked the run correlation key, so the
-    # durable recorder correctly rejected them. Thread the already-available
-    # processing attempt through every terminal-state update without changing
-    # the business state transition itself.
-    old = '''def _set_document_terminal_state(document_id: str, *, status: str, error_message: str | None) -> None:
-'''
-    new = '''def _set_document_terminal_state(
-    document_id: str,
-    *,
-    processing_attempt_id: str | None = None,
-    status: str,
-    error_message: str | None,
-) -> None:
-'''
-    _replace_once(PDF_INGESTION_PATH, old, new, label="document terminal state correlation signature")
-
-    old = '''        _diagnostic(
-            "PDF_DOCUMENT_STATE_UPDATED",
-            document_id=document_id,
-            status=status,
-            has_error=bool(error_message),
-        )
-'''
-    new = '''        _diagnostic(
-            "PDF_DOCUMENT_STATE_UPDATED",
-            document_id=document_id,
-            processing_attempt_id=processing_attempt_id,
-            status=status,
-            has_error=bool(error_message),
-        )
-'''
-    _replace_once(PDF_INGESTION_PATH, old, new, label="document terminal state durable event")
-
-    terminal_calls = (
-        (
-            '''            _set_document_terminal_state(
-                document_id,
-                status="failed",
-                error_message="Retained PDF source metadata is unavailable",
-            )
-''',
-            '''            _set_document_terminal_state(
-                document_id,
-                processing_attempt_id=ids.processing_attempt_id,
-                status="failed",
-                error_message="Retained PDF source metadata is unavailable",
-            )
-''',
-            "retained source unavailable terminal state",
-        ),
-        (
-            '''            _set_document_terminal_state(
-                document_id,
-                status="failed",
-                error_message="Retained PDF source metadata is incomplete",
-            )
-''',
-            '''            _set_document_terminal_state(
-                document_id,
-                processing_attempt_id=ids.processing_attempt_id,
-                status="failed",
-                error_message="Retained PDF source metadata is incomplete",
-            )
-''',
-            "retained source incomplete terminal state",
-        ),
-        (
-            '''        _set_document_terminal_state(
-            document_id,
-            status="failed",
-            error_message=exc.safe_message,
-        )
-''',
-            '''        _set_document_terminal_state(
-            document_id,
-            processing_attempt_id=ids.processing_attempt_id,
-            status="failed",
-            error_message=exc.safe_message,
-        )
-''',
-            "provider configuration terminal state",
-        ),
-        (
-            '''            _set_document_terminal_state(
-                document_id,
-                status="failed",
-                error_message=error_message,
-            )
-''',
-            '''            _set_document_terminal_state(
-                document_id,
-                processing_attempt_id=ids.processing_attempt_id,
-                status="failed",
-                error_message=error_message,
-            )
-''',
-            "provider outcome terminal state",
-        ),
-        (
-            '''            _set_document_terminal_state(
-                document_id,
-                status="failed",
-                error_message="Reader v2 canonical selection is inconsistent with processing result",
-            )
-''',
-            '''            _set_document_terminal_state(
-                document_id,
-                processing_attempt_id=ids.processing_attempt_id,
-                status="failed",
-                error_message="Reader v2 canonical selection is inconsistent with processing result",
-            )
-''',
-            "canonical selection terminal state",
-        ),
-        (
-            '''        _set_document_terminal_state(document_id, status="completed", error_message=None)
-''',
-            '''        _set_document_terminal_state(
-            document_id,
-            processing_attempt_id=ids.processing_attempt_id,
-            status="completed",
-            error_message=None,
-        )
-''',
-            "completed terminal state",
-        ),
-        (
-            '''        _set_document_terminal_state(
-            document_id,
-            status="failed",
-            error_message=_safe_failure_message(exc),
-        )
-''',
-            '''        _set_document_terminal_state(
-            document_id,
-            processing_attempt_id=ids.processing_attempt_id,
-            status="failed",
-            error_message=_safe_failure_message(exc),
-        )
-''',
-            "unhandled failure terminal state",
-        ),
-    )
-    for old_call, new_call, label in terminal_calls:
-        _replace_once(PDF_INGESTION_PATH, old_call, new_call, label=label)
+    _patch_document_terminal_state_correlation()
 
 
 def _patch_presentation_bridge() -> None:
@@ -377,29 +331,20 @@ def _patch_provider_sharding_timeline() -> None:
     _logger.info(message)
     print(message, file=sys.stderr, flush=True)
 '''
-    final_new = final_old + durable_body
     raw_old = '''def _diagnostic(event: str, **fields: object) -> None:
     payload = " ".join(f"{name}={value}" for name, value in fields.items())
     _logger.info("%s %s", event, payload)
 '''
-    raw_new = raw_old + durable_body
-
     source = SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
-    if final_new in source or raw_new in source:
+    if durable_body in source:
         return
     if final_old in source:
-        SHARDING_COMPAT_PATH.write_text(
-            source.replace(final_old, final_new, 1),
-            encoding="utf-8",
-        )
-        return
-    if raw_old in source:
-        SHARDING_COMPAT_PATH.write_text(
-            source.replace(raw_old, raw_new, 1),
-            encoding="utf-8",
-        )
-        return
-    raise RuntimeError("Could not find provider sharding diagnostic shape")
+        source = source.replace(final_old, final_old + durable_body, 1)
+    elif raw_old in source:
+        source = source.replace(raw_old, raw_old + durable_body, 1)
+    else:
+        raise RuntimeError("Could not find provider sharding diagnostic shape")
+    SHARDING_COMPAT_PATH.write_text(source, encoding="utf-8")
 
 
 def _patch_provider_source_access_timeline() -> None:
@@ -430,73 +375,64 @@ def _patch_provider_source_access_timeline() -> None:
     _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access correlation")
 
     source = SOURCE_ACCESS_PATH.read_text(encoding="utf-8")
-    final_fallback_old = '''            logger.warning(message)
-            print(message, file=sys.stderr, flush=True)
-            return None
-'''
-    final_fallback_new = '''            logger.warning(message)
-            print(message, file=sys.stderr, flush=True)
-            record_processing_event(
-                processing_run_id=processing_run_id,
-                document_id=document_id,
-                event_name="PDF_PROVIDER_SOURCE_ACCESS",
-                severity="warning",
-                payload={
-                    "route": "atlas_source_transport_fallback",
-                    "byte_size": safe_size,
-                    "expires_seconds": expires_seconds,
-                    "reason": type(exc).__name__,
-                },
-            )
-            return None
-'''
-    raw_fallback_old = '''            logger.warning(
-                "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
-                "byte_size=%s expires_seconds=%s reason=%s",
-                safe_size,
-                expires_seconds,
-                type(exc).__name__,
-            )
-            return None
-'''
-    raw_fallback_new = '''            logger.warning(
-                "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
-                "byte_size=%s expires_seconds=%s reason=%s",
-                safe_size,
-                expires_seconds,
-                type(exc).__name__,
-            )
-            record_processing_event(
-                processing_run_id=processing_run_id,
-                document_id=document_id,
-                event_name="PDF_PROVIDER_SOURCE_ACCESS",
-                severity="warning",
-                payload={
-                    "route": "atlas_source_transport_fallback",
-                    "byte_size": safe_size,
-                    "expires_seconds": expires_seconds,
-                    "reason": type(exc).__name__,
-                },
-            )
-            return None
-'''
-    if final_fallback_new not in source and raw_fallback_new not in source:
-        if final_fallback_old in source:
-            source = source.replace(final_fallback_old, final_fallback_new, 1)
-        elif raw_fallback_old in source:
-            source = source.replace(raw_fallback_old, raw_fallback_new, 1)
-        else:
-            raise RuntimeError("Could not find provider source-access fallback shape")
-        SOURCE_ACCESS_PATH.write_text(source, encoding="utf-8")
+    if 'event_name="PDF_PROVIDER_SOURCE_ACCESS"' in source:
+        return
 
-    source = SOURCE_ACCESS_PATH.read_text(encoding="utf-8")
-    final_success_old = '''        logger.info(message)
+    final_fallback = '''            logger.warning(message)
+            print(message, file=sys.stderr, flush=True)
+            return None
+'''
+    raw_fallback = '''            logger.warning(
+                "PDF_PROVIDER_SOURCE_ACCESS route=atlas_source_transport_fallback "
+                "byte_size=%s expires_seconds=%s reason=%s",
+                safe_size,
+                expires_seconds,
+                type(exc).__name__,
+            )
+            return None
+'''
+    fallback_event = '''            record_processing_event(
+                processing_run_id=processing_run_id,
+                document_id=document_id,
+                event_name="PDF_PROVIDER_SOURCE_ACCESS",
+                severity="warning",
+                payload={
+                    "route": "atlas_source_transport_fallback",
+                    "byte_size": safe_size,
+                    "expires_seconds": expires_seconds,
+                    "reason": type(exc).__name__,
+                },
+            )
+'''
+    if final_fallback in source:
+        source = source.replace(
+            final_fallback,
+            final_fallback.replace("            return None\n", fallback_event + "            return None\n"),
+            1,
+        )
+    elif raw_fallback in source:
+        source = source.replace(
+            raw_fallback,
+            raw_fallback.replace("            return None\n", fallback_event + "            return None\n"),
+            1,
+        )
+    else:
+        raise RuntimeError("Could not find provider source-access fallback shape")
+
+    final_success = '''        logger.info(message)
         print(message, file=sys.stderr, flush=True)
         return TemporarySourceTransportUrl(url)
 '''
-    final_success_new = '''        logger.info(message)
-        print(message, file=sys.stderr, flush=True)
-        record_processing_event(
+    raw_success = '''        logger.info(
+            "PDF_PROVIDER_SOURCE_ACCESS route=presigned_object_get "
+            "host=%s byte_size=%s expires_seconds=%s",
+            parsed.hostname or "unknown",
+            safe_size,
+            expires_seconds,
+        )
+        return TemporarySourceTransportUrl(url)
+'''
+    success_event = '''        record_processing_event(
             processing_run_id=processing_run_id,
             document_id=document_id,
             event_name="PDF_PROVIDER_SOURCE_ACCESS",
@@ -508,46 +444,83 @@ def _patch_provider_source_access_timeline() -> None:
                 "expires_seconds": expires_seconds,
             },
         )
-        return TemporarySourceTransportUrl(url)
 '''
-    raw_success_old = '''        logger.info(
-            "PDF_PROVIDER_SOURCE_ACCESS route=presigned_object_get "
-            "host=%s byte_size=%s expires_seconds=%s",
-            parsed.hostname or "unknown",
-            safe_size,
-            expires_seconds,
+    if final_success in source:
+        source = source.replace(
+            final_success,
+            final_success.replace(
+                "        return TemporarySourceTransportUrl(url)\n",
+                success_event + "        return TemporarySourceTransportUrl(url)\n",
+            ),
+            1,
         )
-        return TemporarySourceTransportUrl(url)
+    elif raw_success in source:
+        source = source.replace(
+            raw_success,
+            raw_success.replace(
+                "        return TemporarySourceTransportUrl(url)\n",
+                success_event + "        return TemporarySourceTransportUrl(url)\n",
+            ),
+            1,
+        )
+    else:
+        raise RuntimeError("Could not find provider source-access success shape")
+    SOURCE_ACCESS_PATH.write_text(source, encoding="utf-8")
+
+
+def _patch_source_factory_correlations() -> None:
+    ingestion = PDF_INGESTION_PATH.read_text(encoding="utf-8")
+    single_old = '''        provider_source_url_factory = build_provider_input_source_url_factory(
+            storage=storage,
+            reference=provider_delivery.storage_reference,
+            byte_size=provider_delivery.byte_size,
+        )
 '''
-    raw_success_new = '''        logger.info(
-            "PDF_PROVIDER_SOURCE_ACCESS route=presigned_object_get "
-            "host=%s byte_size=%s expires_seconds=%s",
-            parsed.hostname or "unknown",
-            safe_size,
-            expires_seconds,
-        )
-        record_processing_event(
-            processing_run_id=processing_run_id,
+    single_new = '''        provider_source_url_factory = build_provider_input_source_url_factory(
+            storage=storage,
+            reference=provider_delivery.storage_reference,
+            byte_size=provider_delivery.byte_size,
+            processing_run_id=ids.processing_attempt_id,
             document_id=document_id,
-            event_name="PDF_PROVIDER_SOURCE_ACCESS",
-            severity="info",
-            payload={
-                "route": "presigned_object_get",
-                "host": parsed.hostname or "unknown",
-                "byte_size": safe_size,
-                "expires_seconds": expires_seconds,
-            },
         )
-        return TemporarySourceTransportUrl(url)
 '''
-    if final_success_new not in source and raw_success_new not in source:
-        if final_success_old in source:
-            source = source.replace(final_success_old, final_success_new, 1)
-        elif raw_success_old in source:
-            source = source.replace(raw_success_old, raw_success_new, 1)
-        else:
-            raise RuntimeError("Could not find provider source-access success shape")
-        SOURCE_ACCESS_PATH.write_text(source, encoding="utf-8")
+    if single_old in ingestion:
+        ingestion = ingestion.replace(single_old, single_new, 1)
+        PDF_INGESTION_PATH.write_text(ingestion, encoding="utf-8")
+
+    if not PROVIDER_SHARDING_PATH.exists():
+        return
+    sharding = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
+    shard_pattern = re.compile(
+        r"(?P<prefix>shard_source_url_factory = build_provider_input_source_url_factory\(\n"
+        r"(?P<indent>[ \t]+)storage=storage,\n"
+        r"(?P=indent)reference=shard_delivery\.storage_reference,\n"
+        r"(?P=indent)byte_size=shard_delivery\.byte_size,\n)"
+        r"(?![ \t]+processing_run_id=processing_attempt_id,)"
+    )
+
+    def correlate_shard(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            match.group("prefix")
+            + indent
+            + "processing_run_id=processing_attempt_id,\n"
+            + indent
+            + "document_id=descriptor.document_id,\n"
+        )
+
+    sharding, changed = shard_pattern.subn(correlate_shard, sharding)
+    if changed:
+        PROVIDER_SHARDING_PATH.write_text(sharding, encoding="utf-8")
+
+    final = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
+    if "shard_source_url_factory = build_provider_input_source_url_factory(" in final:
+        start = final.index("shard_source_url_factory = build_provider_input_source_url_factory(")
+        call = final[start : start + 700]
+        if "processing_run_id=processing_attempt_id" not in call:
+            raise RuntimeError("Final shard source factory lacks processing correlation")
+        if "document_id=descriptor.document_id" not in call:
+            raise RuntimeError("Final shard source factory lacks document correlation")
 
 
 def _patch_main_router() -> None:
@@ -576,6 +549,7 @@ def patch_durable_processing_events() -> None:
     _patch_presentation_bridge()
     _patch_provider_sharding_timeline()
     _patch_provider_source_access_timeline()
+    _patch_source_factory_correlations()
     _patch_main_router()
 
 
