@@ -137,7 +137,7 @@ def _seed_structured_content(db, book_id: str) -> tuple[str, str]:
     return v1_id, v2_id
 
 
-def test_failed_book_with_terminal_processing_state_deletes_under_postgresql_constraints(tmp_path):
+def test_completed_book_with_canonical_content_deletes_under_postgresql_constraints(tmp_path):
     assert engine.dialect.name == "postgresql"
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
@@ -157,9 +157,9 @@ def test_failed_book_with_terminal_processing_state_deletes_under_postgresql_con
             Document(
                 id=book_id,
                 document_type=DocumentType.BOOK,
-                title="PostgreSQL terminal delete",
+                title="PostgreSQL completed canonical delete",
                 file_type="pdf",
-                status="failed",
+                status="completed",
                 pages_count=1,
             )
         )
@@ -184,7 +184,7 @@ def test_failed_book_with_terminal_processing_state_deletes_under_postgresql_con
                 processing_run_id=processing_run_id,
                 document_id=book_id,
                 source_file_id=source_id,
-                status="failed",
+                status="succeeded",
                 provider_ref="paddle-vl",
             )
         )
@@ -226,7 +226,6 @@ def test_failed_book_with_terminal_processing_state_deletes_under_postgresql_con
         assert not storage.exists(storage_reference)
     finally:
         db.rollback()
-        # Best-effort cleanup if an assertion fails before the service completes.
         try:
             _purge_structured_content(db, book_id)
         except Exception:
