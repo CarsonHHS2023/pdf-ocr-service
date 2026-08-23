@@ -9,6 +9,7 @@ on:
       - 'scripts/report_s0_baseline.py'
       - 'tests/test_s0_baseline.py'
       - 'tests/test_s0_terminal_status.py'
+      - 'tests/test_s0_payload_decode_status.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
       - 'docs/reviews/s0-baseline-2026-08-23.md'
       - '.github/workflows/s0-baseline-ci.yml'
@@ -40,13 +41,15 @@ jobs:
             app/processing/s0_baseline.py \
             scripts/report_s0_baseline.py \
             tests/test_s0_baseline.py \
-            tests/test_s0_terminal_status.py
+            tests/test_s0_terminal_status.py \
+            tests/test_s0_payload_decode_status.py
 
       - name: Run S0 baseline contract tests
         run: |
           python -m pytest -q \
             tests/test_s0_baseline.py \
-            tests/test_s0_terminal_status.py
+            tests/test_s0_terminal_status.py \
+            tests/test_s0_payload_decode_status.py
 
       - name: Verify operator CLI
         run: python scripts/report_s0_baseline.py --help >/dev/null
