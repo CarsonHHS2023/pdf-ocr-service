@@ -14,6 +14,9 @@ from app.processing.processing_event_model import ProcessingEvent
 from app.routers import processing_events, processing_operator
 
 
+_TEST_OPERATOR_TOKEN = "processing-events-test-operator-token-0001"
+
+
 def _app_and_factory(tmp_path, monkeypatch, *, enabled: bool, token: str | None):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'processing-events-api.db'}",
@@ -58,6 +61,7 @@ def _app_and_factory(tmp_path, monkeypatch, *, enabled: bool, token: str | None)
         SimpleNamespace(
             processing_operator_enabled=enabled,
             processing_operator_token=token,
+            paddle_vl_api_bearer_token=None,
         ),
     )
 
@@ -80,14 +84,14 @@ def test_processing_events_operator_route_is_hidden_when_disabled(tmp_path, monk
         tmp_path,
         monkeypatch,
         enabled=False,
-        token="configured-but-disabled",
+        token=_TEST_OPERATOR_TOKEN,
     )
     try:
         client = TestClient(app)
         response = client.get(
             "/internal/operator/processing-events",
             params={"processing_run_id": "pdf-ingest-api-events"},
-            headers={"Authorization": "Bearer configured-but-disabled"},
+            headers={"Authorization": f"Bearer {_TEST_OPERATOR_TOKEN}"},
         )
         assert response.status_code == 404
         assert response.json() == {"detail": "Not found"}
@@ -100,7 +104,7 @@ def test_processing_events_operator_route_requires_exact_bearer_token(tmp_path, 
         tmp_path,
         monkeypatch,
         enabled=True,
-        token="correct-operator-token",
+        token=_TEST_OPERATOR_TOKEN,
     )
     try:
         client = TestClient(app)
@@ -118,13 +122,13 @@ def test_processing_events_operator_route_requires_exact_bearer_token(tmp_path, 
         assert client.get(
             "/internal/operator/processing-events",
             params=params,
-            headers={"Authorization": "Basic correct-operator-token"},
+            headers={"Authorization": f"Basic {_TEST_OPERATOR_TOKEN}"},
         ).status_code == 404
 
         response = client.get(
             "/internal/operator/processing-events",
             params=params,
-            headers={"Authorization": "Bearer correct-operator-token"},
+            headers={"Authorization": f"Bearer {_TEST_OPERATOR_TOKEN}"},
         )
         assert response.status_code == 200
         payload = response.json()
@@ -141,13 +145,13 @@ def test_processing_events_operator_route_requires_query_scope_after_auth(tmp_pa
         tmp_path,
         monkeypatch,
         enabled=True,
-        token="correct-operator-token",
+        token=_TEST_OPERATOR_TOKEN,
     )
     try:
         client = TestClient(app)
         response = client.get(
             "/internal/operator/processing-events",
-            headers={"Authorization": "Bearer correct-operator-token"},
+            headers={"Authorization": f"Bearer {_TEST_OPERATOR_TOKEN}"},
         )
         assert response.status_code == 422
         assert response.json() == {
