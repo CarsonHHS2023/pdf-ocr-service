@@ -7,14 +7,12 @@ import pytest
 
 import scripts.cleanup_hf_buckets as cleanup
 from scripts.cleanup_hf_buckets import (
-    DEFAULT_PRODUCTION_BUCKET,
-    DEFAULT_TEST_BUCKET,
-    PRODUCTION_DIAGNOSTIC_PREFIXES,
+    DEFAULT_STAGING_BUCKET,
+    DEFAULT_STAGING_RETENTION_DAYS,
     CleanupTarget,
-    build_targets,
+    build_target,
     chunked,
     execute_target,
-    scope_items_to_prefix,
     select_expired_files,
 )
 
@@ -28,130 +26,105 @@ def _item(path: str, *, age_days: int, now: datetime, item_type: str = "file", s
     )
 
 
-def test_scheduled_targets_are_scoped_to_test_root_and_production_diagnostics() -> None:
-    now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
+def test_scheduled_target_is_staging_bucket_root_with_30_day_retention() -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
 
-    targets = build_targets(mode="scheduled", now=now)
+    target = build_target(now=now)
 
-    assert targets[0].bucket_id == DEFAULT_TEST_BUCKET
-    assert targets[0].prefix is None
-    assert targets[0].cutoff == now - timedelta(days=7)
-    assert targets[0].required is False
-    assert [target.prefix for target in targets[1:]] == list(PRODUCTION_DIAGNOSTIC_PREFIXES)
-    assert all(target.bucket_id == DEFAULT_PRODUCTION_BUCKET for target in targets[1:])
-    assert all(target.cutoff == now - timedelta(days=14) for target in targets[1:])
-    assert all(target.prefix is not None for target in targets[1:])
-    assert all(target.required is True for target in targets[1:])
+    assert DEFAULT_STAGING_BUCKET == "carsonhhs/pdf-ocr-service-ocrmypdf-test-storage"
+    assert DEFAULT_STAGING_RETENTION_DAYS == 30
+    assert target.bucket_id == DEFAULT_STAGING_BUCKET
+    assert target.cutoff == now - timedelta(days=30)
+    assert "Staging artifacts older than 30 days" == target.reason
 
 
-def test_purge_test_never_targets_production() -> None:
-    now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
-
-    targets = build_targets(mode="purge-test", now=now)
-
-    assert len(targets) == 1
-    assert targets[0].bucket_id == DEFAULT_TEST_BUCKET
-    assert targets[0].prefix is None
-    assert targets[0].cutoff is None
-    assert targets[0].required is True
+def test_build_target_rejects_invalid_configuration() -> None:
+    now = datetime.now(timezone.utc)
+    with pytest.raises(ValueError, match="staging bucket must be non-empty"):
+        build_target(now=now, staging_bucket="  ")
+    with pytest.raises(ValueError, match="retention days must be positive"):
+        build_target(now=now, retention_days=0)
 
 
-def test_scheduled_missing_legacy_test_bucket_is_skipped(monkeypatch, capsys) -> None:
-    target = CleanupTarget(
-        bucket_id=DEFAULT_TEST_BUCKET,
-        prefix=None,
-        cutoff=datetime(2026, 8, 1, tzinfo=timezone.utc),
-        reason="legacy test cleanup",
-        required=False,
-    )
-    missing = RuntimeError("missing bucket")
-
-    def raise_missing(*_args, **_kwargs):
-        raise missing
-
-    monkeypatch.setattr(cleanup, "_list_target_files", raise_missing)
-    monkeypatch.setattr(cleanup, "_is_bucket_not_found", lambda exc: exc is missing)
-
-    assert execute_target(target, token="test-token", apply=True) == (0, 0)
-    output = capsys.readouterr().out
-    assert "HF_BUCKET_CLEANUP_SKIPPED" in output
-    assert f"bucket={DEFAULT_TEST_BUCKET}" in output
-    assert "reason=bucket_not_found optional=true" in output
-
-
-def test_required_target_missing_bucket_still_fails(monkeypatch) -> None:
-    target = CleanupTarget(
-        bucket_id=DEFAULT_PRODUCTION_BUCKET,
-        prefix=PRODUCTION_DIAGNOSTIC_PREFIXES[0],
-        cutoff=datetime(2026, 8, 1, tzinfo=timezone.utc),
-        reason="production diagnostics cleanup",
-        required=True,
-    )
-    missing = RuntimeError("missing bucket")
-
-    def raise_missing(*_args, **_kwargs):
-        raise missing
-
-    monkeypatch.setattr(cleanup, "_list_target_files", raise_missing)
-    monkeypatch.setattr(cleanup, "_is_bucket_not_found", lambda exc: exc is missing)
-
-    with pytest.raises(RuntimeError, match="missing bucket"):
-        execute_target(target, token="test-token", apply=True)
-
-
-def test_production_prefix_guard_rejects_similarly_named_neighbor() -> None:
-    now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
-    expected = _item(
-        "output/opencv-diagnostics/attempt-1/page.png",
-        age_days=30,
-        now=now,
-    )
-    neighbor = _item(
-        "output/opencv-diagnostics-backup/keep.png",
-        age_days=30,
-        now=now,
-    )
-
-    scoped = scope_items_to_prefix(
-        [expected, neighbor],
-        prefix="output/opencv-diagnostics/",
-    )
-
-    assert [item.path for item in scoped] == [expected.path]
-
-
-def test_select_expired_files_keeps_unknown_or_recent_objects() -> None:
-    now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
-    cutoff = now - timedelta(days=7)
+def test_select_expired_files_deletes_only_files_older_than_30_days() -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+    cutoff = now - timedelta(days=30)
     unknown = SimpleNamespace(type="file", path="unknown.bin", mtime=None, size=10)
-    directory = _item("folder", age_days=30, now=now, item_type="directory")
-    recent = _item("recent.bin", age_days=2, now=now)
-    old = _item("old.bin", age_days=8, now=now)
+    directory = _item("folder", age_days=100, now=now, item_type="directory")
+    recent = _item("recent.bin", age_days=29, now=now)
+    boundary = _item("boundary.bin", age_days=30, now=now)
+    old = _item("old.bin", age_days=31, now=now)
 
-    selected = select_expired_files([unknown, directory, recent, old], cutoff=cutoff)
+    selected = select_expired_files(
+        [unknown, directory, recent, boundary, old],
+        cutoff=cutoff,
+    )
 
     assert [item.path for item in selected] == ["old.bin"]
 
 
-def test_purge_selection_includes_all_files_but_not_directories() -> None:
-    now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
-    file_a = _item("a.bin", age_days=0, now=now)
-    file_b = SimpleNamespace(type="file", path="b.bin", mtime=None, size=10)
-    directory = _item("folder", age_days=30, now=now, item_type="directory")
+def test_inaccessible_private_staging_bucket_fails_with_actionable_error(monkeypatch) -> None:
+    target = CleanupTarget(
+        bucket_id=DEFAULT_STAGING_BUCKET,
+        cutoff=datetime(2026, 7, 24, tzinfo=timezone.utc),
+        reason="Staging artifacts older than 30 days",
+    )
+    inaccessible = RuntimeError("bucket hidden by private access")
 
-    selected = select_expired_files([file_a, file_b, directory], cutoff=None)
+    def raise_inaccessible(*_args, **_kwargs):
+        raise inaccessible
 
-    assert [item.path for item in selected] == ["a.bin", "b.bin"]
+    monkeypatch.setattr(cleanup, "_list_target_files", raise_inaccessible)
+    monkeypatch.setattr(cleanup, "_is_bucket_not_found", lambda exc: exc is inaccessible)
+
+    with pytest.raises(RuntimeError, match="not accessible to the configured HF_TOKEN") as caught:
+        execute_target(target, token="test-token", apply=True)
+
+    assert DEFAULT_STAGING_BUCKET in str(caught.value)
+    assert "read/delete access" in str(caught.value)
 
 
-def test_build_targets_rejects_same_bucket_for_test_and_production() -> None:
-    with pytest.raises(ValueError, match="must be different"):
-        build_targets(
-            mode="scheduled",
-            now=datetime.now(timezone.utc),
-            test_bucket="same/bucket",
-            production_bucket="same/bucket",
-        )
+def test_dry_run_reports_expired_staging_files_without_deleting(monkeypatch, capsys) -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+    target = build_target(now=now)
+    old = _item("output/test.bin", age_days=31, now=now, size=123)
+    deleted: list[str] = []
+
+    monkeypatch.setattr(cleanup, "_list_target_files", lambda *_args, **_kwargs: [old])
+    monkeypatch.setattr(
+        cleanup,
+        "_delete_paths",
+        lambda _bucket, paths, **_kwargs: deleted.extend(paths),
+    )
+
+    assert execute_target(target, token="test-token", apply=False) == (1, 123)
+    assert deleted == []
+    output = capsys.readouterr().out
+    assert "environment=staging" in output
+    assert f"bucket={DEFAULT_STAGING_BUCKET}" in output
+    assert "apply=false" in output
+
+
+def test_apply_deletes_only_expired_staging_files(monkeypatch) -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+    target = build_target(now=now)
+    recent = _item("recent.bin", age_days=2, now=now)
+    old = _item("old.bin", age_days=45, now=now)
+    deleted: list[str] = []
+
+    monkeypatch.setattr(
+        cleanup,
+        "_list_target_files",
+        lambda *_args, **_kwargs: [recent, old],
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "_delete_paths",
+        lambda bucket, paths, **_kwargs: deleted.extend([bucket, *paths]),
+    )
+
+    assert execute_target(target, token="test-token", apply=True) == (1, 10)
+    assert deleted == [DEFAULT_STAGING_BUCKET, "old.bin"]
 
 
 def test_chunked_batches_paths() -> None:
