@@ -93,6 +93,39 @@ class S0RunSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class _BaselineRunRow:
+    """Only the bounded ProcessingRun columns required by the S0 collector."""
+
+    processing_run_id: str
+    document_id: str
+    source_file_id: str | None
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    failed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class _BaselineDocumentRow:
+    """Only the Document columns required by the S0 collector."""
+
+    id: str
+    file_type: str
+    pages_count: int | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _BaselineSourceRow:
+    """Only the SourceFile columns required by the S0 collector."""
+
+    id: str
+    document_id: str
+    byte_size: int | None
+    checksum_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class _BoundedEventRow:
     """Only the small event fields S0 may materialize in the operator process."""
 
@@ -202,7 +235,7 @@ def _event_span_seconds(start: datetime | None, end: datetime | None) -> float |
     return round(value, 6) if value >= 0 else None
 
 
-def _terminal_at(run: ProcessingRun) -> datetime | None:
+def _terminal_at(run: _BaselineRunRow) -> datetime | None:
     """Return only the timestamp that matches the run's authoritative status."""
     if run.status == "succeeded":
         return run.completed_at
@@ -270,18 +303,77 @@ def _max_numeric_field(
     return max(values) if values else None
 
 
-def _source_file_for_run(session, run: ProcessingRun) -> SourceFile | None:
+def _load_run_row(session, processing_run_id: str) -> _BaselineRunRow | None:
+    """Load only S0-required run columns, excluding unconstrained legacy Text."""
+    row = session.execute(
+        select(
+            ProcessingRun.processing_run_id.label("processing_run_id"),
+            ProcessingRun.document_id.label("document_id"),
+            ProcessingRun.source_file_id.label("source_file_id"),
+            ProcessingRun.status.label("status"),
+            ProcessingRun.started_at.label("started_at"),
+            ProcessingRun.completed_at.label("completed_at"),
+            ProcessingRun.failed_at.label("failed_at"),
+        ).where(ProcessingRun.processing_run_id == processing_run_id)
+    ).one_or_none()
+    if row is None:
+        return None
+    return _BaselineRunRow(
+        processing_run_id=row.processing_run_id,
+        document_id=row.document_id,
+        source_file_id=row.source_file_id,
+        status=row.status,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+        failed_at=row.failed_at,
+    )
+
+
+def _document_for_run(session, run: _BaselineRunRow) -> _BaselineDocumentRow | None:
+    """Load only S0-required document fields; omit unrelated legacy Text columns."""
+    row = session.execute(
+        select(
+            Document.id.label("id"),
+            Document.file_type.label("file_type"),
+            Document.pages_count.label("pages_count"),
+            Document.created_at.label("created_at"),
+        ).where(Document.id == run.document_id)
+    ).one_or_none()
+    if row is None:
+        return None
+    return _BaselineDocumentRow(
+        id=row.id,
+        file_type=row.file_type,
+        pages_count=row.pages_count,
+        created_at=row.created_at,
+    )
+
+
+def _source_file_for_run(session, run: _BaselineRunRow) -> _BaselineSourceRow | None:
     """Return only a source that the ProcessingRun explicitly identifies.
 
     A nullable legacy ``source_file_id`` is absence of durable association evidence;
-    do not guess from another SourceFile belonging to the same Document.
+    do not guess from another SourceFile belonging to the same Document. Only the
+    bounded metadata required by S0 is projected.
     """
     if not run.source_file_id:
         return None
-    source = session.get(SourceFile, run.source_file_id)
-    if source is None or source.document_id != run.document_id:
+    row = session.execute(
+        select(
+            SourceFile.id.label("id"),
+            SourceFile.document_id.label("document_id"),
+            SourceFile.byte_size.label("byte_size"),
+            SourceFile.checksum_sha256.label("checksum_sha256"),
+        ).where(SourceFile.id == run.source_file_id)
+    ).one_or_none()
+    if row is None or row.document_id != run.document_id:
         return None
-    return source
+    return _BaselineSourceRow(
+        id=row.id,
+        document_id=row.document_id,
+        byte_size=row.byte_size,
+        checksum_sha256=row.checksum_sha256,
+    )
 
 
 def _event_aggregate_status(*, available: bool, incomplete: bool) -> str:
@@ -378,15 +470,11 @@ def collect_s0_run_snapshot(
         raise ValueError("processing_run_id is required")
     _validate_event_limit(max_events)
 
-    run = session.execute(
-        select(ProcessingRun).where(
-            ProcessingRun.processing_run_id == normalized_run_id
-        )
-    ).scalar_one_or_none()
+    run = _load_run_row(session, normalized_run_id)
     if run is None:
         raise LookupError(f"ProcessingRun not found: {normalized_run_id}")
 
-    document = session.get(Document, run.document_id)
+    document = _document_for_run(session, run)
     if document is None:
         raise LookupError(f"Document not found for ProcessingRun: {normalized_run_id}")
     source = _source_file_for_run(session, run)
@@ -428,6 +516,11 @@ def collect_s0_run_snapshot(
     )
 
     source_size = source.byte_size if source is not None else None
+    source_size_available = (
+        isinstance(source_size, int)
+        and not isinstance(source_size, bool)
+        and source_size > 0
+    )
     page_count = document.pages_count
     page_count_available = (
         isinstance(page_count, int)
@@ -447,13 +540,13 @@ def collect_s0_run_snapshot(
     required: list[MetricReading] = [
         _metric(
             "source_byte_size",
-            value=int(source_size) if isinstance(source_size, int) else None,
-            status="observed" if isinstance(source_size, int) else "not_available",
+            value=source_size if source_size_available else None,
+            status="observed" if source_size_available else "not_available",
             source="ProcessingRun.source_file_id -> SourceFile.byte_size",
             note=(
                 None
-                if isinstance(source_size, int)
-                else "No source is durably associated with this ProcessingRun."
+                if source_size_available
+                else "No positive source byte size is durably associated with this ProcessingRun."
             ),
         ),
         _metric(
@@ -755,7 +848,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
                 "### Auxiliary lifecycle/observability metrics",
                 "",
                 "| Metric | Status | Value | Unit | Source |",
-                "|---|---|---:|---|---|---|",
+                "|---|---|---:|---|---|",
             ]
         )
         for metric in snapshot.auxiliary_metrics:
