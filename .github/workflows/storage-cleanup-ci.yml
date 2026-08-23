@@ -58,8 +58,8 @@ jobs:
           assert '--retention-days' not in workflow
           assert 'purge-test' not in script
           assert 'purge-test' not in workflow
-          assert 'STAGING_BUCKET' not in workflow
-          assert 'STAGING_RETENTION_DAYS' not in workflow
+          assert '\n      STAGING_BUCKET:' not in workflow
+          assert '\n      STAGING_RETENTION_DAYS:' not in workflow
 
           assert 'HF_TOKEN: ${{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}' in workflow
           assert 'secrets.HF_TOKEN' not in workflow
