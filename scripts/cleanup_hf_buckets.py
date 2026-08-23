@@ -1,14 +1,15 @@
 """Safely clean temporary Hugging Face Storage Bucket artifacts.
 
 This utility is intentionally independent from the FastAPI/OCR runtime. It only
-operates on the known test bucket and on two explicit production diagnostics
-prefixes. Production Reader/source assets are never targeted.
+operates on the known legacy test bucket and on two explicit production
+diagnostics prefixes. Production Reader/source assets are never targeted.
 
 The current diagnostic layouts do not carry a reliable job terminal status:
 ``opencv-diagnostics`` is grouped by processing attempt while
 ``opencv-crop-diagnostics`` is grouped by asset id. Until status metadata is
 available at the storage boundary, production diagnostics use the conservative
-14-day retention window for every file. Test artifacts use a 7-day window.
+14-day retention window for every file. Test artifacts use a 7-day window when
+the legacy test bucket still exists.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ class CleanupTarget:
     prefix: str | None
     cutoff: datetime | None
     reason: str
+    required: bool = True
 
 
 def _utc(value: datetime) -> datetime:
@@ -117,6 +119,7 @@ def build_targets(
                 prefix=None,
                 cutoff=None,
                 reason="manual full purge of test bucket contents",
+                required=True,
             ),
         )
     if mode != "scheduled":
@@ -127,7 +130,8 @@ def build_targets(
             bucket_id=test_bucket,
             prefix=None,
             cutoff=now_utc - timedelta(days=test_retention_days),
-            reason=f"test artifacts older than {test_retention_days} days",
+            reason=f"legacy test artifacts older than {test_retention_days} days",
+            required=False,
         )
     ]
     production_cutoff = now_utc - timedelta(days=production_diagnostics_retention_days)
@@ -140,6 +144,7 @@ def build_targets(
                 "production diagnostics older than "
                 f"{production_diagnostics_retention_days} days"
             ),
+            required=True,
         )
         for prefix in PRODUCTION_DIAGNOSTIC_PREFIXES
     )
@@ -166,8 +171,29 @@ def _delete_paths(bucket_id: str, paths: Sequence[str], *, token: str) -> None:
         batch_bucket_files(bucket_id, delete=batch, token=token)
 
 
+def _is_bucket_not_found(exc: BaseException) -> bool:
+    try:
+        from huggingface_hub.errors import BucketNotFoundError
+    except ImportError:
+        return False
+    return isinstance(exc, BucketNotFoundError)
+
+
 def execute_target(target: CleanupTarget, *, token: str, apply: bool) -> tuple[int, int]:
-    items = _list_target_files(target, token=token)
+    try:
+        items = _list_target_files(target, token=token)
+    except Exception as exc:
+        if not target.required and _is_bucket_not_found(exc):
+            prefix_text = target.prefix or "<bucket-root>"
+            print(
+                "HF_BUCKET_CLEANUP_SKIPPED "
+                f"bucket={target.bucket_id} prefix={prefix_text} "
+                "reason=bucket_not_found optional=true",
+                flush=True,
+            )
+            return 0, 0
+        raise
+
     selected = select_expired_files(items, cutoff=target.cutoff)
     paths = [str(getattr(item, "path")) for item in selected]
     total_bytes = sum(
