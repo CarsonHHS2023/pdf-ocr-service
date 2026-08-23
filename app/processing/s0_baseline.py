@@ -867,6 +867,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
             [
                 f"## `{snapshot.processing_run_id}`",
                 "",
+                f"- document ID: `{snapshot.document_id}`",
                 f"- status: `{snapshot.run_status}`",
                 f"- file type: `{snapshot.file_type}`",
                 f"- source checksum SHA-256: `{checksum}`",
