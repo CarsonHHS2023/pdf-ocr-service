@@ -60,6 +60,7 @@ jobs:
           alembic current
           python -m pytest -q \
             tests/test_processing_events.py \
+            tests/test_processing_events_api.py \
             tests/test_postgresql_readiness.py
           python -m pytest -q tests/test_postgresql_data_migration.py
 
@@ -75,6 +76,7 @@ jobs:
             app/postgresql_data_migration.py \
             app/routers/processing_events.py \
             app/main.py \
+            tests/test_processing_events_api.py \
             scripts/apply_durable_processing_events.py
           grep -q 'record_processing_event(' app/processing/pdf_ingestion.py
           grep -q 'record_processing_event(' app/processing/pdf_page_presentation_bridge.py
