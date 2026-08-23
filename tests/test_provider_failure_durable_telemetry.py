@@ -1,11 +1,13 @@
 from datetime import timedelta
 import hashlib
+import inspect
 from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
 
 from app.processing import pdf_ingestion
+from app.processing import pdf_provider_sharding as provider_sharding
 from app.processing import pdf_provider_sharding_compat as sharding_compat
 from app.processing import provider_input_source_access as source_access
 from app.processing.errors import (
@@ -65,6 +67,21 @@ def test_provider_http_failure_metadata_survives_exception_wrapping():
         "provider_error_category": "provider_unavailable",
         "provider_http_status": 502,
     }
+
+
+def test_sharded_provider_failure_preserves_wrapped_http_metadata() -> None:
+    fields = provider_sharding._provider_failure_metadata(_wrapped_provider_error())
+
+    assert fields == {
+        "provider_error_category": "provider_unavailable",
+        "provider_http_status": 502,
+        "provider_error_code": "UPSTREAM_FAILURE",
+    }
+    source = inspect.getsource(provider_sharding.run_provider_transport_shards)
+    assert (
+        "_provider_failure_metadata(exc)" in source
+        or "_provider_failure_metadata(error)" in source
+    )
 
 
 def test_unhandled_failure_writer_persists_safe_error_event_without_stdout_rewrite(
