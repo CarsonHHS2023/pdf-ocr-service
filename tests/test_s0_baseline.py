@@ -121,13 +121,18 @@ def test_collect_s0_snapshot_uses_only_durable_authoritative_fields() -> None:
     assert _metric(snapshot, "max_observed_peak_rss_mb").value == 526.25
     assert _metric(snapshot, "max_observed_peak_rss_mb").status == "observed"
 
-    failure_retry = _metric(snapshot, "failure_retry_counts")
-    assert failure_retry.status == "observed"
-    assert failure_retry.value == {
-        "error_events": 1,
-        "retry_events": 1,
-        "retryable_signals": 1,
-    }
+    required_failure_retry = _metric(snapshot, "failure_retry_counts")
+    assert required_failure_retry.status == "not_instrumented"
+    assert required_failure_retry.value is None
+
+    error_signals = _metric(snapshot, "durable_error_event_count")
+    assert error_signals.status == "observed"
+    assert error_signals.value == 1
+
+    retryable_signals = _metric(snapshot, "durable_retryable_signal_count")
+    assert retryable_signals.status == "observed"
+    assert retryable_signals.value == 1
+    assert "does not prove" in (retryable_signals.note or "")
 
 
 def test_missing_s0_metrics_are_explicit_not_inferred() -> None:
@@ -142,18 +147,21 @@ def test_missing_s0_metrics_are_explicit_not_inferred() -> None:
     assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_instrumented"
     assert _metric(snapshot, "reader_open_latency_seconds").status == "not_instrumented"
     assert _metric(snapshot, "upload_to_reader_ready_seconds").status == "not_instrumented"
+    assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
 
 
-def test_run_without_retained_events_does_not_claim_zero_failures_or_retries() -> None:
+def test_run_without_retained_events_does_not_claim_zero_event_signals() -> None:
     db = _session()
     run_id = _seed_run(db, with_events=False)
 
     snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
 
-    failure_retry = _metric(snapshot, "failure_retry_counts")
-    assert failure_retry.status == "not_available"
-    assert failure_retry.value is None
+    assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
     assert _metric(snapshot, "durable_event_count").value == 0
+    assert _metric(snapshot, "durable_error_event_count").status == "not_available"
+    assert _metric(snapshot, "durable_error_event_count").value is None
+    assert _metric(snapshot, "durable_retryable_signal_count").status == "not_available"
+    assert _metric(snapshot, "durable_retryable_signal_count").value is None
     assert _metric(snapshot, "max_observed_peak_rss_mb").status == "not_available"
 
 
@@ -165,15 +173,15 @@ def test_event_window_is_bounded_and_marks_event_aggregates_partial() -> None:
 
     assert snapshot.event_window_truncated is True
     assert _metric(snapshot, "durable_event_count").value == 2
+    assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
 
-    failure_retry = _metric(snapshot, "failure_retry_counts")
-    assert failure_retry.status == "partial"
-    assert failure_retry.value == {
-        "error_events": 0,
-        "retry_events": 1,
-        "retryable_signals": 1,
-    }
-    assert "truncated" in (failure_retry.note or "")
+    error_signals = _metric(snapshot, "durable_error_event_count")
+    assert error_signals.status == "partial"
+    assert error_signals.value == 0
+
+    retryable_signals = _metric(snapshot, "durable_retryable_signal_count")
+    assert retryable_signals.status == "partial"
+    assert retryable_signals.value == 1
 
     peak_rss = _metric(snapshot, "max_observed_peak_rss_mb")
     assert peak_rss.status == "partial"
