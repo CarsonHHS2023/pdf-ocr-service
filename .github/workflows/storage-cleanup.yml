@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}
 
     steps:
       - name: Check out repository
@@ -64,6 +64,7 @@ jobs:
             echo '- Environment: **Staging only**.'
             echo '- Bucket: `carsonhhs/pdf-ocr-service-ocrmypdf-test-storage`.'
             echo '- Retention: delete files older than **30 days**.'
+            echo '- Credential: dedicated `HF_STAGING_BUCKET_CLEANUP_TOKEN` GitHub secret.'
             echo '- Bucket id and retention cannot be overridden from the workflow or CLI.'
             echo '- Production storage is not referenced or targeted.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
