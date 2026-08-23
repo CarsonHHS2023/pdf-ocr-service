@@ -10,13 +10,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.database import engine
 
-EXPECTED_HEAD = "0006_ingestion_dispatches"
+EXPECTED_HEAD = "0007_processing_events"
 EXPECTED_ALEMBIC_VERSION_LENGTH = 255
 EXPECTED_TABLES = {
     "alembic_version",
     "documents",
     "source_files",
     "processing_runs",
+    "processing_events",
     "ingestion_dispatches",
     "structured_content_candidates",
     "structured_content_selection",
@@ -48,6 +49,49 @@ def test_alembic_head_and_required_tables_exist_on_postgresql():
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
     assert current == EXPECTED_HEAD
+
+
+def test_processing_events_schema_has_bounded_observability_constraints():
+    inspector = inspect(engine)
+    checks = {item["name"] for item in inspector.get_check_constraints("processing_events")}
+    assert {
+        "ck_processing_events_run_id_nonempty",
+        "ck_processing_events_event_name_nonempty",
+        "ck_processing_events_severity_supported",
+        "ck_processing_events_page_number_positive",
+    } <= checks
+
+    indexes = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspector.get_indexes("processing_events")
+    }
+    assert indexes["ix_processing_events_run_created"] == (
+        "processing_run_id",
+        "created_at",
+        "id",
+    )
+    assert indexes["ix_processing_events_document_created"] == (
+        "document_id",
+        "created_at",
+        "id",
+    )
+    assert indexes["ix_processing_events_name_created"] == (
+        "event_name",
+        "created_at",
+        "id",
+    )
+
+    foreign_keys = inspector.get_foreign_keys("processing_events")
+    document_fks = [
+        fk
+        for fk in foreign_keys
+        if fk.get("name") == "fk_processing_events_document"
+    ]
+    assert len(document_fks) == 1
+    assert document_fks[0]["constrained_columns"] == ["document_id"]
+    assert document_fks[0]["referred_table"] == "documents"
+    assert document_fks[0]["referred_columns"] == ["id"]
+    assert not any(fk.get("referred_table") == "processing_runs" for fk in foreign_keys)
 
 
 def test_ingestion_dispatch_schema_has_durable_identity_and_lease_constraints():
