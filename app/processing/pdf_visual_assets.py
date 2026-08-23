@@ -12,6 +12,7 @@ from app.processing.pdf_visual_asset_enhancement import (
 from app.source_units import SpatialAnchor
 from app.storage.base import StorageProvider
 from app.storage.models import StorageReference
+from app.storage.visual_assets import select_visual_asset_storage
 from app.structured_content_v2.model import (
     AssetRecoveryStateV2,
     AssetReferenceV2,
@@ -76,6 +77,7 @@ def enrich_candidate_with_pdf_visual_assets(
     assets = list(candidate.assets)
     renditions = list(candidate.renditions)
     nodes = list(candidate.nodes)
+    asset_storage = select_visual_asset_storage(storage)
 
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
@@ -90,7 +92,7 @@ def enrich_candidate_with_pdf_visual_assets(
                         nodes,
                         document[page_index],
                         cover_source_unit_id,
-                        storage,
+                        asset_storage,
                         source_kind,
                     )
                 except Exception:
@@ -137,7 +139,7 @@ def enrich_candidate_with_pdf_visual_assets(
                             node=node,
                             anchor=anchor,
                             png=png,
-                            storage=storage,
+                            storage=asset_storage,
                             source_kind=source_kind,
                             enhancer=None if classified_cover_node else enhancer,
                             enhancement_skip_reason=(

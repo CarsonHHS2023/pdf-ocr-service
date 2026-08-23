@@ -71,6 +71,43 @@ __all__ = [
     _replace_once(path, old, new, label="bounded PDF runtime handler anchor")
 
 
+def _patch_presentation_visual_storage() -> None:
+    """Route presentation Reader renditions through the Staging visual selector."""
+    path = Path("app/processing/pdf_page_presentation_bridge.py")
+    old = '''    enriched = original_enrich(
+        ordinary,
+        pdf_bytes=pdf_bytes,
+        storage=storage,
+        source_kind=source_kind,
+        enhancer=enhancer,
+    )
+'''
+    new = '''    asset_storage = visual_assets.select_visual_asset_storage(storage)
+    enriched = original_enrich(
+        ordinary,
+        pdf_bytes=pdf_bytes,
+        storage=asset_storage,
+        source_kind=source_kind,
+        enhancer=enhancer,
+    )
+'''
+    _replace_once(path, old, new, label="presentation visual storage selection")
+
+    old = '''            put = storage.put(
+                png,
+                visual_assets._rendition_reference(
+                    "presentation", checksum
+                ),
+'''
+    new = '''            put = asset_storage.put(
+                png,
+                visual_assets._rendition_reference(
+                    "presentation", checksum
+                ),
+'''
+    _replace_once(path, old, new, label="presentation visual durable write")
+
+
 def _patch_presentation_result_remap() -> None:
     path = Path("app/processing/pdf_page_presentation_bridge.py")
     old = '''        async def get_job_result(self, job_id: str, profile: str | None = None):
@@ -266,6 +303,7 @@ def _patch_ingestion_failure_summary() -> None:
 
 def main() -> None:
     _patch_processing_log_handler()
+    _patch_presentation_visual_storage()
     _patch_presentation_result_remap()
     _patch_orchestration_stages()
     _patch_ingestion_failure_summary()
