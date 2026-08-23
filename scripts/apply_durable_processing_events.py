@@ -105,24 +105,44 @@ def _durable_failure_fields(exc: BaseException) -> dict[str, object]:
             }
         )
     return fields
+
+
+def _record_unhandled_failure_event(
+    *,
+    document_id: str,
+    processing_attempt_id: str,
+    exc: BaseException,
+) -> None:
+    """Persist one safe failure event without changing the existing stdout contract."""
+    payload: dict[str, object] = {
+        "document_id": document_id,
+        "processing_attempt_id": processing_attempt_id,
+        "error_type": type(exc).__name__,
+        **_durable_failure_fields(exc),
+    }
+    record_processing_event(
+        processing_run_id=processing_attempt_id,
+        document_id=document_id,
+        event_name="PDF_INGESTION_UNHANDLED_FAILURE",
+        severity="error",
+        payload=payload,
+    )
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="durable provider failure metadata")
 
+    # Provider-result diagnostics may have already expanded the surrounding
+    # stdout block. Anchor only on the stable failure marker and leave that
+    # stdout/logging behavior byte-for-byte intact.
     old = '''        print(
             "PDF_INGESTION_UNHANDLED_FAILURE "
-            f"document_id={document_id} processing_attempt_id={ids.processing_attempt_id} "
-            f"error_type={type(exc).__name__}",
-            file=sys.stderr,
-            flush=True,
-        )
 '''
-    new = '''        _diagnostic(
-            "PDF_INGESTION_UNHANDLED_FAILURE",
+    new = '''        _record_unhandled_failure_event(
             document_id=document_id,
             processing_attempt_id=ids.processing_attempt_id,
-            error_type=type(exc).__name__,
-            **_durable_failure_fields(exc),
+            exc=exc,
         )
+        print(
+            "PDF_INGESTION_UNHANDLED_FAILURE "
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="durable ingestion failure event")
 
