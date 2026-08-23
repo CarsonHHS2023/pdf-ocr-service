@@ -262,7 +262,10 @@ def collect_s0_run_snapshot(
 
     rows = session.execute(
         select(ProcessingEvent)
-        .where(ProcessingEvent.processing_run_id == normalized_run_id)
+        .where(
+            ProcessingEvent.processing_run_id == normalized_run_id,
+            ProcessingEvent.document_id == run.document_id,
+        )
         .order_by(ProcessingEvent.created_at.asc(), ProcessingEvent.id.asc())
         .limit(max_events + 1)
     ).scalars().all()
