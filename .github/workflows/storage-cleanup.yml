@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       apply:
-        description: Actually delete files older than 30 days (false = dry run)
+        description: Actually delete Staging files older than 30 days (false = dry run)
         required: true
         default: false
         type: boolean
@@ -24,8 +24,6 @@ jobs:
     timeout-minutes: 15
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      STAGING_BUCKET: carsonhhs/pdf-ocr-service-ocrmypdf-test-storage
-      STAGING_RETENTION_DAYS: '30'
 
     steps:
       - name: Check out repository
@@ -44,21 +42,14 @@ jobs:
 
       - name: Run scheduled Staging retention cleanup
         if: github.event_name == 'schedule'
-        run: |
-          python scripts/cleanup_hf_buckets.py \
-            --staging-bucket "$STAGING_BUCKET" \
-            --retention-days "$STAGING_RETENTION_DAYS" \
-            --apply
+        run: python scripts/cleanup_hf_buckets.py --apply
 
       - name: Run manual Staging cleanup
         if: github.event_name == 'workflow_dispatch'
         env:
           CLEANUP_APPLY: ${{ inputs.apply }}
         run: |
-          args=(
-            --staging-bucket "$STAGING_BUCKET"
-            --retention-days "$STAGING_RETENTION_DAYS"
-          )
+          args=()
           if [ "$CLEANUP_APPLY" = "true" ]; then
             args+=(--apply)
           fi
@@ -73,6 +64,7 @@ jobs:
             echo '- Environment: **Staging only**.'
             echo '- Bucket: `carsonhhs/pdf-ocr-service-ocrmypdf-test-storage`.'
             echo '- Retention: delete files older than **30 days**.'
+            echo '- Bucket id and retention cannot be overridden from the workflow or CLI.'
             echo '- Production storage is not referenced or targeted.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
             echo '- A private-bucket 404 is treated as an access/configuration failure, not silently skipped.'
