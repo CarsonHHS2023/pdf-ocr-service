@@ -1,4 +1,5 @@
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +8,7 @@ from scripts import report_s0_baseline
 
 RUN_A = "pdf-ingest-" + ("a" * 32)
 RUN_B = "pdf-ingest-" + ("b" * 32)
+TXT_RUN = "txt-ingest-" + ("c" * 32)
 BACKEND_SHA = "80e43fb4651a388806779b33ab42156c5483d0e3"
 STAGING_REVISION = "staging-release_20260823-r1"
 
@@ -53,6 +55,25 @@ def test_benchmark_record_rejects_duplicate_processing_run_assignments() -> None
 
 
 @pytest.mark.parametrize(
+    ("processing_run_id", "fixture_id"),
+    [
+        (TXT_RUN, "pdf-small-v1"),
+        (RUN_A, "txt-small-v1"),
+    ],
+)
+def test_benchmark_record_rejects_cross_type_run_fixture_assignments(
+    processing_run_id: str, fixture_id: str
+) -> None:
+    with pytest.raises(SystemExit, match="matching pdf/txt media types"):
+        report_s0_baseline._benchmark_record_metadata(
+            _args(
+                processing_run_ids=[processing_run_id],
+                fixture_ids=[fixture_id],
+            )
+        )
+
+
+@pytest.mark.parametrize(
     ("field", "unsafe_value", "message"),
     [
         ("processing_run_ids", ["private.pdf", RUN_B], "--processing-run-id"),
@@ -93,6 +114,40 @@ def test_benchmark_record_rejects_unregistered_fixture() -> None:
     with pytest.raises(SystemExit, match="registered v1 fixture"):
         report_s0_baseline._benchmark_record_metadata(
             _args(fixture_ids=["pdf-extra-v1", "pdf-medium-v1"])
+        )
+
+
+def test_snapshot_assignments_accept_matching_collected_media_type() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(_args())
+    snapshots = [
+        SimpleNamespace(processing_run_id=RUN_A, file_type="pdf"),
+        SimpleNamespace(processing_run_id=RUN_B, file_type="pdf"),
+    ]
+
+    report_s0_baseline._validate_snapshot_assignments(metadata, snapshots)
+
+
+def test_snapshot_assignments_reject_collected_media_mismatch() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+
+    with pytest.raises(SystemExit, match="does not match"):
+        report_s0_baseline._validate_snapshot_assignments(
+            metadata,
+            [SimpleNamespace(processing_run_id=RUN_A, file_type="txt")],
+        )
+
+
+def test_snapshot_assignments_reject_unavailable_collected_media_type() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+
+    with pytest.raises(SystemExit, match="file type is unavailable"):
+        report_s0_baseline._validate_snapshot_assignments(
+            metadata,
+            [SimpleNamespace(processing_run_id=RUN_A, file_type=None)],
         )
 
 

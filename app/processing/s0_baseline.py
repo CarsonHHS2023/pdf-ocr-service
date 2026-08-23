@@ -27,6 +27,7 @@ _METRIC_STATUSES = frozenset(
     {"observed", "partial", "not_available", "not_instrumented"}
 )
 _SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}")
+_SAFE_FILE_TYPES = frozenset({"pdf", "txt"})
 
 # Event metadata is operator-visible output. Keep it fail-closed even though the
 # current producer sanitizes/bounds payloads: retained legacy or abnormal rows may
@@ -77,7 +78,7 @@ class S0RunSnapshot:
     processing_run_id: str
     document_id: str
     run_status: str
-    file_type: str
+    file_type: str | None
     source_file_id: str | None
     source_checksum_sha256: str | None
     started_at: str | None
@@ -112,7 +113,7 @@ class _BaselineDocumentRow:
     """Only the Document columns required by the S0 collector."""
 
     id: str
-    file_type: str
+    file_type: str | None
     pages_count: int | None
     created_at: datetime
 
@@ -328,6 +329,13 @@ def _retryable_evidence_available(
 def _validated_sha256(value: object) -> str | None:
     """Return a strict SHA-256 hex identity or fail closed for retained metadata."""
     if not isinstance(value, str) or _SHA256_HEX_RE.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _validated_file_type(value: object) -> str | None:
+    """Return only the bounded Atlas file-type identity used by S0 output."""
+    if not isinstance(value, str) or value not in _SAFE_FILE_TYPES:
         return None
     return value
 
@@ -835,7 +843,7 @@ def collect_s0_run_snapshot(
         processing_run_id=run.processing_run_id,
         document_id=run.document_id,
         run_status=run.status,
-        file_type=document.file_type,
+        file_type=_validated_file_type(document.file_type),
         source_file_id=source.id if source is not None else None,
         source_checksum_sha256=source_checksum,
         started_at=_iso(run.started_at),
@@ -863,13 +871,14 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
     ]
     for snapshot in items:
         checksum = snapshot.source_checksum_sha256 or "unavailable"
+        file_type = snapshot.file_type or "unavailable"
         lines.extend(
             [
                 f"## `{snapshot.processing_run_id}`",
                 "",
                 f"- document ID: `{snapshot.document_id}`",
                 f"- status: `{snapshot.run_status}`",
-                f"- file type: `{snapshot.file_type}`",
+                f"- file type: `{file_type}`",
                 f"- source checksum SHA-256: `{checksum}`",
                 f"- event window truncated: `{str(snapshot.event_window_truncated).lower()}`",
                 f"- event payload decode incomplete: `{str(snapshot.event_payload_decode_incomplete).lower()}`",

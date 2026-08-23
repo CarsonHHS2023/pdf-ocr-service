@@ -24,12 +24,18 @@ def _metric(snapshot, key: str):
     raise AssertionError(f"metric not found: {key}")
 
 
-def _seed_run(db, *, suffix: str, checksum: str = "a" * 64) -> tuple[ProcessingRun, datetime]:
+def _seed_run(
+    db,
+    *,
+    suffix: str,
+    checksum: str = "a" * 64,
+    file_type: str = "pdf",
+) -> tuple[ProcessingRun, datetime]:
     started = datetime(2026, 8, 23, 16, 0, 0)
     document = Document(
         id=f"doc-{suffix}",
         title="private-title-not-for-output",
-        file_type="pdf",
+        file_type=file_type,
         pages_count=3,
         status="completed",
         created_at=started - timedelta(seconds=5),
@@ -39,16 +45,17 @@ def _seed_run(db, *, suffix: str, checksum: str = "a" * 64) -> tuple[ProcessingR
         id=f"source-{suffix}",
         document_id=document.id,
         original_filename="private.pdf",
-        file_type="pdf",
+        file_type=file_type,
         byte_size=4096,
         checksum_sha256=checksum,
         retained=1,
         is_primary=1,
         created_at=started - timedelta(seconds=4),
     )
+    run_prefix = file_type if file_type in {"pdf", "txt"} else "pdf"
     run = ProcessingRun(
         id=f"run-row-{suffix}",
-        processing_run_id=f"pdf-ingest-{suffix}",
+        processing_run_id=f"{run_prefix}-ingest-{suffix}",
         document_id=document.id,
         source_file_id=source.id,
         status="succeeded",
@@ -213,3 +220,35 @@ def test_exact_64_hex_checksum_remains_available() -> None:
     assert snapshot.source_checksum_sha256 == checksum
     assert f"document ID: `{run.document_id}`" in markdown
     assert f"source checksum SHA-256: `{checksum}`" in markdown
+
+
+@pytest.mark.parametrize("file_type", ["secret.pdf", "pdf`\nprivate.pdf"])
+def test_invalid_retained_file_type_is_not_exposed(file_type: str) -> None:
+    db = _session()
+    run, _ = _seed_run(
+        db,
+        suffix=f"invalid-file-type-{len(file_type)}",
+        file_type=file_type,
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run.processing_run_id)
+    markdown = render_s0_markdown([snapshot])
+
+    assert snapshot.file_type is None
+    assert file_type not in str(snapshot.to_dict())
+    assert file_type not in markdown
+    assert "file type: `unavailable`" in markdown
+
+
+@pytest.mark.parametrize("file_type", ["pdf", "txt"])
+def test_valid_retained_file_type_remains_available(file_type: str) -> None:
+    db = _session()
+    run, _ = _seed_run(db, suffix=f"valid-file-type-{file_type}", file_type=file_type)
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run.processing_run_id)
+    markdown = render_s0_markdown([snapshot])
+
+    assert snapshot.file_type == file_type
+    assert f"file type: `{file_type}`" in markdown

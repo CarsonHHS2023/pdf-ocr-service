@@ -13,7 +13,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.database import SessionLocal
-from app.processing.s0_baseline import collect_s0_run_snapshot, render_s0_markdown
+from app.processing.s0_baseline import (
+    S0RunSnapshot,
+    collect_s0_run_snapshot,
+    render_s0_markdown,
+)
 
 
 _SUPPORTED_FIXTURE_REGISTRY_VERSION = "v1"
@@ -70,6 +74,14 @@ def _validated_staging_runtime_revision(value: str) -> str:
     return value
 
 
+def _run_media_type(run_id: str) -> str:
+    return run_id.split("-", 1)[0]
+
+
+def _fixture_media_type(fixture_id: str) -> str:
+    return fixture_id.split("-", 1)[0]
+
+
 def _benchmark_record_metadata(args: argparse.Namespace) -> dict[str, object]:
     if len(args.fixture_ids) != len(args.processing_run_ids):
         raise SystemExit(
@@ -93,16 +105,46 @@ def _benchmark_record_metadata(args: argparse.Namespace) -> dict[str, object]:
         args.staging_runtime_revision
     )
 
-    runs = [
-        {"processing_run_id": run_id, "fixture_id": fixture_id}
-        for run_id, fixture_id in zip(processing_run_ids, fixture_ids, strict=True)
-    ]
+    runs = []
+    for run_id, fixture_id in zip(processing_run_ids, fixture_ids, strict=True):
+        if _run_media_type(run_id) != _fixture_media_type(fixture_id):
+            raise SystemExit(
+                "--processing-run-id and --fixture-id must have matching pdf/txt media types"
+            )
+        runs.append({"processing_run_id": run_id, "fixture_id": fixture_id})
+
     return {
         "fixture_registry_version": fixture_registry_version,
         "backend_git_revision": backend_git_revision,
         "staging_runtime_revision": staging_runtime_revision,
         "runs": runs,
     }
+
+
+def _validate_snapshot_assignments(
+    metadata: dict[str, object],
+    snapshots: list[S0RunSnapshot],
+) -> None:
+    assignments = metadata["runs"]
+    if not isinstance(assignments, list) or len(assignments) != len(snapshots):
+        raise RuntimeError("benchmark run assignments do not match collected snapshots")
+
+    for assignment, snapshot in zip(assignments, snapshots, strict=True):
+        if not isinstance(assignment, dict):
+            raise RuntimeError("benchmark run assignment is malformed")
+        run_id = assignment.get("processing_run_id")
+        fixture_id = assignment.get("fixture_id")
+        if snapshot.processing_run_id != run_id:
+            raise RuntimeError("benchmark run assignment order does not match collected snapshots")
+        expected_media_type = _fixture_media_type(str(fixture_id))
+        if snapshot.file_type is None:
+            raise SystemExit(
+                "collected document file type is unavailable; benchmark media identity cannot be verified"
+            )
+        if snapshot.file_type != expected_media_type:
+            raise SystemExit(
+                "collected document file type does not match the processing-run/fixture media type"
+            )
 
 
 def _render_benchmark_record_markdown(metadata: dict[str, object]) -> str:
@@ -191,6 +233,8 @@ def main() -> int:
         ]
     finally:
         db.close()
+
+    _validate_snapshot_assignments(record_metadata, snapshots)
 
     if args.format == "json":
         output = json.dumps(
