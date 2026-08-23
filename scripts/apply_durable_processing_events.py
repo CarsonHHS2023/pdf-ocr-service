@@ -6,7 +6,6 @@ from pathlib import Path
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 PRESENTATION_BRIDGE_PATH = Path("app/processing/pdf_page_presentation_bridge.py")
-S0_OBSERVABILITY_PATH = Path("app/processing/s0_v5_observability.py")
 MAIN_PATH = Path("app/main.py")
 
 _EVENT_IMPORT = "from app.processing.processing_events import record_processing_event\n"
@@ -69,39 +68,26 @@ def _patch_presentation_bridge() -> None:
     new = '''def _diagnostic(event: str, **fields: object) -> None:
     payload = " ".join(f"{name}={value}" for name, value in sorted(fields.items()))
     _logger.info("%s %s", event, payload)
-    record_processing_event(
-        processing_run_id=fields.get("processing_attempt_id"),
-        document_id=fields.get("document_id"),
-        event_name=event,
-        severity=("error" if event.endswith("_FAILED") else "info"),
-        page_number=(fields.get("page_number") or fields.get("original_page_number")),
-        payload=fields,
+    durable_event = (
+        event in {
+            "PDF_PAGE_CLASSIFICATION_PLANNED",
+            "PDF_PAGE_CLASSIFICATION_CONFIG",
+            "PDF_PROVIDER_PAGE_MAP_CREATED",
+        }
+        or event.endswith("_SUMMARY")
+        or event.endswith("_FAILED")
     )
-'''
-    _replace_once(PRESENTATION_BRIDGE_PATH, old, new, label="presentation diagnostic")
-
-
-def _patch_s0_profile() -> None:
-    source = S0_OBSERVABILITY_PATH.read_text(encoding="utf-8")
-    if _EVENT_IMPORT not in source:
-        anchor = "from typing import Mapping\n"
-        if source.count(anchor) != 1:
-            raise RuntimeError("Could not find unique S0 observability typing import anchor")
-        source = source.replace(anchor, anchor + "\n" + _EVENT_IMPORT, 1)
-        S0_OBSERVABILITY_PATH.write_text(source, encoding="utf-8")
-
-    old = '''        _logger.info("PDF_S0_PROFILE %s", encoded)
-'''
-    new = '''        _logger.info("PDF_S0_PROFILE %s", encoded)
+    if durable_event:
         record_processing_event(
-            processing_run_id=payload.get("processing_run_id"),
-            document_id=payload.get("document_id"),
-            event_name="PDF_S0_PROFILE",
-            page_number=payload.get("page_number"),
-            payload=payload,
+            processing_run_id=fields.get("processing_attempt_id"),
+            document_id=fields.get("document_id"),
+            event_name=event,
+            severity=("error" if event.endswith("_FAILED") else "info"),
+            page_number=(fields.get("page_number") or fields.get("original_page_number")),
+            payload=fields,
         )
 '''
-    _replace_once(S0_OBSERVABILITY_PATH, old, new, label="S0 profile durable event")
+    _replace_once(PRESENTATION_BRIDGE_PATH, old, new, label="presentation diagnostic")
 
 
 def _patch_main_router() -> None:
@@ -125,10 +111,9 @@ app.include_router(reader.router)
 
 
 def patch_durable_processing_events() -> None:
-    """Install all event hooks; safe to invoke repeatedly on a composed checkout."""
+    """Install coarse durable events; keep high-volume page profiles in stdout."""
     _patch_pdf_ingestion()
     _patch_presentation_bridge()
-    _patch_s0_profile()
     _patch_main_router()
 
 
