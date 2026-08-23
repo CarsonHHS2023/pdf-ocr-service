@@ -245,6 +245,44 @@ def test_event_metadata_output_is_allowlisted() -> None:
     assert _metric(snapshot, "max_observed_peak_rss_mb").value == 600.0
 
 
+def test_mismatched_document_event_is_excluded_from_run_snapshot() -> None:
+    db = _session()
+    run_id = _seed_run(db)
+    other = Document(
+        id="doc-other",
+        title="other-private-title",
+        file_type="pdf",
+        pages_count=1,
+        status="completed",
+        created_at=datetime(2026, 8, 23, 11, 59, 0),
+        updated_at=datetime(2026, 8, 23, 12, 1, 0),
+    )
+    db.add(other)
+    db.flush()
+    db.add(
+        ProcessingEvent(
+            id="event-cross-document",
+            processing_run_id=run_id,
+            document_id=other.id,
+            schema_version="atlas.processing.event.v1",
+            event_name="PDF_S0_RESOURCE_HEARTBEAT",
+            severity="error",
+            payload_json=encode_json_text(
+                {"peak_rss_mb": 9999.0, "retryable": True}
+            ),
+            created_at=datetime(2026, 8, 23, 12, 0, 25),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    assert _metric(snapshot, "durable_event_count").value == 3
+    assert _metric(snapshot, "durable_error_event_count").value == 1
+    assert _metric(snapshot, "durable_retryable_signal_count").value == 1
+    assert _metric(snapshot, "max_observed_peak_rss_mb").value == 526.25
+
+
 def test_markdown_does_not_emit_document_title_or_filename() -> None:
     db = _session()
     run_id = _seed_run(db)
