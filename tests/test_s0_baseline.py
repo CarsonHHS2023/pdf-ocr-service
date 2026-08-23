@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event as sqlalchemy_event
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
@@ -239,6 +239,25 @@ def test_legacy_run_without_source_file_id_does_not_infer_document_source() -> N
     assert snapshot.source_checksum_sha256 is None
 
 
+@pytest.mark.parametrize("invalid_source_size", [0, -1])
+def test_non_positive_source_byte_size_is_not_baseline_evidence(
+    invalid_source_size: int,
+) -> None:
+    db = _session()
+    run_id = _seed_run(db, with_events=False)
+    source = db.get(SourceFile, "source-s0")
+    assert source is not None
+    source.byte_size = invalid_source_size
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    source_size = _metric(snapshot, "source_byte_size")
+    assert source_size.status == "not_available"
+    assert source_size.value is None
+    assert "positive source byte size" in (source_size.note or "")
+
+
 @pytest.mark.parametrize("invalid_page_count", [0, -1])
 def test_non_positive_page_count_is_not_baseline_evidence(invalid_page_count: int) -> None:
     db = _session()
@@ -254,6 +273,57 @@ def test_non_positive_page_count_is_not_baseline_evidence(invalid_page_count: in
     assert page_count.status == "not_available"
     assert page_count.value is None
     assert "positive page count" in (page_count.note or "")
+
+
+def test_baseline_entity_reads_project_only_required_columns() -> None:
+    db = _session()
+    run_id = _seed_run(db, with_events=False)
+    run = db.get(ProcessingRun, "run-row-s0")
+    document = db.get(Document, "doc-s0")
+    assert run is not None
+    assert document is not None
+    run.safe_error_summary = "large-legacy-summary-sentinel"
+    run.metrics_json = "large-legacy-metrics-sentinel"
+    run.extensions_json = "large-legacy-extensions-sentinel"
+    document.error_message = "large-legacy-document-error-sentinel"
+    db.commit()
+
+    statements: list[str] = []
+    engine = db.get_bind()
+
+    def _capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", _capture_statement)
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", _capture_statement)
+
+    assert snapshot.processing_run_id == run_id
+    run_select = next(
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("select") and "from processing_runs" in statement
+    )
+    assert "safe_error_summary" not in run_select
+    assert "metrics_json" not in run_select
+    assert "extensions_json" not in run_select
+
+    document_select = next(
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("select") and "from documents" in statement
+    )
+    assert "error_message" not in document_select
+
+    source_select = next(
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("select") and "from source_files" in statement
+    )
+    assert "original_filename" not in source_select
+    assert "storage_reference" not in source_select
 
 
 def test_event_metadata_output_is_allowlisted() -> None:
