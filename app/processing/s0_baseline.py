@@ -187,9 +187,19 @@ def _seconds(start: datetime | None, end: datetime | None) -> float | None:
     if start is None or end is None:
         return None
     value = (end - start).total_seconds()
-    # Equal timestamps are retained in some legacy rows that are explicitly not
-    # suitable timing evidence. Never promote zero/negative intervals to observed.
+    # Equal timestamps are retained in some legacy lifecycle rows that are
+    # explicitly not suitable timing evidence. Never promote zero/negative
+    # lifecycle intervals to observed.
     return round(value, 6) if value > 0 else None
+
+
+def _event_span_seconds(start: datetime | None, end: datetime | None) -> float | None:
+    if start is None or end is None:
+        return None
+    value = (end - start).total_seconds()
+    # Unlike lifecycle durations, a retained event window with one event (or
+    # multiple events at the same persisted timestamp) has a legitimate zero span.
+    return round(value, 6) if value >= 0 else None
 
 
 def _terminal_at(run: ProcessingRun) -> datetime | None:
@@ -224,6 +234,17 @@ def _finite_number(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _usable_numeric_event_value(field: str, value: object) -> float | None:
+    number = _finite_number(value)
+    if number is None:
+        return None
+    # Peak RSS is an absolute memory measurement. Legacy negative values are
+    # invalid evidence even though they are mathematically finite.
+    if field == "peak_rss_mb" and number < 0:
+        return None
+    return number
+
+
 def _numeric_field_has_unusable_value(
     decoded_payloads: Iterable[dict[str, Any]],
     field: str,
@@ -232,7 +253,7 @@ def _numeric_field_has_unusable_value(
     for payload in decoded_payloads:
         if field not in payload or payload[field] is None:
             continue
-        if _finite_number(payload[field]) is None:
+        if _usable_numeric_event_value(field, payload[field]) is None:
             return True
     return False
 
@@ -244,7 +265,7 @@ def _max_numeric_field(
     values = [
         number
         for payload in decoded_payloads
-        if (number := _finite_number(payload.get(field))) is not None
+        if (number := _usable_numeric_event_value(field, payload.get(field))) is not None
     ]
     return max(values) if values else None
 
@@ -401,13 +422,18 @@ def collect_s0_run_snapshot(
                 for payload in decoded_payloads_tuple
                 for key, value in payload.items()
                 if key in _SAFE_NUMERIC_EVENT_FIELDS
-                and _finite_number(value) is not None
+                and _usable_numeric_event_value(key, value) is not None
             }
         )
     )
 
     source_size = source.byte_size if source is not None else None
     page_count = document.pages_count
+    page_count_available = (
+        isinstance(page_count, int)
+        and not isinstance(page_count, bool)
+        and page_count > 0
+    )
     error_count = sum(1 for row in rows if row.severity == "error")
     retryable_signal_count = sum(
         1 for payload in decoded_payloads_tuple if payload.get("retryable") is True
@@ -432,13 +458,13 @@ def collect_s0_run_snapshot(
         ),
         _metric(
             "page_count",
-            value=page_count if isinstance(page_count, int) else None,
-            status="observed" if isinstance(page_count, int) else "not_available",
+            value=page_count if page_count_available else None,
+            status="observed" if page_count_available else "not_available",
             source="Document.pages_count",
             note=(
                 None
-                if isinstance(page_count, int)
-                else "No page count is persisted for this document type/run."
+                if page_count_available
+                else "No positive page count is persisted for this document/run."
             ),
         ),
     ]
@@ -535,7 +561,11 @@ def collect_s0_run_snapshot(
     terminal = _terminal_at(run)
     processing_wall = _seconds(run.started_at, terminal)
     acceptance_to_terminal = _seconds(document.created_at, terminal)
-    event_span = _seconds(rows[0].created_at, rows[-1].created_at) if rows else None
+    event_span = (
+        _event_span_seconds(rows[0].created_at, rows[-1].created_at)
+        if rows
+        else None
+    )
     row_aggregate_incomplete = event_window_truncated
     payload_evidence_incomplete = (
         event_window_truncated
@@ -725,7 +755,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
                 "### Auxiliary lifecycle/observability metrics",
                 "",
                 "| Metric | Status | Value | Unit | Source |",
-                "|---|---|---:|---|---|",
+                "|---|---|---:|---|---|---|",
             ]
         )
         for metric in snapshot.auxiliary_metrics:
