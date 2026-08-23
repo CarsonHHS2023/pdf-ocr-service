@@ -2,8 +2,8 @@
 
 Staging is a development/test environment, so objects in its dedicated private
 bucket are temporary by policy. Scheduled cleanup deletes only files older than
-the configured retention window (30 days by default). Production storage is not
-referenced or targeted by this utility.
+30 days. The bucket id and retention window are intentionally hard-coded safety
+boundaries: Production storage cannot be selected through CLI arguments.
 """
 from __future__ import annotations
 
@@ -60,20 +60,11 @@ def chunked(values: Sequence[str], size: int = _DELETE_BATCH_SIZE) -> Iterator[l
         yield list(values[start : start + size])
 
 
-def build_target(
-    *,
-    now: datetime,
-    staging_bucket: str = DEFAULT_STAGING_BUCKET,
-    retention_days: int = DEFAULT_STAGING_RETENTION_DAYS,
-) -> CleanupTarget:
-    if not isinstance(staging_bucket, str) or not staging_bucket.strip():
-        raise ValueError("staging bucket must be non-empty")
-    if retention_days <= 0:
-        raise ValueError("retention days must be positive")
+def build_target(*, now: datetime) -> CleanupTarget:
     return CleanupTarget(
-        bucket_id=staging_bucket.strip(),
-        cutoff=_utc(now) - timedelta(days=retention_days),
-        reason=f"Staging artifacts older than {retention_days} days",
+        bucket_id=DEFAULT_STAGING_BUCKET,
+        cutoff=_utc(now) - timedelta(days=DEFAULT_STAGING_RETENTION_DAYS),
+        reason=f"Staging artifacts older than {DEFAULT_STAGING_RETENTION_DAYS} days",
     )
 
 
@@ -92,6 +83,8 @@ def _list_target_files(target: CleanupTarget, *, token: str) -> list[object]:
 def _delete_paths(bucket_id: str, paths: Sequence[str], *, token: str) -> None:
     from huggingface_hub import batch_bucket_files
 
+    if bucket_id != DEFAULT_STAGING_BUCKET:
+        raise ValueError("cleanup may only delete from the exact Staging bucket")
     for batch in chunked(paths):
         batch_bucket_files(bucket_id, delete=batch, token=token)
 
@@ -105,13 +98,16 @@ def _is_bucket_not_found(exc: BaseException) -> bool:
 
 
 def execute_target(target: CleanupTarget, *, token: str, apply: bool) -> tuple[int, int]:
+    if target.bucket_id != DEFAULT_STAGING_BUCKET:
+        raise ValueError("cleanup target must be the exact Staging bucket")
+
     try:
         items = _list_target_files(target, token=token)
     except Exception as exc:
         if _is_bucket_not_found(exc):
             raise RuntimeError(
                 "Staging bucket is not accessible to the configured HF_TOKEN: "
-                f"{target.bucket_id}. Verify the bucket id and grant the token "
+                f"{DEFAULT_STAGING_BUCKET}. Verify the bucket id and grant the token "
                 "read/delete access to this private bucket."
             ) from exc
         raise
@@ -125,17 +121,17 @@ def execute_target(target: CleanupTarget, *, token: str, apply: bool) -> tuple[i
     )
     print(
         "HF_BUCKET_CLEANUP_PLAN "
-        f"environment=staging bucket={target.bucket_id} prefix=<bucket-root> "
+        f"environment=staging bucket={DEFAULT_STAGING_BUCKET} prefix=<bucket-root> "
         f"cutoff={target.cutoff.isoformat()} files={len(paths)} bytes={total_bytes} "
         f"apply={str(apply).lower()} reason={target.reason}",
         flush=True,
     )
 
     if apply and paths:
-        _delete_paths(target.bucket_id, paths, token=token)
+        _delete_paths(DEFAULT_STAGING_BUCKET, paths, token=token)
         print(
             "HF_BUCKET_CLEANUP_APPLIED "
-            f"environment=staging bucket={target.bucket_id} prefix=<bucket-root> "
+            f"environment=staging bucket={DEFAULT_STAGING_BUCKET} prefix=<bucket-root> "
             f"files={len(paths)} bytes={total_bytes}",
             flush=True,
         )
@@ -145,8 +141,6 @@ def execute_target(target: CleanupTarget, *, token: str, apply: bool) -> tuple[i
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Actually delete selected objects")
-    parser.add_argument("--staging-bucket", default=DEFAULT_STAGING_BUCKET)
-    parser.add_argument("--retention-days", type=int, default=DEFAULT_STAGING_RETENTION_DAYS)
     return parser.parse_args()
 
 
@@ -156,11 +150,7 @@ def main() -> int:
     if not token:
         raise SystemExit("HF_TOKEN is required")
 
-    target = build_target(
-        now=datetime.now(timezone.utc),
-        staging_bucket=args.staging_bucket,
-        retention_days=args.retention_days,
-    )
+    target = build_target(now=datetime.now(timezone.utc))
     files, size = execute_target(target, token=token, apply=args.apply)
     print(
         "HF_BUCKET_CLEANUP_SUMMARY "
