@@ -286,7 +286,7 @@ def _numeric_field_has_unusable_value(
 ) -> bool:
     """Return whether a retained decoded payload carries unusable numeric evidence."""
     for payload in decoded_payloads:
-        if field not in payload or payload[field] is None:
+        if field not in payload:
             continue
         if _usable_numeric_event_value(field, payload[field]) is None:
             return True
@@ -862,12 +862,14 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
         "",
     ]
     for snapshot in items:
+        checksum = snapshot.source_checksum_sha256 or "unavailable"
         lines.extend(
             [
                 f"## `{snapshot.processing_run_id}`",
                 "",
                 f"- status: `{snapshot.run_status}`",
                 f"- file type: `{snapshot.file_type}`",
+                f"- source checksum SHA-256: `{checksum}`",
                 f"- event window truncated: `{str(snapshot.event_window_truncated).lower()}`",
                 f"- event payload decode incomplete: `{str(snapshot.event_payload_decode_incomplete).lower()}`",
                 f"- event payload oversized/incomplete: `{str(snapshot.event_payload_oversized_incomplete).lower()}`",
