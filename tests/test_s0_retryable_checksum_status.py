@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
-from app.processing.s0_baseline import collect_s0_run_snapshot
+from app.processing.s0_baseline import collect_s0_run_snapshot, render_s0_markdown
 
 
 def _session():
@@ -127,6 +127,56 @@ def test_valid_and_invalid_retryable_values_make_count_partial() -> None:
     assert "non-Boolean retryable value" in (retryable.note or "")
 
 
+def test_valid_and_null_peak_rss_values_make_maximum_partial() -> None:
+    db = _session()
+    run, started = _seed_run(db, suffix="mixed-null-peak-rss")
+    _add_event(
+        db,
+        run,
+        started,
+        event_id="event-valid-peak-rss",
+        payload={"peak_rss_mb": 321.5},
+        seconds=5,
+    )
+    _add_event(
+        db,
+        run,
+        started,
+        event_id="event-null-peak-rss",
+        payload={"peak_rss_mb": None},
+        seconds=10,
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run.processing_run_id)
+    peak_rss = _metric(snapshot, "max_observed_peak_rss_mb")
+
+    assert peak_rss.status == "partial"
+    assert peak_rss.value == 321.5
+    assert "unusable peak_rss_mb numeric value" in (peak_rss.note or "")
+
+
+def test_only_null_peak_rss_is_not_available() -> None:
+    db = _session()
+    run, started = _seed_run(db, suffix="null-only-peak-rss")
+    _add_event(
+        db,
+        run,
+        started,
+        event_id="event-null-peak-rss",
+        payload={"peak_rss_mb": None},
+        seconds=5,
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run.processing_run_id)
+    peak_rss = _metric(snapshot, "max_observed_peak_rss_mb")
+
+    assert peak_rss.status == "not_available"
+    assert peak_rss.value is None
+    assert "unusable peak_rss_mb numeric value" in (peak_rss.note or "")
+
+
 @pytest.mark.parametrize(
     "checksum",
     [
@@ -142,9 +192,12 @@ def test_invalid_retained_checksum_is_not_exposed(checksum: str) -> None:
     db.commit()
 
     snapshot = collect_s0_run_snapshot(db, processing_run_id=run.processing_run_id)
+    markdown = render_s0_markdown([snapshot])
 
     assert snapshot.source_checksum_sha256 is None
     assert checksum not in str(snapshot.to_dict())
+    assert checksum not in markdown
+    assert "source checksum SHA-256: `unavailable`" in markdown
 
 
 def test_exact_64_hex_checksum_remains_available() -> None:
@@ -154,5 +207,7 @@ def test_exact_64_hex_checksum_remains_available() -> None:
     db.commit()
 
     snapshot = collect_s0_run_snapshot(db, processing_run_id=run.processing_run_id)
+    markdown = render_s0_markdown([snapshot])
 
     assert snapshot.source_checksum_sha256 == checksum
+    assert f"source checksum SHA-256: `{checksum}`" in markdown
