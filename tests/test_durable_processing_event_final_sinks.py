@@ -71,6 +71,24 @@ def _diagnostic(event: str, **fields: object) -> None:
     assert path.read_text(encoding="utf-8") == first
 
 
+def test_raw_source_without_result_stage_failures_is_noop(tmp_path: Path) -> None:
+    path = tmp_path / "pdf_page_presentation_bridge.py"
+    original = '''def _diagnostic(event: str, **fields: object) -> None:
+    return None
+
+
+def process(provider_input):
+    _diagnostic("PDF_PROVIDER_PAGE_MAP_CREATED", page_count=1)
+'''
+    path.write_text(original, encoding="utf-8")
+
+    durable_overlay._patch_provider_result_stage_failure_correlation(path)
+    assert path.read_text(encoding="utf-8") == original
+
+    durable_overlay._patch_provider_result_stage_failure_correlation(path)
+    assert path.read_text(encoding="utf-8") == original
+
+
 def test_all_provider_result_stage_failures_gain_processing_correlation(
     tmp_path: Path,
 ) -> None:
