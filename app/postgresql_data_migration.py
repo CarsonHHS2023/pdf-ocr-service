@@ -8,6 +8,11 @@ public candidate_id instead of copying the old candidate_record_id.
 
 The caller owns the source artifact and target database selection.  This module
 never discovers Production resources and never mutates the source SQLite file.
+
+Processing-event telemetry is observability rather than business recovery data.
+A legacy SQLite recovery artifact may therefore remain on schema 0006 while the
+PostgreSQL target is on 0007; processing_events are not part of the replay table
+set and start empty on the recovered target.
 """
 from __future__ import annotations
 
@@ -32,7 +37,15 @@ from app.reader_v2.service import build_selected_reader_v2_document
 from app.structured_content_v2.repository import StructuredContentCandidateV2Repository
 from app.structured_content_v2.selection import StructuredContentV2SelectionRepository
 
-EXPECTED_ALEMBIC_HEAD = "0006_ingestion_dispatches"
+SUPPORTED_SOURCE_ALEMBIC_HEADS = frozenset(
+    {
+        "0006_ingestion_dispatches",
+        "0007_processing_events",
+    }
+)
+EXPECTED_TARGET_ALEMBIC_HEAD = "0007_processing_events"
+# Compatibility export for callers that historically imported one head value.
+EXPECTED_ALEMBIC_HEAD = EXPECTED_TARGET_ALEMBIC_HEAD
 _V2_PREFIX = "structured_content_v2_"
 
 
@@ -78,6 +91,8 @@ def _readonly_sqlite_engine(path: Path) -> Engine:
 
 
 def _application_tables():
+    # processing_events is intentionally not imported into this module's
+    # Base.metadata registration set: observability rows are not recovery truth.
     return tuple(table for table in Base.metadata.sorted_tables if table.name != "alembic_version")
 
 
@@ -110,7 +125,7 @@ def _validate_source_sqlite(path: Path, connection: Connection) -> tuple[str, in
             f"source SQLite foreign_key_check found {len(foreign_keys)} violation(s)"
         )
     head = _database_alembic_head(connection)
-    if head != EXPECTED_ALEMBIC_HEAD:
+    if head not in SUPPORTED_SOURCE_ALEMBIC_HEADS:
         raise PostgreSQLDataMigrationError(f"unexpected source Alembic head: {head}")
     return _sha256_file(path), int(path.stat().st_size)
 
@@ -121,7 +136,7 @@ def _validate_target_postgresql(connection: Connection) -> str:
             f"target must be PostgreSQL, got dialect={connection.dialect.name}"
         )
     head = _database_alembic_head(connection)
-    if head != EXPECTED_ALEMBIC_HEAD:
+    if head != EXPECTED_TARGET_ALEMBIC_HEAD:
         raise PostgreSQLDataMigrationError(f"unexpected target Alembic head: {head}")
 
     existing_tables = set(
@@ -375,6 +390,8 @@ def migrate_sqlite_to_postgresql(
 
 __all__ = [
     "EXPECTED_ALEMBIC_HEAD",
+    "EXPECTED_TARGET_ALEMBIC_HEAD",
+    "SUPPORTED_SOURCE_ALEMBIC_HEADS",
     "PostgreSQLDataMigrationError",
     "PostgreSQLDataMigrationReport",
     "migrate_sqlite_to_postgresql",
