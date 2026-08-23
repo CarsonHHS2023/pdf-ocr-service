@@ -37,6 +37,22 @@ jobs:
       - name: Verify Hugging Face missing-bucket exception contract
         run: python -c 'from huggingface_hub.errors import BucketNotFoundError; print(BucketNotFoundError.__name__)'
 
+      - name: Verify workflow is Staging-only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/storage-cleanup.yml').read_text(encoding='utf-8')
+          staging_bucket = 'carsonhhs/pdf-ocr-service-ocrmypdf-test-storage'
+          production_bucket = 'carsonhhs/pdf-ocr-service-storage'
+
+          assert staging_bucket in workflow, 'Staging bucket id must be explicit in cleanup workflow'
+          assert production_bucket not in workflow, 'Production bucket must never be targeted by Staging cleanup'
+          assert "STAGING_RETENTION_DAYS: '30'" in workflow, 'Staging retention must remain 30 days'
+          assert '--retention-days "$STAGING_RETENTION_DAYS"' in workflow
+          assert 'purge-test' not in workflow, 'Full-bucket purge mode must not return'
+          PY
+
       - name: Run cleanup policy regressions
         run: |
           python -m py_compile scripts/cleanup_hf_buckets.py tests/test_hf_bucket_cleanup.py
