@@ -1,20 +1,12 @@
-name: Cleanup HF Storage Buckets
+name: Cleanup Staging HF Storage Bucket
 
 on:
   schedule:
     - cron: '17 9 * * *'
   workflow_dispatch:
     inputs:
-      mode:
-        description: Cleanup policy to run
-        required: true
-        default: scheduled
-        type: choice
-        options:
-          - scheduled
-          - purge-test
       apply:
-        description: Actually delete selected files (false = dry run)
+        description: Actually delete Staging files older than 30 days (false = dry run)
         required: true
         default: false
         type: boolean
@@ -23,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: hf-storage-bucket-cleanup
+  group: hf-staging-storage-bucket-cleanup
   cancel-in-progress: false
 
 jobs:
@@ -48,26 +40,16 @@ jobs:
       - name: Validate cleanup credential
         run: test -n "$HF_TOKEN"
 
-      - name: Run scheduled retention cleanup
+      - name: Run scheduled Staging retention cleanup
         if: github.event_name == 'schedule'
-        run: |
-          python scripts/cleanup_hf_buckets.py \
-            --mode scheduled \
-            --test-retention-days 7 \
-            --production-diagnostics-retention-days 14 \
-            --apply
+        run: python scripts/cleanup_hf_buckets.py --apply
 
-      - name: Run manual cleanup
+      - name: Run manual Staging cleanup
         if: github.event_name == 'workflow_dispatch'
         env:
-          CLEANUP_MODE: ${{ inputs.mode }}
           CLEANUP_APPLY: ${{ inputs.apply }}
         run: |
-          args=(
-            --mode "$CLEANUP_MODE"
-            --test-retention-days 7
-            --production-diagnostics-retention-days 14
-          )
+          args=()
           if [ "$CLEANUP_APPLY" = "true" ]; then
             args+=(--apply)
           fi
@@ -77,10 +59,13 @@ jobs:
         if: always()
         run: |
           {
-            echo '### HF Storage Bucket cleanup policy'
+            echo '### Staging HF Storage cleanup policy'
             echo ''
-            echo '- Test bucket: files older than 7 days on scheduled runs.'
-            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days.'
-            echo '- Manual `purge-test` can empty the test bucket; it never targets the production bucket root.'
+            echo '- Environment: **Staging only**.'
+            echo '- Bucket: `carsonhhs/pdf-ocr-service-ocrmypdf-test-storage`.'
+            echo '- Retention: delete files older than **30 days**.'
+            echo '- Bucket id and retention cannot be overridden from the workflow or CLI.'
+            echo '- Production storage is not referenced or targeted.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
+            echo '- A private-bucket 404 is treated as an access/configuration failure, not silently skipped.'
           } >> "$GITHUB_STEP_SUMMARY"
