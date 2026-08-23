@@ -59,6 +59,12 @@ _SENSITIVE_EXACT_KEYS = {
     "source_bytes",
     "pdf_bytes",
 }
+_SENSITIVE_STRING_PREFIXES = (
+    "http://",
+    "https://",
+    "data:",
+    "bearer ",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,12 +111,15 @@ def _safe_value(value: object, *, depth: int) -> object:
     if isinstance(value, float):
         return value if math.isfinite(value) else _DROP
     if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized.startswith(_SENSITIVE_STRING_PREFIXES):
+            return _DROP
         return value[:MAX_STRING_CHARS]
     if depth >= MAX_NESTING_DEPTH:
         return _DROP
     if isinstance(value, Mapping):
         output: dict[str, object] = {}
-        for raw_key in sorted(value, key=lambda item: str(item))[: MAX_NESTED_FIELDS * 2]:
+        for raw_key in sorted(value, key=lambda item: str(item)):
             key = _safe_key(raw_key)
             if key is None or key in output:
                 continue
@@ -121,9 +130,14 @@ def _safe_value(value: object, *, depth: int) -> object:
             if len(output) >= MAX_NESTED_FIELDS:
                 break
         return output
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, memoryview)):
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (bytes, bytearray, memoryview),
+    ):
         output = []
-        for item in value[:MAX_LIST_ITEMS]:
+        for index, item in enumerate(value):
+            if index >= MAX_LIST_ITEMS:
+                break
             cleaned = _safe_value(item, depth=depth + 1)
             if cleaned is not _DROP:
                 output.append(cleaned)
@@ -131,13 +145,30 @@ def _safe_value(value: object, *, depth: int) -> object:
     return _DROP
 
 
-def sanitize_processing_event_payload(payload: Mapping[str, object] | None) -> dict[str, Any]:
+def _encoded_payload_size(payload: Mapping[str, object]) -> int:
+    return len((encode_json_text(dict(payload)) or "{}").encode("utf-8"))
+
+
+def _mark_truncated(payload: dict[str, Any]) -> dict[str, Any]:
+    if len(payload) >= MAX_PAYLOAD_FIELDS:
+        return payload
+    candidate = {**payload, "_payload_truncated": True}
+    if _encoded_payload_size(candidate) <= MAX_EVENT_PAYLOAD_BYTES:
+        return candidate
+    return payload
+
+
+def sanitize_processing_event_payload(
+    payload: Mapping[str, object] | None,
+) -> dict[str, Any]:
     """Return deterministic bounded JSON while dropping sensitive/unbounded fields."""
     if not isinstance(payload, Mapping):
         return {}
 
     cleaned: dict[str, Any] = {}
     for raw_key in sorted(payload, key=lambda item: str(item)):
+        if len(cleaned) >= MAX_PAYLOAD_FIELDS:
+            break
         key = _safe_key(raw_key)
         if key is None or key in cleaned:
             continue
@@ -145,14 +176,10 @@ def sanitize_processing_event_payload(payload: Mapping[str, object] | None) -> d
         if value is _DROP:
             continue
         candidate = {**cleaned, key: value}
-        encoded = encode_json_text(candidate) or "{}"
-        if len(encoded.encode("utf-8")) > MAX_EVENT_PAYLOAD_BYTES:
-            cleaned["_payload_truncated"] = True
+        if _encoded_payload_size(candidate) > MAX_EVENT_PAYLOAD_BYTES:
+            cleaned = _mark_truncated(cleaned)
             break
         cleaned[key] = value
-        if len(cleaned) >= MAX_PAYLOAD_FIELDS:
-            cleaned["_payload_truncated"] = True
-            break
     return cleaned
 
 
@@ -186,7 +213,11 @@ def record_processing_event(
     if severity not in {"info", "warning", "error"}:
         return False
     resolved_page: int | None = None
-    if isinstance(page_number, int) and not isinstance(page_number, bool) and page_number > 0:
+    if (
+        isinstance(page_number, int)
+        and not isinstance(page_number, bool)
+        and page_number > 0
+    ):
         resolved_page = page_number
 
     db = None
@@ -210,7 +241,9 @@ def record_processing_event(
             event_name=name,
             severity=severity,
             page_number=resolved_page,
-            payload_json=encode_json_text(sanitize_processing_event_payload(payload)) or "{}",
+            payload_json=(
+                encode_json_text(sanitize_processing_event_payload(payload)) or "{}"
+            ),
         )
         db.add(row)
         db.commit()
@@ -235,7 +268,11 @@ def _decode_payload(value: str) -> dict[str, Any]:
         payload = decode_json_text(value)
     except Exception:
         return {"_persisted_payload_invalid": True}
-    return payload if isinstance(payload, dict) else {"_persisted_payload_invalid": True}
+    return (
+        payload
+        if isinstance(payload, dict)
+        else {"_persisted_payload_invalid": True}
+    )
 
 
 def list_processing_events(
@@ -247,13 +284,24 @@ def list_processing_events(
     limit: int = 200,
 ) -> tuple[ProcessingEventRecord, ...]:
     """Return the latest bounded event window in chronological order."""
-    run_id = _valid_identity(processing_run_id, max_chars=255) if processing_run_id is not None else None
-    doc_id = _valid_identity(document_id, max_chars=255) if document_id is not None else None
+    run_id = (
+        _valid_identity(processing_run_id, max_chars=255)
+        if processing_run_id is not None
+        else None
+    )
+    doc_id = (
+        _valid_identity(document_id, max_chars=255)
+        if document_id is not None
+        else None
+    )
     if run_id is None and doc_id is None:
         raise ValueError("processing_run_id or document_id is required")
     if event_name is not None:
         normalized_event = _valid_identity(event_name, max_chars=128)
-        if normalized_event is None or _EVENT_NAME_RE.fullmatch(normalized_event) is None:
+        if (
+            normalized_event is None
+            or _EVENT_NAME_RE.fullmatch(normalized_event) is None
+        ):
             raise ValueError("event_name is invalid")
     else:
         normalized_event = None
@@ -267,7 +315,10 @@ def list_processing_events(
     if normalized_event is not None:
         statement = statement.where(ProcessingEvent.event_name == normalized_event)
     rows = session.execute(
-        statement.order_by(ProcessingEvent.created_at.desc(), ProcessingEvent.id.desc()).limit(bounded_limit)
+        statement.order_by(
+            ProcessingEvent.created_at.desc(),
+            ProcessingEvent.id.desc(),
+        ).limit(bounded_limit)
     ).scalars().all()
     rows.reverse()
     return tuple(
