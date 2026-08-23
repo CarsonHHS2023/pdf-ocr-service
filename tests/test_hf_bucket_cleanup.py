@@ -8,7 +8,10 @@ import pytest
 from scripts.cleanup_hf_buckets import (
     DEFAULT_PRODUCTION_BUCKET,
     DEFAULT_TEST_BUCKET,
+    PRODUCTION_CLEANUP_TOKEN_ENV,
     PRODUCTION_DIAGNOSTIC_PREFIXES,
+    STAGING_CLEANUP_TOKEN_ENV,
+    _token_for_target,
     build_targets,
     chunked,
     scope_items_to_prefix,
@@ -25,21 +28,51 @@ def _item(path: str, *, age_days: int, now: datetime, item_type: str = "file", s
     )
 
 
-def test_scheduled_targets_are_scoped_to_test_root_and_production_diagnostics() -> None:
+def test_scheduled_targets_keep_production_policy_and_extend_staging_retention() -> None:
     now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
 
     targets = build_targets(mode="scheduled", now=now)
 
-    assert targets[0].bucket_id == DEFAULT_TEST_BUCKET
-    assert targets[0].prefix is None
-    assert targets[0].cutoff == now - timedelta(days=7)
-    assert [target.prefix for target in targets[1:]] == list(PRODUCTION_DIAGNOSTIC_PREFIXES)
-    assert all(target.bucket_id == DEFAULT_PRODUCTION_BUCKET for target in targets[1:])
-    assert all(target.cutoff == now - timedelta(days=14) for target in targets[1:])
-    assert all(target.prefix is not None for target in targets[1:])
+    staging = targets[0]
+    production = targets[1:]
+
+    assert staging.bucket_id == DEFAULT_TEST_BUCKET
+    assert staging.prefix is None
+    assert staging.cutoff == now - timedelta(days=30)
+    assert staging.token_env == STAGING_CLEANUP_TOKEN_ENV
+
+    assert [target.prefix for target in production] == list(PRODUCTION_DIAGNOSTIC_PREFIXES)
+    assert all(target.bucket_id == DEFAULT_PRODUCTION_BUCKET for target in production)
+    assert all(target.cutoff == now - timedelta(days=14) for target in production)
+    assert all(target.prefix is not None for target in production)
+    assert all(target.token_env == PRODUCTION_CLEANUP_TOKEN_ENV for target in production)
 
 
-def test_purge_test_never_targets_production() -> None:
+def test_target_credentials_are_isolated_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    targets = build_targets(
+        mode="scheduled",
+        now=datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc),
+    )
+    staging = targets[0]
+    production = targets[1:]
+
+    monkeypatch.setenv(STAGING_CLEANUP_TOKEN_ENV, "staging-token")
+    monkeypatch.setenv(PRODUCTION_CLEANUP_TOKEN_ENV, "production-token")
+
+    assert _token_for_target(staging) == "staging-token"
+    assert all(_token_for_target(target) == "production-token" for target in production)
+
+    monkeypatch.delenv(STAGING_CLEANUP_TOKEN_ENV)
+    with pytest.raises(SystemExit, match=STAGING_CLEANUP_TOKEN_ENV):
+        _token_for_target(staging)
+
+    monkeypatch.setenv(STAGING_CLEANUP_TOKEN_ENV, "staging-token")
+    monkeypatch.delenv(PRODUCTION_CLEANUP_TOKEN_ENV)
+    with pytest.raises(SystemExit, match=PRODUCTION_CLEANUP_TOKEN_ENV):
+        _token_for_target(production[0])
+
+
+def test_purge_test_never_targets_production_and_uses_staging_token() -> None:
     now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
 
     targets = build_targets(mode="purge-test", now=now)
@@ -48,6 +81,7 @@ def test_purge_test_never_targets_production() -> None:
     assert targets[0].bucket_id == DEFAULT_TEST_BUCKET
     assert targets[0].prefix is None
     assert targets[0].cutoff is None
+    assert targets[0].token_env == STAGING_CLEANUP_TOKEN_ENV
 
 
 def test_production_prefix_guard_rejects_similarly_named_neighbor() -> None:
@@ -73,13 +107,17 @@ def test_production_prefix_guard_rejects_similarly_named_neighbor() -> None:
 
 def test_select_expired_files_keeps_unknown_or_recent_objects() -> None:
     now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
-    cutoff = now - timedelta(days=7)
+    cutoff = now - timedelta(days=30)
     unknown = SimpleNamespace(type="file", path="unknown.bin", mtime=None, size=10)
-    directory = _item("folder", age_days=30, now=now, item_type="directory")
-    recent = _item("recent.bin", age_days=2, now=now)
-    old = _item("old.bin", age_days=8, now=now)
+    directory = _item("folder", age_days=45, now=now, item_type="directory")
+    recent = _item("recent.bin", age_days=29, now=now)
+    boundary = _item("boundary.bin", age_days=30, now=now)
+    old = _item("old.bin", age_days=31, now=now)
 
-    selected = select_expired_files([unknown, directory, recent, old], cutoff=cutoff)
+    selected = select_expired_files(
+        [unknown, directory, recent, boundary, old],
+        cutoff=cutoff,
+    )
 
     assert [item.path for item in selected] == ["old.bin"]
 

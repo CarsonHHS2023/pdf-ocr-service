@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 15
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_STAGING_BUCKET_CLEANUP_TOKEN: ${{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}
 
     steps:
       - name: Check out repository
@@ -45,15 +46,28 @@ jobs:
       - name: Install Hugging Face bucket client
         run: python -m pip install --disable-pip-version-check -q 'huggingface-hub>=1.5.0,<2'
 
-      - name: Validate cleanup credential
-        run: test -n "$HF_TOKEN"
+      - name: Validate scheduled cleanup credentials
+        if: github.event_name == 'schedule'
+        run: |
+          test -n "$HF_STAGING_BUCKET_CLEANUP_TOKEN"
+          test -n "$HF_TOKEN"
+
+      - name: Validate manual cleanup credentials
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CLEANUP_MODE: ${{ inputs.mode }}
+        run: |
+          test -n "$HF_STAGING_BUCKET_CLEANUP_TOKEN"
+          if [ "$CLEANUP_MODE" = "scheduled" ]; then
+            test -n "$HF_TOKEN"
+          fi
 
       - name: Run scheduled retention cleanup
         if: github.event_name == 'schedule'
         run: |
           python scripts/cleanup_hf_buckets.py \
             --mode scheduled \
-            --test-retention-days 7 \
+            --test-retention-days 30 \
             --production-diagnostics-retention-days 14 \
             --apply
 
@@ -65,7 +79,7 @@ jobs:
         run: |
           args=(
             --mode "$CLEANUP_MODE"
-            --test-retention-days 7
+            --test-retention-days 30
             --production-diagnostics-retention-days 14
           )
           if [ "$CLEANUP_APPLY" = "true" ]; then
@@ -79,8 +93,8 @@ jobs:
           {
             echo '### HF Storage Bucket cleanup policy'
             echo ''
-            echo '- Test bucket: files older than 7 days on scheduled runs.'
-            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days.'
-            echo '- Manual `purge-test` can empty the test bucket; it never targets the production bucket root.'
+            echo '- Staging/test bucket: files older than 30 days on scheduled runs; uses dedicated Staging cleanup token.'
+            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days; continues using the existing production HF token.'
+            echo '- Manual `purge-test` can empty the Staging/test bucket; it never targets the production bucket root.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
           } >> "$GITHUB_STEP_SUMMARY"

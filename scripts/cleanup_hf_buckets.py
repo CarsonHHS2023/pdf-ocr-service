@@ -1,14 +1,15 @@
 """Safely clean temporary Hugging Face Storage Bucket artifacts.
 
 This utility is intentionally independent from the FastAPI/OCR runtime. It only
-operates on the known test bucket and on two explicit production diagnostics
-prefixes. Production Reader/source assets are never targeted.
+operates on the known Staging/test bucket and on two explicit production
+diagnostics prefixes. Production Reader/source assets are never targeted.
 
 The current diagnostic layouts do not carry a reliable job terminal status:
 ``opencv-diagnostics`` is grouped by processing attempt while
 ``opencv-crop-diagnostics`` is grouped by asset id. Until status metadata is
-available at the storage boundary, production diagnostics use the conservative
-14-day retention window for every file. Test artifacts use a 7-day window.
+available at the storage boundary, production diagnostics use the existing
+conservative 14-day retention window for every file. Staging/test artifacts use
+a 30-day window.
 """
 from __future__ import annotations
 
@@ -24,8 +25,10 @@ PRODUCTION_DIAGNOSTIC_PREFIXES = (
     "output/opencv-diagnostics/",
     "output/opencv-crop-diagnostics/",
 )
-DEFAULT_TEST_RETENTION_DAYS = 7
+DEFAULT_TEST_RETENTION_DAYS = 30
 DEFAULT_PRODUCTION_DIAGNOSTICS_RETENTION_DAYS = 14
+STAGING_CLEANUP_TOKEN_ENV = "HF_STAGING_BUCKET_CLEANUP_TOKEN"
+PRODUCTION_CLEANUP_TOKEN_ENV = "HF_TOKEN"
 _DELETE_BATCH_SIZE = 500
 
 
@@ -35,6 +38,7 @@ class CleanupTarget:
     prefix: str | None
     cutoff: datetime | None
     reason: str
+    token_env: str
 
 
 def _utc(value: datetime) -> datetime:
@@ -66,7 +70,7 @@ def select_expired_files(items: Iterable[object], *, cutoff: datetime | None) ->
     """Return file entries eligible for deletion.
 
     ``cutoff=None`` means every file is eligible, which is used only for the
-    explicitly named test bucket purge mode.
+    explicitly named Staging/test bucket purge mode.
     """
     selected: list[object] = []
     normalized_cutoff = _utc(cutoff) if cutoff is not None else None
@@ -117,6 +121,7 @@ def build_targets(
                 prefix=None,
                 cutoff=None,
                 reason="manual full purge of test bucket contents",
+                token_env=STAGING_CLEANUP_TOKEN_ENV,
             ),
         )
     if mode != "scheduled":
@@ -128,6 +133,7 @@ def build_targets(
             prefix=None,
             cutoff=now_utc - timedelta(days=test_retention_days),
             reason=f"test artifacts older than {test_retention_days} days",
+            token_env=STAGING_CLEANUP_TOKEN_ENV,
         )
     ]
     production_cutoff = now_utc - timedelta(days=production_diagnostics_retention_days)
@@ -140,6 +146,7 @@ def build_targets(
                 "production diagnostics older than "
                 f"{production_diagnostics_retention_days} days"
             ),
+            token_env=PRODUCTION_CLEANUP_TOKEN_ENV,
         )
         for prefix in PRODUCTION_DIAGNOSTIC_PREFIXES
     )
@@ -211,12 +218,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _token_for_target(target: CleanupTarget) -> str:
+    token = os.getenv(target.token_env, "").strip()
+    if not token:
+        raise SystemExit(
+            f"{target.token_env} is required for cleanup target {target.bucket_id}"
+        )
+    return token
+
+
 def main() -> int:
     args = parse_args()
-    token = os.getenv("HF_TOKEN", "").strip()
-    if not token:
-        raise SystemExit("HF_TOKEN is required")
-
     targets = build_targets(
         mode=args.mode,
         now=datetime.now(timezone.utc),
@@ -225,9 +237,17 @@ def main() -> int:
         test_retention_days=args.test_retention_days,
         production_diagnostics_retention_days=args.production_diagnostics_retention_days,
     )
+
+    # Resolve every credential required by this mode before any remote list or
+    # delete operation. A configuration error must not leave a scheduled run
+    # partially applied (for example Staging cleaned but Production skipped).
+    targets_with_tokens = tuple(
+        (target, _token_for_target(target)) for target in targets
+    )
+
     file_count = 0
     byte_count = 0
-    for target in targets:
+    for target, token in targets_with_tokens:
         files, size = execute_target(target, token=token, apply=args.apply)
         file_count += files
         byte_count += size
