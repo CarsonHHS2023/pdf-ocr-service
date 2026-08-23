@@ -79,8 +79,8 @@ jobs:
           {
             echo '### HF Storage Bucket cleanup policy'
             echo ''
-            echo '- Test bucket: files older than 7 days on scheduled runs.'
-            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days.'
-            echo '- Manual `purge-test` can empty the test bucket; it never targets the production bucket root.'
+            echo '- Legacy test bucket: files older than 7 days when the bucket still exists; a missing legacy bucket is skipped only on scheduled runs.'
+            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days; missing/inaccessible production storage still fails the job.'
+            echo '- Manual `purge-test` remains strict and fails if the requested test bucket does not exist.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
           } >> "$GITHUB_STEP_SUMMARY"
