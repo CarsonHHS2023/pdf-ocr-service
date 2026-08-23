@@ -308,6 +308,74 @@ def _patch_presentation_bridge() -> None:
     _replace_once(PRESENTATION_BRIDGE_PATH, old, new, label="presentation diagnostic")
 
 
+def _patch_provider_shard_failure_metadata() -> None:
+    """Preserve bounded Provider HTTP metadata when sharded outcomes absorb errors."""
+    source = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
+
+    provider_error_import = "from app.processing.errors import ProviderClientError\n"
+    if provider_error_import not in source:
+        import_anchor = "from app.processing.ingestion import canonicalize_inline_json, ingest_artifact_result\n"
+        if source.count(import_anchor) != 1:
+            raise RuntimeError("Could not find provider sharding error import anchor")
+        source = source.replace(import_anchor, import_anchor + provider_error_import, 1)
+
+    helper_anchor = "Diagnostic = Callable[..., None]\n\n\n"
+    helper_body = '''def _provider_failure_metadata(error: Exception) -> dict[str, object]:
+    """Extract bounded Provider metadata from IntegrationError cause chains."""
+    if not isinstance(error, IntegrationError) or error.orchestration_error is None:
+        return {}
+    provider_cause = error.orchestration_error.__cause__
+    if not isinstance(provider_cause, ProviderClientError):
+        return {}
+    return {
+        "provider_error_category": provider_cause.detail.category.value,
+        "provider_http_status": provider_cause.detail.http_status,
+        "provider_error_code": (
+            provider_cause.detail.provider_code
+            or error.orchestration_error.provider_error_code
+        ),
+    }
+
+
+'''
+    if helper_body not in source:
+        if source.count(helper_anchor) != 1:
+            raise RuntimeError("Could not find provider sharding metadata helper anchor")
+        source = source.replace(helper_anchor, helper_anchor + helper_body, 1)
+
+    raw_failure = '''                error_category=exc.category.value,
+                cleanup_safe=shard_cleanup_safe,
+            )
+'''
+    raw_failure_enriched = '''                error_category=exc.category.value,
+                cleanup_safe=shard_cleanup_safe,
+                **_provider_failure_metadata(exc),
+            )
+'''
+    if raw_failure in source:
+        source = source.replace(raw_failure, raw_failure_enriched, 1)
+
+    final_failure_fields = '''            "provider_percent_complete": getattr(progress, "percent_complete", None),
+        }
+'''
+    final_failure_fields_enriched = '''            "provider_percent_complete": getattr(progress, "percent_complete", None),
+            **_provider_failure_metadata(error),
+        }
+'''
+    if final_failure_fields in source:
+        source = source.replace(final_failure_fields, final_failure_fields_enriched, 1)
+
+    if "def failure_fields(error: Exception)" in source:
+        start = source.index("def failure_fields(error: Exception)")
+        end = source.index("    def batch_terminal", start)
+        if "_provider_failure_metadata(error)" not in source[start:end]:
+            raise RuntimeError("Final shard failure fields lack Provider metadata preservation")
+    elif "PDF_PROVIDER_SHARD_FAILED" in source and "_provider_failure_metadata(exc)" not in source:
+        raise RuntimeError("Raw shard failure diagnostic lacks Provider metadata preservation")
+
+    PROVIDER_SHARDING_PATH.write_text(source, encoding="utf-8")
+
+
 def _patch_provider_sharding_timeline() -> None:
     source = SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
     if _EVENT_IMPORT not in source:
@@ -568,6 +636,7 @@ def patch_durable_processing_events() -> None:
     """Install coarse durable events; keep high-volume heartbeats in checkpoints/stdout."""
     _patch_pdf_ingestion()
     _patch_presentation_bridge()
+    _patch_provider_shard_failure_metadata()
     _patch_provider_sharding_timeline()
     _patch_provider_source_access_timeline()
     _patch_source_factory_correlations()
