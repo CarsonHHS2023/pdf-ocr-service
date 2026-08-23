@@ -79,6 +79,7 @@ class S0RunSnapshot:
     started_at: str | None
     terminal_at: str | None
     event_window_truncated: bool
+    event_payload_decode_incomplete: bool
     required_metrics: tuple[MetricReading, ...]
     auxiliary_metrics: tuple[MetricReading, ...]
     observed_event_names: tuple[str, ...]
@@ -184,12 +185,15 @@ def _terminal_at(run: ProcessingRun) -> datetime | None:
     return None
 
 
-def _decode_event_payload(row: ProcessingEvent) -> dict[str, Any]:
+def _decode_event_payload(row: ProcessingEvent) -> tuple[dict[str, Any], bool]:
+    """Return a decoded mapping plus whether this retained payload was usable."""
     try:
         value = decode_json_text(row.payload_json)
     except Exception:
-        return {}
-    return value if isinstance(value, dict) else {}
+        return {}, False
+    if not isinstance(value, dict):
+        return {}, False
+    return value, True
 
 
 def _finite_number(value: object) -> float | None:
@@ -225,10 +229,10 @@ def _source_file_for_run(session, run: ProcessingRun) -> SourceFile | None:
     return source
 
 
-def _event_aggregate_status(*, available: bool, truncated: bool) -> str:
+def _event_aggregate_status(*, available: bool, incomplete: bool) -> str:
     if not available:
         return "not_available"
-    return "partial" if truncated else "observed"
+    return "partial" if incomplete else "observed"
 
 
 def _validate_event_limit(max_events: int) -> None:
@@ -276,7 +280,19 @@ def collect_s0_run_snapshot(
     ).scalars().all()
     event_window_truncated = len(rows) > max_events
     rows = rows[:max_events]
-    decoded_events = tuple((row, _decode_event_payload(row)) for row in rows)
+
+    decoded_rows = tuple(
+        (row, *_decode_event_payload(row))
+        for row in rows
+    )
+    event_payload_decode_incomplete = any(
+        not decode_valid for _, _, decode_valid in decoded_rows
+    )
+    decoded_events = tuple(
+        (row, payload)
+        for row, payload, decode_valid in decoded_rows
+        if decode_valid
+    )
 
     event_names = tuple(
         sorted({row.event_name for row in rows if row.event_name in _SAFE_EVENT_NAMES})
@@ -419,15 +435,40 @@ def collect_s0_run_snapshot(
     processing_wall = _seconds(run.started_at, terminal)
     acceptance_to_terminal = _seconds(document.created_at, terminal)
     event_span = _seconds(rows[0].created_at, rows[-1].created_at) if rows else None
+    row_aggregate_incomplete = event_window_truncated
+    payload_aggregate_incomplete = (
+        event_window_truncated or event_payload_decode_incomplete
+    )
     event_signal_status = _event_aggregate_status(
         available=bool(rows),
-        truncated=event_window_truncated,
+        incomplete=row_aggregate_incomplete,
+    )
+    retryable_signal_status = _event_aggregate_status(
+        available=bool(decoded_events),
+        incomplete=payload_aggregate_incomplete,
     )
     peak_rss_status = _event_aggregate_status(
         available=peak_rss is not None,
-        truncated=event_window_truncated,
+        incomplete=payload_aggregate_incomplete,
     )
+
+    retryable_signal_note = (
+        "Retryability signal only; it does not prove that a retry attempt occurred."
+    )
+    if event_payload_decode_incomplete:
+        retryable_signal_note += (
+            " Payload-derived aggregate is incomplete because at least one retained "
+            "event payload could not be decoded."
+        )
+    if event_window_truncated:
+        retryable_signal_note += " Snapshot event window is also truncated."
+
     peak_rss_note = "Generic processing signal only; not promoted to upload peak memory."
+    if event_payload_decode_incomplete:
+        peak_rss_note += (
+            " Maximum is incomplete because at least one retained event payload "
+            "could not be decoded."
+        )
     if peak_rss is not None and event_window_truncated:
         peak_rss_note += " Maximum is partial because the durable event window is truncated."
 
@@ -489,10 +530,10 @@ def collect_s0_run_snapshot(
             key="durable_retryable_signal_count",
             label="Durable retryable=true signal count in snapshot window",
             unit="signals",
-            status=event_signal_status,
-            value=retryable_signal_count if rows else None,
+            status=retryable_signal_status,
+            value=retryable_signal_count if decoded_events else None,
             source="processing_events.payload.retryable",
-            note="Retryability signal only; it does not prove that a retry attempt occurred.",
+            note=retryable_signal_note,
         ),
         MetricReading(
             key="max_observed_peak_rss_mb",
@@ -516,6 +557,7 @@ def collect_s0_run_snapshot(
         started_at=_iso(run.started_at),
         terminal_at=_iso(terminal),
         event_window_truncated=event_window_truncated,
+        event_payload_decode_incomplete=event_payload_decode_incomplete,
         required_metrics=tuple(required),
         auxiliary_metrics=tuple(auxiliary),
         observed_event_names=event_names,
@@ -531,7 +573,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
         "",
         f"Schema: `{S0_BASELINE_SCHEMA_VERSION}`",
         "",
-        "This report is read-only. `not_instrumented` means Atlas does not yet persist a durable metric that can support the S0 claim; `partial` means a bounded source window is incomplete. Neither may be promoted to a complete measurement.",
+        "This report is read-only. `not_instrumented` means Atlas does not yet persist a durable metric that can support the S0 claim; `partial` means its bounded source window or retained payload evidence is incomplete. Neither may be promoted to a complete measurement.",
         "",
     ]
     for snapshot in items:
@@ -542,6 +584,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
                 f"- status: `{snapshot.run_status}`",
                 f"- file type: `{snapshot.file_type}`",
                 f"- event window truncated: `{str(snapshot.event_window_truncated).lower()}`",
+                f"- event payload decode incomplete: `{str(snapshot.event_payload_decode_incomplete).lower()}`",
                 "",
                 "### Required S0 metrics",
                 "",
