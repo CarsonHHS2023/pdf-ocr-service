@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import sys
 
 import pytest
 
@@ -36,6 +37,17 @@ def test_target_is_hard_locked_to_staging_bucket_with_30_day_retention() -> None
     assert target.bucket_id == DEFAULT_STAGING_BUCKET
     assert target.cutoff == now - timedelta(days=30)
     assert target.reason == "Staging artifacts older than 30 days"
+
+
+def test_cli_rejects_bucket_and_retention_overrides(monkeypatch) -> None:
+    for argv in (
+        ["cleanup_hf_buckets.py", "--staging-bucket", "carsonhhs/pdf-ocr-service-storage"],
+        ["cleanup_hf_buckets.py", "--retention-days", "1"],
+    ):
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit) as caught:
+            cleanup.parse_args()
+        assert caught.value.code == 2
 
 
 def test_select_expired_files_deletes_only_files_older_than_30_days() -> None:
@@ -76,24 +88,13 @@ def test_execute_target_rejects_any_non_staging_bucket_before_listing(monkeypatc
     assert listed is False
 
 
-def test_delete_paths_rejects_non_staging_bucket(monkeypatch) -> None:
-    called = False
-
-    def fake_batch(*_args, **_kwargs):
-        nonlocal called
-        called = True
-
-    # The guard executes before importing/calling the Hugging Face mutator.
-    monkeypatch.setattr(cleanup, "chunked", lambda *_args, **_kwargs: [["old.bin"]])
-
+def test_delete_paths_rejects_non_staging_bucket() -> None:
     with pytest.raises(ValueError, match="exact Staging bucket"):
         cleanup._delete_paths(
             "carsonhhs/pdf-ocr-service-storage",
             ["old.bin"],
             token="test-token",
         )
-
-    assert called is False
 
 
 def test_inaccessible_private_staging_bucket_fails_with_actionable_error(monkeypatch) -> None:
