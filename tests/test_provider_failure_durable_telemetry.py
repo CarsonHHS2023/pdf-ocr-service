@@ -12,7 +12,7 @@ from app.processing.orchestration import (
 )
 
 
-def test_provider_http_failure_metadata_survives_exception_wrapping():
+def _wrapped_provider_error() -> IntegrationError:
     provider_error = ProviderClientError(
         ProviderErrorDetail(
             category=ProviderErrorCategory.UNAVAILABLE,
@@ -33,13 +33,15 @@ def test_provider_http_failure_metadata_survives_exception_wrapping():
         poll_count=0,
     )
     orchestration_error.__cause__ = provider_error
-    integration_error = IntegrationError(
+    return IntegrationError(
         category=IntegrationErrorCategory.ORCHESTRATION_FAILURE,
         safe_message="provider request failed",
         orchestration_error=orchestration_error,
     )
 
-    fields = pdf_ingestion._durable_failure_fields(integration_error)
+
+def test_provider_http_failure_metadata_survives_exception_wrapping():
+    fields = pdf_ingestion._durable_failure_fields(_wrapped_provider_error())
 
     assert fields == {
         "integration_error_category": "orchestration_failure",
@@ -54,7 +56,9 @@ def test_provider_http_failure_metadata_survives_exception_wrapping():
     }
 
 
-def test_ingestion_failure_diagnostic_is_persisted_as_error(monkeypatch):
+def test_unhandled_failure_writer_persists_safe_error_event_without_stdout_rewrite(
+    monkeypatch,
+):
     captured = {}
 
     def capture_event(**kwargs):
@@ -63,16 +67,17 @@ def test_ingestion_failure_diagnostic_is_persisted_as_error(monkeypatch):
 
     monkeypatch.setattr(pdf_ingestion, "record_processing_event", capture_event)
 
-    pdf_ingestion._diagnostic(
-        "PDF_INGESTION_UNHANDLED_FAILURE",
+    pdf_ingestion._record_unhandled_failure_event(
         document_id="document-test",
         processing_attempt_id="pdf-ingest-test",
-        error_type="IntegrationError",
-        provider_http_status=502,
+        exc=_wrapped_provider_error(),
     )
 
     assert captured["processing_run_id"] == "pdf-ingest-test"
     assert captured["document_id"] == "document-test"
     assert captured["event_name"] == "PDF_INGESTION_UNHANDLED_FAILURE"
     assert captured["severity"] == "error"
+    assert captured["payload"]["error_type"] == "IntegrationError"
     assert captured["payload"]["provider_http_status"] == 502
+    assert captured["payload"]["provider_error_category"] == "provider_unavailable"
+    assert captured["payload"]["provider_error_code"] == "UPSTREAM_FAILURE"
