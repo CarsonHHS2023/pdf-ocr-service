@@ -20,8 +20,39 @@ from app.processing.processing_event_model import ProcessingEvent
 
 S0_BASELINE_SCHEMA_VERSION = "atlas.s0.baseline.v1"
 DEFAULT_MAX_EVENTS = 5000
+MAX_EVENTS_HARD_LIMIT = 5000
 _METRIC_STATUSES = frozenset(
     {"observed", "partial", "not_available", "not_instrumented"}
+)
+
+# Event metadata is operator-visible output. Keep it fail-closed even though the
+# durable event payload itself is already bounded/sanitized: legacy or accidental
+# producers may still use arbitrary event names or payload keys.
+_SAFE_EVENT_NAMES = frozenset(
+    {
+        "PDF_DOCUMENT_TERMINAL_STATE",
+        "PDF_INGESTION_UNHANDLED_FAILURE",
+        "PDF_PROVIDER_DELIVERY_READY",
+        "PDF_PROVIDER_REQUEST_STARTED",
+        "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION",
+        "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
+        "PDF_S0_RESOURCE_HEARTBEAT",
+    }
+)
+_SAFE_NUMERIC_EVENT_FIELDS = frozenset(
+    {
+        "byte_size",
+        "elapsed_seconds",
+        "page_count",
+        "page_number",
+        "peak_rss_mb",
+        "poll_count",
+        "provider_http_status",
+        "rss_mb",
+        "shard_count",
+        "shard_index",
+        "size_bytes",
+    }
 )
 
 
@@ -175,23 +206,33 @@ def _max_numeric_field(
     return max(values) if values else None
 
 
-def _find_source_file(session, run: ProcessingRun) -> SourceFile | None:
-    if run.source_file_id:
-        source = session.get(SourceFile, run.source_file_id)
-        if source is not None:
-            return source
-    return session.execute(
-        select(SourceFile)
-        .where(SourceFile.document_id == run.document_id)
-        .order_by(SourceFile.is_primary.desc(), SourceFile.created_at.asc())
-        .limit(1)
-    ).scalar_one_or_none()
+def _source_file_for_run(session, run: ProcessingRun) -> SourceFile | None:
+    """Return only a source that the ProcessingRun explicitly identifies.
+
+    A nullable legacy ``source_file_id`` is absence of durable association evidence;
+    do not guess from another SourceFile belonging to the same Document.
+    """
+    if not run.source_file_id:
+        return None
+    source = session.get(SourceFile, run.source_file_id)
+    if source is None or source.document_id != run.document_id:
+        return None
+    return source
 
 
 def _event_aggregate_status(*, available: bool, truncated: bool) -> str:
     if not available:
         return "not_available"
     return "partial" if truncated else "observed"
+
+
+def _validate_event_limit(max_events: int) -> None:
+    if max_events <= 0:
+        raise ValueError("max_events must be positive")
+    if max_events > MAX_EVENTS_HARD_LIMIT:
+        raise ValueError(
+            f"max_events must be <= service hard limit {MAX_EVENTS_HARD_LIMIT}"
+        )
 
 
 def collect_s0_run_snapshot(
@@ -204,8 +245,7 @@ def collect_s0_run_snapshot(
     normalized_run_id = str(processing_run_id).strip()
     if not normalized_run_id:
         raise ValueError("processing_run_id is required")
-    if max_events <= 0:
-        raise ValueError("max_events must be positive")
+    _validate_event_limit(max_events)
 
     run = session.execute(
         select(ProcessingRun).where(
@@ -218,7 +258,7 @@ def collect_s0_run_snapshot(
     document = session.get(Document, run.document_id)
     if document is None:
         raise LookupError(f"Document not found for ProcessingRun: {normalized_run_id}")
-    source = _find_source_file(session, run)
+    source = _source_file_for_run(session, run)
 
     rows = session.execute(
         select(ProcessingEvent)
@@ -230,14 +270,17 @@ def collect_s0_run_snapshot(
     rows = rows[:max_events]
     decoded_events = tuple((row, _decode_event_payload(row)) for row in rows)
 
-    event_names = tuple(sorted({row.event_name for row in rows}))
+    event_names = tuple(
+        sorted({row.event_name for row in rows if row.event_name in _SAFE_EVENT_NAMES})
+    )
     numeric_fields = tuple(
         sorted(
             {
                 key
                 for _, payload in decoded_events
                 for key, value in payload.items()
-                if _finite_number(value) is not None
+                if key in _SAFE_NUMERIC_EVENT_FIELDS
+                and _finite_number(value) is not None
             }
         )
     )
@@ -255,11 +298,11 @@ def collect_s0_run_snapshot(
             "source_byte_size",
             value=int(source_size) if isinstance(source_size, int) else None,
             status="observed" if isinstance(source_size, int) else "not_available",
-            source="SourceFile.byte_size",
+            source="ProcessingRun.source_file_id -> SourceFile.byte_size",
             note=(
                 None
                 if isinstance(source_size, int)
-                else "No retained source byte size is available."
+                else "No source is durably associated with this ProcessingRun."
             ),
         ),
         _metric(
@@ -522,10 +565,10 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
         lines.extend(
             [
                 "",
-                "Observed durable event names: "
+                "Allowlisted observed durable event names: "
                 + (", ".join(f"`{name}`" for name in snapshot.observed_event_names) or "none"),
                 "",
-                "Observed numeric event fields: "
+                "Allowlisted observed numeric event fields: "
                 + (", ".join(f"`{name}`" for name in snapshot.observed_numeric_event_fields) or "none"),
                 "",
             ]
@@ -535,6 +578,7 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
 
 __all__ = [
     "DEFAULT_MAX_EVENTS",
+    "MAX_EVENTS_HARD_LIMIT",
     "MetricReading",
     "S0_BASELINE_SCHEMA_VERSION",
     "S0RunSnapshot",
