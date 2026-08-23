@@ -5,12 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
+import scripts.cleanup_hf_buckets as cleanup
 from scripts.cleanup_hf_buckets import (
     DEFAULT_PRODUCTION_BUCKET,
     DEFAULT_TEST_BUCKET,
     PRODUCTION_DIAGNOSTIC_PREFIXES,
+    CleanupTarget,
     build_targets,
     chunked,
+    execute_target,
     scope_items_to_prefix,
     select_expired_files,
 )
@@ -33,10 +36,12 @@ def test_scheduled_targets_are_scoped_to_test_root_and_production_diagnostics() 
     assert targets[0].bucket_id == DEFAULT_TEST_BUCKET
     assert targets[0].prefix is None
     assert targets[0].cutoff == now - timedelta(days=7)
+    assert targets[0].required is False
     assert [target.prefix for target in targets[1:]] == list(PRODUCTION_DIAGNOSTIC_PREFIXES)
     assert all(target.bucket_id == DEFAULT_PRODUCTION_BUCKET for target in targets[1:])
     assert all(target.cutoff == now - timedelta(days=14) for target in targets[1:])
     assert all(target.prefix is not None for target in targets[1:])
+    assert all(target.required is True for target in targets[1:])
 
 
 def test_purge_test_never_targets_production() -> None:
@@ -48,6 +53,50 @@ def test_purge_test_never_targets_production() -> None:
     assert targets[0].bucket_id == DEFAULT_TEST_BUCKET
     assert targets[0].prefix is None
     assert targets[0].cutoff is None
+    assert targets[0].required is True
+
+
+def test_scheduled_missing_legacy_test_bucket_is_skipped(monkeypatch, capsys) -> None:
+    target = CleanupTarget(
+        bucket_id=DEFAULT_TEST_BUCKET,
+        prefix=None,
+        cutoff=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        reason="legacy test cleanup",
+        required=False,
+    )
+    missing = RuntimeError("missing bucket")
+
+    def raise_missing(*_args, **_kwargs):
+        raise missing
+
+    monkeypatch.setattr(cleanup, "_list_target_files", raise_missing)
+    monkeypatch.setattr(cleanup, "_is_bucket_not_found", lambda exc: exc is missing)
+
+    assert execute_target(target, token="test-token", apply=True) == (0, 0)
+    output = capsys.readouterr().out
+    assert "HF_BUCKET_CLEANUP_SKIPPED" in output
+    assert f"bucket={DEFAULT_TEST_BUCKET}" in output
+    assert "reason=bucket_not_found optional=true" in output
+
+
+def test_required_target_missing_bucket_still_fails(monkeypatch) -> None:
+    target = CleanupTarget(
+        bucket_id=DEFAULT_PRODUCTION_BUCKET,
+        prefix=PRODUCTION_DIAGNOSTIC_PREFIXES[0],
+        cutoff=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        reason="production diagnostics cleanup",
+        required=True,
+    )
+    missing = RuntimeError("missing bucket")
+
+    def raise_missing(*_args, **_kwargs):
+        raise missing
+
+    monkeypatch.setattr(cleanup, "_list_target_files", raise_missing)
+    monkeypatch.setattr(cleanup, "_is_bucket_not_found", lambda exc: exc is missing)
+
+    with pytest.raises(RuntimeError, match="missing bucket"):
+        execute_target(target, token="test-token", apply=True)
 
 
 def test_production_prefix_guard_rejects_similarly_named_neighbor() -> None:
