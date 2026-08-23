@@ -46,6 +46,8 @@ jobs:
           workflow = Path('.github/workflows/storage-cleanup.yml').read_text(encoding='utf-8')
           staging_bucket = 'carsonhhs/pdf-ocr-service-ocrmypdf-test-storage'
           production_bucket = 'carsonhhs/pdf-ocr-service-storage'
+          dedicated_secret_expr = '$' + '{{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}'
+          manual_apply_expr = '$' + '{{ inputs.apply }}'
 
           assert f'DEFAULT_STAGING_BUCKET = "{staging_bucket}"' in script
           assert 'DEFAULT_STAGING_RETENTION_DAYS = 30' in script
@@ -61,7 +63,7 @@ jobs:
           assert '\n      STAGING_BUCKET:' not in workflow
           assert '\n      STAGING_RETENTION_DAYS:' not in workflow
 
-          assert 'HF_TOKEN: ${{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}' in workflow
+          assert f'HF_TOKEN: {dedicated_secret_expr}' in workflow
           assert 'secrets.HF_TOKEN' not in workflow
 
           scheduled_marker = '- name: Run scheduled Staging retention cleanup'
@@ -75,7 +77,7 @@ jobs:
           assert scheduled.count('--apply') == 1
 
           assert "if: github.event_name == 'workflow_dispatch'" in manual
-          assert 'CLEANUP_APPLY: ${{ inputs.apply }}' in manual
+          assert f'CLEANUP_APPLY: {manual_apply_expr}' in manual
           assert 'if [ "$CLEANUP_APPLY" = "true" ]; then' in manual
           assert 'args+=(--apply)' in manual
           assert 'python scripts/cleanup_hf_buckets.py "${args[@]}"' in manual
