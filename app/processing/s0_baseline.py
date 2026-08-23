@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import math
+import re
 from typing import Any, Iterable
 
 from sqlalchemy import LargeBinary, case, cast, func, select
@@ -25,6 +26,7 @@ MAX_EVENTS_HARD_LIMIT = 5000
 _METRIC_STATUSES = frozenset(
     {"observed", "partial", "not_available", "not_instrumented"}
 )
+_SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 # Event metadata is operator-visible output. Keep it fail-closed even though the
 # current producer sanitizes/bounds payloads: retained legacy or abnormal rows may
@@ -303,6 +305,33 @@ def _max_numeric_field(
     return max(values) if values else None
 
 
+def _retryable_field_has_unusable_value(
+    decoded_payloads: Iterable[dict[str, Any]],
+) -> bool:
+    """Return whether any decoded payload carries a non-Boolean retryable value."""
+    return any(
+        "retryable" in payload and not isinstance(payload["retryable"], bool)
+        for payload in decoded_payloads
+    )
+
+
+def _retryable_evidence_available(
+    decoded_payloads: Iterable[dict[str, Any]],
+) -> bool:
+    """Return whether any decoded payload provides usable retryability evidence."""
+    return any(
+        "retryable" not in payload or isinstance(payload["retryable"], bool)
+        for payload in decoded_payloads
+    )
+
+
+def _validated_sha256(value: object) -> str | None:
+    """Return a strict SHA-256 hex identity or fail closed for retained metadata."""
+    if not isinstance(value, str) or _SHA256_HEX_RE.fullmatch(value) is None:
+        return None
+    return value
+
+
 def _load_run_row(session, processing_run_id: str) -> _BaselineRunRow | None:
     """Load only S0-required run columns, excluding unconstrained legacy Text."""
     row = session.execute(
@@ -521,6 +550,9 @@ def collect_s0_run_snapshot(
         and not isinstance(source_size, bool)
         and source_size > 0
     )
+    source_checksum = _validated_sha256(
+        source.checksum_sha256 if source is not None else None
+    )
     page_count = document.pages_count
     page_count_available = (
         isinstance(page_count, int)
@@ -530,6 +562,12 @@ def collect_s0_run_snapshot(
     error_count = sum(1 for row in rows if row.severity == "error")
     retryable_signal_count = sum(
         1 for payload in decoded_payloads_tuple if payload.get("retryable") is True
+    )
+    retryable_field_incomplete = _retryable_field_has_unusable_value(
+        decoded_payloads_tuple
+    )
+    retryable_evidence_available = _retryable_evidence_available(
+        decoded_payloads_tuple
     )
     peak_rss = _max_numeric_field(decoded_payloads_tuple, "peak_rss_mb")
     peak_rss_numeric_incomplete = _numeric_field_has_unusable_value(
@@ -670,8 +708,8 @@ def collect_s0_run_snapshot(
         incomplete=row_aggregate_incomplete,
     )
     retryable_signal_status = _event_aggregate_status(
-        available=bool(decoded_payloads_tuple),
-        incomplete=payload_evidence_incomplete,
+        available=retryable_evidence_available,
+        incomplete=payload_evidence_incomplete or retryable_field_incomplete,
     )
     peak_rss_status = _event_aggregate_status(
         available=peak_rss is not None,
@@ -690,6 +728,11 @@ def collect_s0_run_snapshot(
         retryable_signal_note += (
             " At least one retained payload exceeded the service-owned byte limit and "
             "was omitted by the database projection before materialization."
+        )
+    if retryable_field_incomplete:
+        retryable_signal_note += (
+            " At least one retained bounded payload carried a non-Boolean retryable "
+            "value, so retryability evidence is incomplete."
         )
     if event_window_truncated:
         retryable_signal_note += " Snapshot event window is also truncated."
@@ -772,7 +815,7 @@ def collect_s0_run_snapshot(
             label="Durable retryable=true signal count in snapshot window",
             unit="signals",
             status=retryable_signal_status,
-            value=retryable_signal_count if decoded_payloads_tuple else None,
+            value=retryable_signal_count if retryable_evidence_available else None,
             source="processing_events.payload.retryable",
             note=retryable_signal_note,
         ),
@@ -794,7 +837,7 @@ def collect_s0_run_snapshot(
         run_status=run.status,
         file_type=document.file_type,
         source_file_id=source.id if source is not None else None,
-        source_checksum_sha256=(source.checksum_sha256 if source is not None else None),
+        source_checksum_sha256=source_checksum,
         started_at=_iso(run.started_at),
         terminal_at=_iso(terminal),
         event_window_truncated=event_window_truncated,
