@@ -138,3 +138,28 @@ def test_zero_length_processing_duration_is_not_baseline_evidence() -> None:
     acceptance = _metric(snapshot, "document_acceptance_to_terminal_seconds")
     assert acceptance.status == "observed"
     assert acceptance.value == 5.0
+
+
+def test_negative_processing_duration_is_not_baseline_evidence() -> None:
+    db = _session()
+    started = datetime(2026, 8, 23, 12, 0, 0)
+    completed_before_start = started - timedelta(seconds=1)
+    run_id, _ = _seed_run(
+        db,
+        status="succeeded",
+        completed_at=completed_before_start,
+        failed_at=None,
+    )
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    assert snapshot.terminal_at == completed_before_start.isoformat()
+    wall = _metric(snapshot, "processing_run_wall_seconds")
+    assert wall.status == "not_available"
+    assert wall.value is None
+
+    # The document was accepted four seconds before this inconsistent terminal
+    # timestamp, so the independent acceptance proxy remains positive/observable.
+    acceptance = _metric(snapshot, "document_acceptance_to_terminal_seconds")
+    assert acceptance.status == "observed"
+    assert acceptance.value == 4.0
