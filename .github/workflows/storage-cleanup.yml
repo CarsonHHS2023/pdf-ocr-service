@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_PRODUCTION_BUCKET_CLEANUP_TOKEN }}
       HF_STAGING_BUCKET_CLEANUP_TOKEN: ${{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}
 
     steps:
@@ -94,7 +94,7 @@ jobs:
             echo '### HF Storage Bucket cleanup policy'
             echo ''
             echo '- Staging/test bucket: files older than 30 days on scheduled runs; uses dedicated Staging cleanup token.'
-            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days; continues using the existing production HF token.'
+            echo '- Production: only `output/opencv-diagnostics` and `output/opencv-crop-diagnostics`, older than 14 days; uses a dedicated Production cleanup token.'
             echo '- Manual `purge-test` can empty the Staging/test bucket; it never targets the production bucket root.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
           } >> "$GITHUB_STEP_SUMMARY"
