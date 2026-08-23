@@ -8,6 +8,9 @@ import re
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 PRESENTATION_BRIDGE_PATH = Path("app/processing/pdf_page_presentation_bridge.py")
+CLASSIFICATION_OBSERVABILITY_PATH = Path(
+    "app/processing/pdf_page_classification_observability_compat.py"
+)
 PROVIDER_SHARDING_PATH = Path("app/processing/pdf_provider_sharding.py")
 SHARDING_COMPAT_PATH = Path("app/processing/pdf_provider_sharding_compat.py")
 SOURCE_ACCESS_PATH = Path("app/processing/provider_input_source_access.py")
@@ -306,6 +309,98 @@ def _patch_presentation_bridge() -> None:
         )
 '''
     _replace_once(PRESENTATION_BRIDGE_PATH, old, new, label="presentation diagnostic")
+
+
+def _patch_provider_result_stage_failure_correlation(
+    path: Path = PRESENTATION_BRIDGE_PATH,
+) -> None:
+    """Correlate provider result-stage failures with the durable ProcessingRun."""
+    source = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'(_diagnostic\(\n(?P<indent>[ \t]+)"PDF_PROVIDER_RESULT_STAGE_FAILED",\n)'
+        r'(?![ \t]+processing_attempt_id=provider_input\.processing_attempt_id,)'
+    )
+
+    def correlate(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            match.group(1)
+            + indent
+            + "processing_attempt_id=provider_input.processing_attempt_id,\n"
+        )
+
+    source, _ = pattern.subn(correlate, source)
+    parsed = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_diagnostic"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "PDF_PROVIDER_RESULT_STAGE_FAILED"
+    ]
+    if not calls:
+        raise RuntimeError("No provider result-stage failure diagnostics were found")
+    missing = [
+        node.lineno
+        for node in calls
+        if not any(keyword.arg == "processing_attempt_id" for keyword in node.keywords)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Provider result-stage failures lack processing correlation at lines {missing}"
+        )
+    path.write_text(source, encoding="utf-8")
+
+
+def _patch_classification_observability_timeline(
+    path: Path = CLASSIFICATION_OBSERVABILITY_PATH,
+) -> None:
+    """Persist only low-frequency classification config/summary from the final sink."""
+    source = path.read_text(encoding="utf-8")
+    diagnostic_anchor = "def _diagnostic(event: str, **fields: object) -> None:\n"
+    if diagnostic_anchor not in source:
+        # Raw source delegates diagnostics to the already-patched presentation
+        # bridge. A later Staging overlay introduces this local sink.
+        return
+
+    if _EVENT_IMPORT not in source:
+        import_anchor = (
+            "from app.processing import pdf_page_presentation_preprocess_compat as preprocess\n"
+        )
+        if source.count(import_anchor) != 1:
+            raise RuntimeError("Could not find classification observability import anchor")
+        source = source.replace(import_anchor, import_anchor + _EVENT_IMPORT, 1)
+
+    old = (
+        "def _diagnostic(event: str, **fields: object) -> None:\n"
+        "    \"\"\"Emit one safe bounded event to both logger and runtime stderr.\"\"\"\n"
+        "    payload = \" \".join(f\"{name}={value}\" for name, value in fields.items())\n"
+        "    message = f\"{event} {payload}\".rstrip()\n"
+        "    _logger.info(message)\n"
+        "    print(message, file=sys.stderr, flush=True)\n"
+    )
+    new = old + (
+        "    if event in {\n"
+        "        \"PDF_PAGE_CLASSIFICATION_CONFIG\",\n"
+        "        \"PDF_PAGE_CLASSIFICATION_SUMMARY\",\n"
+        "    }:\n"
+        "        record_processing_event(\n"
+        "            processing_run_id=fields.get(\"processing_attempt_id\"),\n"
+        "            document_id=fields.get(\"document_id\"),\n"
+        "            event_name=event,\n"
+        "            severity=\"info\",\n"
+        "            page_number=fields.get(\"page_number\"),\n"
+        "            payload=fields,\n"
+        "        )\n"
+    )
+    if new not in source:
+        if source.count(old) != 1:
+            raise RuntimeError("Could not find final classification diagnostic sink")
+        source = source.replace(old, new, 1)
+    path.write_text(source, encoding="utf-8")
 
 
 def _patch_provider_shard_failure_metadata() -> None:
@@ -636,6 +731,8 @@ def patch_durable_processing_events() -> None:
     """Install coarse durable events; keep high-volume heartbeats in checkpoints/stdout."""
     _patch_pdf_ingestion()
     _patch_presentation_bridge()
+    _patch_provider_result_stage_failure_correlation()
+    _patch_classification_observability_timeline()
     _patch_provider_shard_failure_metadata()
     _patch_provider_sharding_timeline()
     _patch_provider_source_access_timeline()
