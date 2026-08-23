@@ -6,6 +6,8 @@ from pathlib import Path
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 PRESENTATION_BRIDGE_PATH = Path("app/processing/pdf_page_presentation_bridge.py")
+POSTGRESQL_DATA_MIGRATION_PATH = Path("app/postgresql_data_migration.py")
+POSTGRESQL_DATA_MIGRATION_TEST_PATH = Path("tests/test_postgresql_data_migration.py")
 MAIN_PATH = Path("app/main.py")
 
 _EVENT_IMPORT = "from app.processing.processing_events import record_processing_event\n"
@@ -90,6 +92,56 @@ def _patch_presentation_bridge() -> None:
     _replace_once(PRESENTATION_BRIDGE_PATH, old, new, label="presentation diagnostic")
 
 
+def _patch_postgresql_replay_head_contract() -> None:
+    """Keep legacy SQLite recovery compatible with the newer Staging target schema."""
+    old = '''EXPECTED_ALEMBIC_HEAD = "0006_ingestion_dispatches"
+'''
+    new = '''EXPECTED_SOURCE_ALEMBIC_HEAD = "0006_ingestion_dispatches"
+EXPECTED_TARGET_ALEMBIC_HEAD = "0007_processing_events"
+# Compatibility export for callers that historically imported one head value.
+EXPECTED_ALEMBIC_HEAD = EXPECTED_TARGET_ALEMBIC_HEAD
+'''
+    _replace_once(
+        POSTGRESQL_DATA_MIGRATION_PATH,
+        old,
+        new,
+        label="PostgreSQL replay Alembic head constants",
+    )
+
+    old = '''    if head != EXPECTED_ALEMBIC_HEAD:
+        raise PostgreSQLDataMigrationError(f"unexpected source Alembic head: {head}")
+'''
+    new = '''    if head != EXPECTED_SOURCE_ALEMBIC_HEAD:
+        raise PostgreSQLDataMigrationError(f"unexpected source Alembic head: {head}")
+'''
+    _replace_once(
+        POSTGRESQL_DATA_MIGRATION_PATH,
+        old,
+        new,
+        label="PostgreSQL replay source Alembic head",
+    )
+
+    old = '''    if head != EXPECTED_ALEMBIC_HEAD:
+        raise PostgreSQLDataMigrationError(f"unexpected target Alembic head: {head}")
+'''
+    new = '''    if head != EXPECTED_TARGET_ALEMBIC_HEAD:
+        raise PostgreSQLDataMigrationError(f"unexpected target Alembic head: {head}")
+'''
+    _replace_once(
+        POSTGRESQL_DATA_MIGRATION_PATH,
+        old,
+        new,
+        label="PostgreSQL replay target Alembic head",
+    )
+
+    _replace_once(
+        POSTGRESQL_DATA_MIGRATION_TEST_PATH,
+        '    assert report.target_alembic_head == "0006_ingestion_dispatches"\n',
+        '    assert report.target_alembic_head == "0007_processing_events"\n',
+        label="PostgreSQL replay target-head regression",
+    )
+
+
 def _patch_main_router() -> None:
     old = '''    processing_operator,
     reader,
@@ -114,6 +166,7 @@ def patch_durable_processing_events() -> None:
     """Install coarse durable events; keep high-volume page profiles in stdout."""
     _patch_pdf_ingestion()
     _patch_presentation_bridge()
+    _patch_postgresql_replay_head_contract()
     _patch_main_router()
 
 
