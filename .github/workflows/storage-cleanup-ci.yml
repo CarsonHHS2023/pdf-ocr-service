@@ -1,0 +1,43 @@
+name: HF Storage Cleanup Policy CI
+
+on:
+  pull_request:
+    branches: [staging]
+    paths:
+      - 'scripts/cleanup_hf_buckets.py'
+      - 'tests/test_hf_bucket_cleanup.py'
+      - '.github/workflows/storage-cleanup.yml'
+      - '.github/workflows/storage-cleanup-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cleanup test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -q \
+            pytest \
+            'huggingface-hub>=1.5.0,<2'
+
+      - name: Verify Hugging Face missing-bucket exception contract
+        run: python -c 'from huggingface_hub.errors import BucketNotFoundError; print(BucketNotFoundError.__name__)'
+
+      - name: Run cleanup policy regressions
+        run: |
+          python -m py_compile scripts/cleanup_hf_buckets.py tests/test_hf_bucket_cleanup.py
+          python -m pytest -q tests/test_hf_bucket_cleanup.py
+          git diff --check
