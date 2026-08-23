@@ -6,6 +6,8 @@ from pathlib import Path
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
 PRESENTATION_BRIDGE_PATH = Path("app/processing/pdf_page_presentation_bridge.py")
+SHARDING_COMPAT_PATH = Path("app/processing/pdf_provider_sharding_compat.py")
+SOURCE_ACCESS_PATH = Path("app/processing/provider_input_source_access.py")
 MAIN_PATH = Path("app/main.py")
 
 _EVENT_IMPORT = "from app.processing.processing_events import record_processing_event\n"
@@ -146,6 +148,152 @@ def _record_unhandled_failure_event(
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="durable ingestion failure event")
 
+    # Document-state events previously lacked the run correlation key, so the
+    # durable recorder correctly rejected them. Thread the already-available
+    # processing attempt through every terminal-state update without changing
+    # the business state transition itself.
+    old = '''def _set_document_terminal_state(document_id: str, *, status: str, error_message: str | None) -> None:
+'''
+    new = '''def _set_document_terminal_state(
+    document_id: str,
+    *,
+    processing_attempt_id: str | None = None,
+    status: str,
+    error_message: str | None,
+) -> None:
+'''
+    _replace_once(PDF_INGESTION_PATH, old, new, label="document terminal state correlation signature")
+
+    old = '''        _diagnostic(
+            "PDF_DOCUMENT_STATE_UPDATED",
+            document_id=document_id,
+            status=status,
+            has_error=bool(error_message),
+        )
+'''
+    new = '''        _diagnostic(
+            "PDF_DOCUMENT_STATE_UPDATED",
+            document_id=document_id,
+            processing_attempt_id=processing_attempt_id,
+            status=status,
+            has_error=bool(error_message),
+        )
+'''
+    _replace_once(PDF_INGESTION_PATH, old, new, label="document terminal state durable event")
+
+    terminal_calls = (
+        (
+            '''            _set_document_terminal_state(
+                document_id,
+                status="failed",
+                error_message="Retained PDF source metadata is unavailable",
+            )
+''',
+            '''            _set_document_terminal_state(
+                document_id,
+                processing_attempt_id=ids.processing_attempt_id,
+                status="failed",
+                error_message="Retained PDF source metadata is unavailable",
+            )
+''',
+            "retained source unavailable terminal state",
+        ),
+        (
+            '''            _set_document_terminal_state(
+                document_id,
+                status="failed",
+                error_message="Retained PDF source metadata is incomplete",
+            )
+''',
+            '''            _set_document_terminal_state(
+                document_id,
+                processing_attempt_id=ids.processing_attempt_id,
+                status="failed",
+                error_message="Retained PDF source metadata is incomplete",
+            )
+''',
+            "retained source incomplete terminal state",
+        ),
+        (
+            '''        _set_document_terminal_state(
+            document_id,
+            status="failed",
+            error_message=exc.safe_message,
+        )
+''',
+            '''        _set_document_terminal_state(
+            document_id,
+            processing_attempt_id=ids.processing_attempt_id,
+            status="failed",
+            error_message=exc.safe_message,
+        )
+''',
+            "provider configuration terminal state",
+        ),
+        (
+            '''            _set_document_terminal_state(
+                document_id,
+                status="failed",
+                error_message=error_message,
+            )
+''',
+            '''            _set_document_terminal_state(
+                document_id,
+                processing_attempt_id=ids.processing_attempt_id,
+                status="failed",
+                error_message=error_message,
+            )
+''',
+            "provider outcome terminal state",
+        ),
+        (
+            '''            _set_document_terminal_state(
+                document_id,
+                status="failed",
+                error_message="Reader v2 canonical selection is inconsistent with processing result",
+            )
+''',
+            '''            _set_document_terminal_state(
+                document_id,
+                processing_attempt_id=ids.processing_attempt_id,
+                status="failed",
+                error_message="Reader v2 canonical selection is inconsistent with processing result",
+            )
+''',
+            "canonical selection terminal state",
+        ),
+        (
+            '''        _set_document_terminal_state(document_id, status="completed", error_message=None)
+''',
+            '''        _set_document_terminal_state(
+            document_id,
+            processing_attempt_id=ids.processing_attempt_id,
+            status="completed",
+            error_message=None,
+        )
+''',
+            "completed terminal state",
+        ),
+        (
+            '''        _set_document_terminal_state(
+            document_id,
+            status="failed",
+            error_message=_safe_failure_message(exc),
+        )
+''',
+            '''        _set_document_terminal_state(
+            document_id,
+            processing_attempt_id=ids.processing_attempt_id,
+            status="failed",
+            error_message=_safe_failure_message(exc),
+        )
+''',
+            "unhandled failure terminal state",
+        ),
+    )
+    for old_call, new_call, label in terminal_calls:
+        _replace_once(PDF_INGESTION_PATH, old_call, new_call, label=label)
+
 
 def _patch_presentation_bridge() -> None:
     source = PRESENTATION_BRIDGE_PATH.read_text(encoding="utf-8")
@@ -185,6 +333,138 @@ def _patch_presentation_bridge() -> None:
     _replace_once(PRESENTATION_BRIDGE_PATH, old, new, label="presentation diagnostic")
 
 
+def _patch_provider_sharding_timeline() -> None:
+    source = SHARDING_COMPAT_PATH.read_text(encoding="utf-8")
+    if "print(message, file=sys.stderr, flush=True)" not in source:
+        raise RuntimeError(
+            "Durable provider timeline must be composed after Provider shard resilience"
+        )
+    if _EVENT_IMPORT not in source:
+        anchor = "from app.processing.models import ProviderLifecycleStatus\n"
+        if source.count(anchor) != 1:
+            raise RuntimeError("Could not find unique sharding compat event import anchor")
+        source = source.replace(anchor, anchor + _EVENT_IMPORT, 1)
+        SHARDING_COMPAT_PATH.write_text(source, encoding="utf-8")
+
+    old = '''def _diagnostic(event: str, **fields: object) -> None:
+    payload = " ".join(f"{name}={value}" for name, value in fields.items())
+    message = f"{event} {payload}".rstrip()
+    _logger.info(message)
+    print(message, file=sys.stderr, flush=True)
+'''
+    new = '''def _diagnostic(event: str, **fields: object) -> None:
+    payload = " ".join(f"{name}={value}" for name, value in fields.items())
+    message = f"{event} {payload}".rstrip()
+    _logger.info(message)
+    print(message, file=sys.stderr, flush=True)
+    durable_event = (
+        event in {
+            "PDF_PROVIDER_DELIVERY_READY",
+            "PDF_PROVIDER_SHARDING_DECISION",
+            "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION",
+            "PDF_PROVIDER_TRANSPORT_SHARDING_STARTED",
+            "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
+            "PDF_PROVIDER_SHARD_INPUT_DELETE_WARNING",
+            "PDF_PROVIDER_SHARD_INPUT_ALREADY_DELETED",
+        }
+        or event.endswith("_FAILED")
+    )
+    if durable_event:
+        severity = (
+            "error"
+            if event.endswith("_FAILED")
+            else "warning"
+            if event.endswith("_WARNING")
+            else "info"
+        )
+        record_processing_event(
+            processing_run_id=fields.get("processing_attempt_id"),
+            document_id=fields.get("document_id"),
+            event_name=event,
+            severity=severity,
+            page_number=fields.get("page_number"),
+            payload=fields,
+        )
+'''
+    _replace_once(SHARDING_COMPAT_PATH, old, new, label="provider sharding durable timeline")
+
+
+def _patch_provider_source_access_timeline() -> None:
+    source = SOURCE_ACCESS_PATH.read_text(encoding="utf-8")
+    if "print(message, file=sys.stderr, flush=True)" not in source:
+        raise RuntimeError(
+            "Durable provider source-access timeline must be composed after shard resilience"
+        )
+    if _EVENT_IMPORT not in source:
+        anchor = "from app.processing.integration import TemporarySourceTransportUrl\n"
+        if source.count(anchor) != 1:
+            raise RuntimeError("Could not find unique provider source-access event import anchor")
+        source = source.replace(anchor, anchor + _EVENT_IMPORT, 1)
+        SOURCE_ACCESS_PATH.write_text(source, encoding="utf-8")
+
+    old = '''def build_provider_input_source_url_factory(
+    *,
+    storage: object,
+    reference: StorageReference,
+    byte_size: int,
+):
+'''
+    new = '''def build_provider_input_source_url_factory(
+    *,
+    storage: object,
+    reference: StorageReference,
+    byte_size: int,
+    processing_run_id: str | None = None,
+    document_id: str | None = None,
+):
+'''
+    _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access correlation")
+
+    old = '''            logger.warning(message)
+            print(message, file=sys.stderr, flush=True)
+            return None
+'''
+    new = '''            logger.warning(message)
+            print(message, file=sys.stderr, flush=True)
+            record_processing_event(
+                processing_run_id=processing_run_id,
+                document_id=document_id,
+                event_name="PDF_PROVIDER_SOURCE_ACCESS",
+                severity="warning",
+                payload={
+                    "route": "atlas_source_transport_fallback",
+                    "byte_size": safe_size,
+                    "expires_seconds": expires_seconds,
+                    "reason": type(exc).__name__,
+                },
+            )
+            return None
+'''
+    _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access fallback event")
+
+    old = '''        logger.info(message)
+        print(message, file=sys.stderr, flush=True)
+        return TemporarySourceTransportUrl(url)
+'''
+    new = '''        logger.info(message)
+        print(message, file=sys.stderr, flush=True)
+        record_processing_event(
+            processing_run_id=processing_run_id,
+            document_id=document_id,
+            event_name="PDF_PROVIDER_SOURCE_ACCESS",
+            severity="info",
+            payload={
+                "route": "presigned_object_get",
+                "host": parsed.hostname or "unknown",
+                "byte_size": safe_size,
+                "expires_seconds": expires_seconds,
+            },
+        )
+        return TemporarySourceTransportUrl(url)
+'''
+    _replace_once(SOURCE_ACCESS_PATH, old, new, label="provider source-access presigned event")
+
+
 def _patch_main_router() -> None:
     old = '''    processing_operator,
     reader,
@@ -206,9 +486,11 @@ app.include_router(reader.router)
 
 
 def patch_durable_processing_events() -> None:
-    """Install coarse durable events; keep high-volume page profiles in stdout."""
+    """Install coarse durable events; keep high-volume heartbeats in checkpoints/stdout."""
     _patch_pdf_ingestion()
     _patch_presentation_bridge()
+    _patch_provider_sharding_timeline()
+    _patch_provider_source_access_timeline()
     _patch_main_router()
 
 
