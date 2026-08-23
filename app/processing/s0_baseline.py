@@ -245,9 +245,6 @@ def collect_s0_run_snapshot(
     source_size = source.byte_size if source is not None else None
     page_count = document.pages_count
     error_count = sum(1 for row in rows if row.severity == "error")
-    retry_event_count = sum(
-        1 for row in rows if "RETRY" in row.event_name or "RETRIED" in row.event_name
-    )
     retryable_signal_count = sum(
         1 for _, payload in decoded_events if payload.get("retryable") is True
     )
@@ -264,9 +261,7 @@ def collect_s0_run_snapshot(
                 if isinstance(source_size, int)
                 else "No retained source byte size is available."
             ),
-        )
-    ]
-    required.append(
+        ),
         _metric(
             "page_count",
             value=page_count if isinstance(page_count, int) else None,
@@ -277,8 +272,8 @@ def collect_s0_run_snapshot(
                 if isinstance(page_count, int)
                 else "No page count is persisted for this document type/run."
             ),
-        )
-    )
+        ),
+    ]
 
     for key, source_name, note in (
         (
@@ -361,46 +356,22 @@ def collect_s0_run_snapshot(
             "cross-stage instrumentation",
             "Document acceptance/processing timestamps are not equivalent to upload-start -> Reader-ready latency.",
         ),
+        (
+            "failure_retry_counts",
+            "retry instrumentation",
+            "Durable error/retryable diagnostic signals may exist, but Atlas does not yet persist an explicit failure/retry-attempt counter contract.",
+        ),
     ):
         required.append(_missing_metric(key, source=source_name, note=note))
-
-    if rows:
-        counts_note = (
-            "Counts only the bounded durable event window; the window is truncated, so these are partial counts."
-            if event_window_truncated
-            else "Counts durable diagnostic signals only; they are not a substitute for a future explicit retry counter."
-        )
-        required.append(
-            _metric(
-                "failure_retry_counts",
-                value={
-                    "error_events": error_count,
-                    "retry_events": retry_event_count,
-                    "retryable_signals": retryable_signal_count,
-                },
-                status=_event_aggregate_status(
-                    available=True,
-                    truncated=event_window_truncated,
-                ),
-                source="processing_events",
-                note=counts_note,
-            )
-        )
-    else:
-        required.append(
-            _metric(
-                "failure_retry_counts",
-                value=None,
-                status="not_available",
-                source="processing_events",
-                note="No durable events are retained for this run.",
-            )
-        )
 
     terminal = _terminal_at(run)
     processing_wall = _seconds(run.started_at, terminal)
     acceptance_to_terminal = _seconds(document.created_at, terminal)
     event_span = _seconds(rows[0].created_at, rows[-1].created_at) if rows else None
+    event_signal_status = _event_aggregate_status(
+        available=bool(rows),
+        truncated=event_window_truncated,
+    )
     peak_rss_status = _event_aggregate_status(
         available=peak_rss is not None,
         truncated=event_window_truncated,
@@ -453,6 +424,24 @@ def collect_s0_run_snapshot(
                 if event_window_truncated and event_span is not None
                 else None
             ),
+        ),
+        MetricReading(
+            key="durable_error_event_count",
+            label="Durable error-severity event count in snapshot window",
+            unit="events",
+            status=event_signal_status,
+            value=error_count if rows else None,
+            source="processing_events.severity",
+            note="Diagnostic signal only; not promoted to the required failure/retry counter.",
+        ),
+        MetricReading(
+            key="durable_retryable_signal_count",
+            label="Durable retryable=true signal count in snapshot window",
+            unit="signals",
+            status=event_signal_status,
+            value=retryable_signal_count if rows else None,
+            source="processing_events.payload.retryable",
+            note="Retryability signal only; it does not prove that a retry attempt occurred.",
         ),
         MetricReading(
             key="max_observed_peak_rss_mb",
