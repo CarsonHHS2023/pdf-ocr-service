@@ -61,6 +61,9 @@ jobs:
           assert 'STAGING_BUCKET' not in workflow
           assert 'STAGING_RETENTION_DAYS' not in workflow
 
+          assert 'HF_TOKEN: ${{ secrets.HF_STAGING_BUCKET_CLEANUP_TOKEN }}' in workflow
+          assert 'secrets.HF_TOKEN' not in workflow
+
           scheduled_marker = '- name: Run scheduled Staging retention cleanup'
           manual_marker = '- name: Run manual Staging cleanup'
           summary_marker = '- name: Record policy summary'
