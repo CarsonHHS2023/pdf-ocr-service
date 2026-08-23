@@ -8,7 +8,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
-from app.processing.s0_baseline import collect_s0_run_snapshot, render_s0_markdown
+from app.processing.s0_baseline import (
+    MAX_EVENTS_HARD_LIMIT,
+    collect_s0_run_snapshot,
+    render_s0_markdown,
+)
 
 
 def _session():
@@ -79,7 +83,7 @@ def _seed_run(db, *, with_events: bool = True) -> str:
                     processing_run_id=run.processing_run_id,
                     document_id=document.id,
                     schema_version="atlas.processing.event.v1",
-                    event_name="PDF_PROVIDER_RETRY_STARTED",
+                    event_name="PDF_PROVIDER_REQUEST_STARTED",
                     severity="warning",
                     payload_json=encode_json_text(
                         {"peak_rss_mb": 526.25, "retryable": True}
@@ -193,6 +197,54 @@ def test_event_window_is_bounded_and_marks_event_aggregates_partial() -> None:
     assert "snapshot window" in event_span.label
 
 
+def test_legacy_run_without_source_file_id_does_not_infer_document_source() -> None:
+    db = _session()
+    run_id = _seed_run(db, with_events=False)
+    run = db.get(ProcessingRun, "run-row-s0")
+    assert run is not None
+    run.source_file_id = None
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    source_size = _metric(snapshot, "source_byte_size")
+    assert source_size.status == "not_available"
+    assert source_size.value is None
+    assert snapshot.source_file_id is None
+    assert snapshot.source_checksum_sha256 is None
+
+
+def test_event_metadata_output_is_allowlisted() -> None:
+    db = _session()
+    run_id = _seed_run(db)
+    db.add(
+        ProcessingEvent(
+            id="event-private-metadata",
+            processing_run_id=run_id,
+            document_id="doc-s0",
+            schema_version="atlas.processing.event.v1",
+            event_name="private.pdf\n# injected",
+            severity="info",
+            payload_json=encode_json_text(
+                {"private.pdf": 1, "peak_rss_mb": 600.0}
+            ),
+            created_at=datetime(2026, 8, 23, 12, 0, 40),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    markdown = render_s0_markdown([snapshot])
+    serialized = str(snapshot.to_dict())
+
+    assert "private.pdf" not in markdown
+    assert "private.pdf" not in serialized
+    assert "# injected" not in markdown
+    assert "# injected" not in serialized
+    assert "peak_rss_mb" in snapshot.observed_numeric_event_fields
+    assert _metric(snapshot, "max_observed_peak_rss_mb").value == 600.0
+
+
 def test_markdown_does_not_emit_document_title_or_filename() -> None:
     db = _session()
     run_id = _seed_run(db)
@@ -222,3 +274,10 @@ def test_invalid_event_limit_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="max_events must be positive"):
         collect_s0_run_snapshot(db, processing_run_id=run_id, max_events=0)
+
+    with pytest.raises(ValueError, match="service hard limit"):
+        collect_s0_run_snapshot(
+            db,
+            processing_run_id=run_id,
+            max_events=MAX_EVENTS_HARD_LIMIT + 1,
+        )
