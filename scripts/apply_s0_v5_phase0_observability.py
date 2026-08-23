@@ -90,12 +90,35 @@ def _final_staging_composition_installed() -> bool:
     )
 
 
+def _make_shard_document_correlation_optional() -> None:
+    """Never make a telemetry-only document field part of the Provider runner contract."""
+    source = PROVIDER_SHARDING_PATH.read_text(encoding="utf-8")
+    safe = (
+        'document_id=descriptor.document_id if hasattr(descriptor, "document_id") '
+        'else None,'
+    )
+    if safe in source:
+        return
+    old = "document_id=descriptor.document_id,"
+    if old not in source:
+        if "shard_source_url_factory = build_provider_input_source_url_factory(" in source:
+            raise RuntimeError("final shard source factory lacks document correlation hook")
+        return
+    PROVIDER_SHARDING_PATH.write_text(
+        source.replace(old, safe, 1),
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     # Staging executes this script after the heartbeat and provider-preflight
     # overlays. Keep the reusable Phase0 patch function independent for focused
     # tests, while the deployment entry point installs provider-input access
     # immediately before the Phase0/Phase1 low-level wrappers capture delegates.
     if __package__:
+        from scripts.apply_durable_processing_events import (
+            patch_durable_processing_events,
+        )
         from scripts.apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
@@ -136,6 +159,7 @@ def main() -> None:
             main as apply_structure_refinement_soft_batch_targets,
         )
     else:
+        from apply_durable_processing_events import patch_durable_processing_events
         from apply_provider_input_presigned_read import (
             patch_provider_input_presigned_read,
         )
@@ -176,32 +200,24 @@ def main() -> None:
             main as apply_structure_refinement_soft_batch_targets,
         )
 
-    # Structure-refinement batching is independent of the historical provider
-    # rewrite chain, so install it before the provider-composition no-op guard.
-    # Heading-linked pages stay atomic; scoped references are closed; every other
-    # multi-page node has one deterministic owner batch. Heading/node thresholds
-    # are soft targets for normal batch splitting, while max_pages remains hard.
     apply_structure_refinement_batch_budgeting()
     apply_structure_refinement_heading_batch_atomicity()
     apply_structure_refinement_batch_safety()
     apply_structure_refinement_shared_node_ownership()
     apply_structure_refinement_soft_batch_targets()
 
-    # The source-rewrite stack below is a composition step, not a migration that
-    # should keep editing an already composed checkout. Once every final runtime
-    # marker is present, a repeated invocation is deliberately a byte-for-byte
-    # no-op. The regression suite verifies the key composed file digests remain
-    # unchanged across that second invocation.
+    # Durable telemetry is deliberately finalized after the historical Provider
+    # rewrite chain. A prior preflight pass may install it early, but v2-v5 can
+    # replace source-factory call sites. Re-running the idempotent installer here
+    # restores only observability correlation on the exact final runtime.
     if _final_staging_composition_installed():
+        patch_durable_processing_events()
+        _make_shard_document_correlation_optional()
         print("staging provider composition already installed: no changes")
         return
 
     patch_provider_input_presigned_read()
     patch_s0_v5_phase0_observability()
-    # The historical v2-v5 overlays rewrite exact anchors and are intentionally
-    # a one-way composition chain. If a partially composed checkout has already
-    # reached the final 20 MiB review contract, skip replaying that legacy chain
-    # and finish only the later poll/terminal guards.
     if not _provider_20mib_final_composition_installed():
         apply_provider_20mib_observability()
     apply_provider_20mib_poll_count_fix()
@@ -210,6 +226,8 @@ def main() -> None:
     apply_staging_baseline_canonicalization_terminal_fix()
     apply_staging_post_provider_terminal_fix()
     apply_staging_classification_summary_highres_fix()
+    patch_durable_processing_events()
+    _make_shard_document_correlation_optional()
 
 
 if __name__ == "__main__":

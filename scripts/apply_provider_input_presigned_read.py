@@ -60,6 +60,8 @@ _GRANT_SERVICE_WITH_SOURCE_FACTORY = '''        grant_service = ProviderInputGra
             storage=storage,
             reference=provider_delivery.storage_reference,
             byte_size=provider_delivery.byte_size,
+            processing_run_id=ids.processing_attempt_id,
+            document_id=document_id,
         )
 '''
 
@@ -161,6 +163,8 @@ _SHARD_GRANT_WITH_SOURCE_FACTORY = '''        grant_service = integration.Provid
             storage=storage,
             reference=shard_delivery.storage_reference,
             byte_size=shard_delivery.byte_size,
+            processing_run_id=processing_attempt_id,
+            document_id=descriptor.document_id,
         )
         service = EndToEndProcessingIntegrationService(
             grant_service=grant_service,
@@ -177,6 +181,8 @@ _SHARD_GRANT_WITH_SOURCE_FACTORY = '''        grant_service = integration.Provid
 _SHARD_SOURCE_ACCESS_FINAL_MARKERS = (
     "shard_delivery = integration.provider_delivery_descriptor(shard_input)",
     "shard_source_url_factory = build_provider_input_source_url_factory(",
+    "processing_run_id=processing_attempt_id",
+    "document_id=descriptor.document_id",
     "source_transport_url_factory=shard_source_url_factory",
     "seconds=PROVIDER_SOURCE_ACCESS_TTL_SECONDS",
 )

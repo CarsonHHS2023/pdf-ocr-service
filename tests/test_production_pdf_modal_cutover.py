@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import gzip
 import hashlib
@@ -279,12 +280,32 @@ def test_production_completion_accepts_current_or_preserved_explicit_selection()
     source = Path("app/processing/pdf_ingestion.py").read_text(encoding="utf-8")
     current_invariant = "if canonical.selection_disposition in {"
     preserved_branch = "elif canonical.selection_disposition is PdfSelectionDisposition.PRESERVED:"
-    completed = '_set_document_terminal_state(document_id, status="completed", error_message=None)'
+
+    tree = ast.parse(source)
+    completed_calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "_set_document_terminal_state":
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+        status = keywords.get("status")
+        error_message = keywords.get("error_message")
+        if (
+            isinstance(status, ast.Constant)
+            and status.value == "completed"
+            and isinstance(error_message, ast.Constant)
+            and error_message.value is None
+        ):
+            completed_calls.append(node)
 
     assert current_invariant in source
     assert preserved_branch in source
     assert "PDF_CANONICAL_SELECTION_PRESERVED" in source
     assert "Reader v2 canonical selection is inconsistent with processing result" in source
-    assert completed in source
-    assert source.index(current_invariant) < source.index(completed)
-    assert source.index(preserved_branch) < source.index(completed)
+    assert len(completed_calls) == 1
+    completed = completed_calls[0]
+    current_line = source[: source.index(current_invariant)].count("\n") + 1
+    preserved_line = source[: source.index(preserved_branch)].count("\n") + 1
+    assert current_line < completed.lineno
+    assert preserved_line < completed.lineno
