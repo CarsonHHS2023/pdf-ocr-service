@@ -234,18 +234,39 @@ def _record_unhandled_failure_event(
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="durable provider failure metadata")
 
-    old = '''        print(
-            "PDF_INGESTION_UNHANDLED_FAILURE "
-'''
-    new = '''        _record_unhandled_failure_event(
+    source = PDF_INGESTION_PATH.read_text(encoding="utf-8")
+    durable_call = '''        _record_unhandled_failure_event(
             document_id=document_id,
             processing_attempt_id=ids.processing_attempt_id,
             exc=exc,
         )
-        print(
-            "PDF_INGESTION_UNHANDLED_FAILURE "
 '''
-    _replace_once(PDF_INGESTION_PATH, old, new, label="durable ingestion failure event")
+    if durable_call not in source:
+        marker_start = source.index(
+            '        print(\n            "PDF_INGESTION_UNHANDLED_FAILURE "\n'
+        )
+        marker_end = source.index(
+            '        logger.exception(\n',
+            marker_start,
+        )
+        source = source[:marker_end] + durable_call + source[marker_end:]
+        PDF_INGESTION_PATH.write_text(source, encoding="utf-8")
+    else:
+        marker_start = source.index(
+            '        print(\n            "PDF_INGESTION_UNHANDLED_FAILURE "\n'
+        )
+        durable_start = source.index(durable_call)
+        if durable_start < marker_start:
+            source = source.replace(durable_call, "", 1)
+            marker_start = source.index(
+                '        print(\n            "PDF_INGESTION_UNHANDLED_FAILURE "\n'
+            )
+            marker_end = source.index(
+                '        logger.exception(\n',
+                marker_start,
+            )
+            source = source[:marker_end] + durable_call + source[marker_end:]
+            PDF_INGESTION_PATH.write_text(source, encoding="utf-8")
     _patch_document_terminal_state_correlation()
 
 
