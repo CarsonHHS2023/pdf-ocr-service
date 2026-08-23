@@ -73,7 +73,7 @@ jobs:
             echo '- Environment: **Staging only**.'
             echo '- Bucket: `carsonhhs/pdf-ocr-service-ocrmypdf-test-storage`.'
             echo '- Retention: delete files older than **30 days**.'
-            echo '- Production bucket `carsonhhs/pdf-ocr-service-storage` is not targeted.'
+            echo '- Production storage is not referenced or targeted.'
             echo '- Manual runs default to dry-run unless **apply** is checked.'
             echo '- A private-bucket 404 is treated as an access/configuration failure, not silently skipped.'
           } >> "$GITHUB_STEP_SUMMARY"
