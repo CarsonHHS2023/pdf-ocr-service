@@ -145,7 +145,7 @@ def test_replay_regenerates_v2_internal_ids_and_preserves_reader_content(tmp_pat
     )
 
     assert report.source_alembic_head == "0006_ingestion_dispatches"
-    assert report.target_alembic_head == "0006_ingestion_dispatches"
+    assert report.target_alembic_head == "0007_processing_events"
     assert report.migrated_candidate_count == 1
     assert report.migrated_selection_count == 1
     assert report.reader_ready_count == 1
@@ -155,6 +155,8 @@ def test_replay_regenerates_v2_internal_ids_and_preserves_reader_content(tmp_pat
     engine = create_engine(normalize_database_url(target_url))
     session = Session(engine)
     try:
+        assert session.execute(text("SELECT COUNT(*) FROM processing_events")).scalar_one() == 0
+
         target_candidate_row = session.execute(
             select(CandidateRow).where(CandidateRow.candidate_id == "migration-candidate")
         ).scalar_one()
