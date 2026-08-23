@@ -87,8 +87,17 @@ def test_each_shard_receives_exact_delivery_source_factory_and_4200s_ttl(
         lambda *args, **kwargs: shard_input,
     )
 
-    def build_factory(*, storage, reference, byte_size):
-        factory_calls.append((storage, reference, byte_size))
+    def build_factory(
+        *,
+        storage,
+        reference,
+        byte_size,
+        processing_run_id=None,
+        document_id=None,
+    ):
+        factory_calls.append(
+            (storage, reference, byte_size, processing_run_id, document_id)
+        )
         return source_factory
 
     monkeypatch.setattr(sharding, "build_provider_input_source_url_factory", build_factory)
@@ -161,7 +170,9 @@ def test_each_shard_receives_exact_delivery_source_factory_and_4200s_ttl(
     assert result.error is None
     assert result.canonicalization is canonical
     assert result.shard_count == 1
-    assert factory_calls == [(storage, shard_reference, 40_000_000)]
+    assert factory_calls == [
+        (storage, shard_reference, 40_000_000, "attempt-1", "doc-1")
+    ]
     assert len(service_kwargs) == 1
     assert service_kwargs[0]["source_transport_url_factory"] is source_factory
     assert service_kwargs[0]["source_access_ttl"] == timedelta(seconds=4200)
