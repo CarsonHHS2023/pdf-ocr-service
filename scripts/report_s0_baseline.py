@@ -16,14 +16,56 @@ from app.database import SessionLocal
 from app.processing.s0_baseline import collect_s0_run_snapshot, render_s0_markdown
 
 
-_SAFE_RECORD_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,159}$")
+_SUPPORTED_FIXTURE_REGISTRY_VERSION = "v1"
+_SUPPORTED_FIXTURE_IDS = frozenset(
+    {
+        "pdf-small-v1",
+        "pdf-medium-v1",
+        "pdf-large-v1",
+        "txt-small-v1",
+        "txt-medium-v1",
+    }
+)
+_PROCESSING_RUN_ID = re.compile(r"^(?:pdf|txt)-ingest-[0-9a-f]{32}$")
+_GIT_REVISION = re.compile(r"^[0-9A-Fa-f]{40}$")
+_STAGING_RUNTIME_REVISION = re.compile(r"^staging-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
-def _validated_record_token(option: str, value: str) -> str:
-    if not isinstance(value, str) or _SAFE_RECORD_TOKEN.fullmatch(value) is None:
+def _validated_processing_run_id(value: str) -> str:
+    if not isinstance(value, str) or _PROCESSING_RUN_ID.fullmatch(value) is None:
         raise SystemExit(
-            f"{option} must be a privacy-safe token using only letters, digits, "
-            ". _ : @ / + ~ - (maximum 160 characters)"
+            "--processing-run-id must match Atlas ingestion identity "
+            "pdf-ingest-<32 lowercase hex> or txt-ingest-<32 lowercase hex>"
+        )
+    return value
+
+
+def _validated_fixture_registry_version(value: str) -> str:
+    if value != _SUPPORTED_FIXTURE_REGISTRY_VERSION:
+        raise SystemExit(
+            f"--fixture-registry-version must be {_SUPPORTED_FIXTURE_REGISTRY_VERSION}"
+        )
+    return value
+
+
+def _validated_fixture_id(value: str) -> str:
+    if value not in _SUPPORTED_FIXTURE_IDS:
+        allowed = ", ".join(sorted(_SUPPORTED_FIXTURE_IDS))
+        raise SystemExit(f"--fixture-id must be a registered v1 fixture: {allowed}")
+    return value
+
+
+def _validated_backend_git_revision(value: str) -> str:
+    if not isinstance(value, str) or _GIT_REVISION.fullmatch(value) is None:
+        raise SystemExit("--backend-git-revision must be a full 40-hex Git commit SHA")
+    return value.lower()
+
+
+def _validated_staging_runtime_revision(value: str) -> str:
+    if not isinstance(value, str) or _STAGING_RUNTIME_REVISION.fullmatch(value) is None:
+        raise SystemExit(
+            "--staging-runtime-revision must start with staging- and contain only "
+            "letters, digits, hyphens, or underscores"
         )
     return value
 
@@ -34,24 +76,27 @@ def _benchmark_record_metadata(args: argparse.Namespace) -> dict[str, object]:
             "supply exactly one --fixture-id for each --processing-run-id, in the same order"
         )
 
-    fixture_registry_version = _validated_record_token(
-        "--fixture-registry-version", args.fixture_registry_version
-    )
-    backend_git_revision = _validated_record_token(
-        "--backend-git-revision", args.backend_git_revision
-    )
-    staging_runtime_revision = _validated_record_token(
-        "--staging-runtime-revision", args.staging_runtime_revision
-    )
-    runs = []
-    for run_id, fixture_id in zip(args.processing_run_ids, args.fixture_ids, strict=True):
-        runs.append(
-            {
-                "processing_run_id": _validated_record_token("--processing-run-id", run_id),
-                "fixture_id": _validated_record_token("--fixture-id", fixture_id),
-            }
+    processing_run_ids = [
+        _validated_processing_run_id(run_id) for run_id in args.processing_run_ids
+    ]
+    if len(set(processing_run_ids)) != len(processing_run_ids):
+        raise SystemExit(
+            "--processing-run-id values must be unique; one durable run may map to only one fixture"
         )
 
+    fixture_registry_version = _validated_fixture_registry_version(
+        args.fixture_registry_version
+    )
+    fixture_ids = [_validated_fixture_id(fixture_id) for fixture_id in args.fixture_ids]
+    backend_git_revision = _validated_backend_git_revision(args.backend_git_revision)
+    staging_runtime_revision = _validated_staging_runtime_revision(
+        args.staging_runtime_revision
+    )
+
+    runs = [
+        {"processing_run_id": run_id, "fixture_id": fixture_id}
+        for run_id, fixture_id in zip(processing_run_ids, fixture_ids, strict=True)
+    ]
     return {
         "fixture_registry_version": fixture_registry_version,
         "backend_git_revision": backend_git_revision,
@@ -97,17 +142,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fixture-registry-version",
         required=True,
-        help="Fixture registry version for this benchmark record, for example v1",
+        help="Fixture registry version for this benchmark record; currently v1",
     )
     parser.add_argument(
         "--backend-git-revision",
         required=True,
-        help="Exact backend Git revision used by the measured Staging runtime",
+        help="Exact full backend Git commit SHA used by the measured Staging runtime",
     )
     parser.add_argument(
         "--staging-runtime-revision",
         required=True,
-        help="Explicit Staging deployment/runtime revision for the measured run",
+        help="Explicit non-path Staging runtime label beginning with staging-",
     )
     parser.add_argument(
         "--format",
