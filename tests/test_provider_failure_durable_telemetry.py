@@ -279,3 +279,18 @@ def test_provider_timeline_overlay_is_idempotent() -> None:
     )
     after = {str(path): digest(path) for path in targets}
     assert after == before
+
+
+def test_live_failure_marker_precedes_durable_database_write() -> None:
+    source = Path("app/processing/pdf_ingestion.py").read_text(encoding="utf-8")
+    marker = '        print(\n            "PDF_INGESTION_UNHANDLED_FAILURE "\n'
+    durable = '''        _record_unhandled_failure_event(
+            document_id=document_id,
+            processing_attempt_id=ids.processing_attempt_id,
+            exc=exc,
+        )
+'''
+
+    assert marker in source
+    assert durable in source
+    assert source.index(marker) < source.index(durable)
