@@ -9,6 +9,7 @@ PRESENTATION_BRIDGE_PATH = Path("app/processing/pdf_page_presentation_bridge.py"
 MAIN_PATH = Path("app/main.py")
 
 _EVENT_IMPORT = "from app.processing.processing_events import record_processing_event\n"
+_PROVIDER_ERROR_IMPORT = "from app.processing.errors import ProviderClientError\n"
 
 
 def _replace_once(path: Path, old: str, new: str, *, label: str) -> None:
@@ -22,11 +23,16 @@ def _replace_once(path: Path, old: str, new: str, *, label: str) -> None:
 
 def _patch_pdf_ingestion() -> None:
     source = PDF_INGESTION_PATH.read_text(encoding="utf-8")
-    if _EVENT_IMPORT not in source:
-        anchor = "from app.processing.orchestration import PollingPolicy\n"
+    anchor = "from app.processing.orchestration import PollingPolicy\n"
+    if _EVENT_IMPORT not in source or _PROVIDER_ERROR_IMPORT not in source:
         if source.count(anchor) != 1:
             raise RuntimeError("Could not find unique pdf_ingestion processing import anchor")
-        source = source.replace(anchor, anchor + _EVENT_IMPORT, 1)
+        additions = ""
+        if _PROVIDER_ERROR_IMPORT not in source:
+            additions += _PROVIDER_ERROR_IMPORT
+        if _EVENT_IMPORT not in source:
+            additions += _EVENT_IMPORT
+        source = source.replace(anchor, anchor + additions, 1)
         PDF_INGESTION_PATH.write_text(source, encoding="utf-8")
 
     old = '''def _diagnostic(event: str, **fields: object) -> None:
@@ -44,12 +50,81 @@ def _patch_pdf_ingestion() -> None:
         processing_run_id=fields.get("processing_attempt_id"),
         document_id=fields.get("document_id"),
         event_name=event,
-        severity=("error" if event.endswith("_FAILED") else "info"),
+        severity=("error" if event.endswith(("_FAILED", "_FAILURE")) else "info"),
         page_number=fields.get("page_number"),
         payload=fields,
     )
 '''
     _replace_once(PDF_INGESTION_PATH, old, new, label="pdf_ingestion diagnostic")
+
+    old = '''def _safe_failure_message(exc: BaseException | None = None) -> str:
+    if isinstance(exc, IntegrationError):
+        return exc.safe_message
+    if isinstance(exc, PdfPreprocessingCapacityError):
+        return "PDF preprocessing capacity is temporarily full; retry later"
+    if isinstance(exc, BookSourceTooLarge):
+        return "PDF source exceeds the current application processing limit"
+    return "PDF processing failed before Reader v2 content became ready"
+'''
+    new = '''def _safe_failure_message(exc: BaseException | None = None) -> str:
+    if isinstance(exc, IntegrationError):
+        return exc.safe_message
+    if isinstance(exc, PdfPreprocessingCapacityError):
+        return "PDF preprocessing capacity is temporarily full; retry later"
+    if isinstance(exc, BookSourceTooLarge):
+        return "PDF source exceeds the current application processing limit"
+    return "PDF processing failed before Reader v2 content became ready"
+
+
+def _durable_failure_fields(exc: BaseException) -> dict[str, object]:
+    """Extract bounded non-secret provider failure metadata already held in memory."""
+    if not isinstance(exc, IntegrationError) or exc.orchestration_error is None:
+        return {}
+
+    orchestration_error = exc.orchestration_error
+    fields: dict[str, object] = {
+        "integration_error_category": exc.category.value,
+        "orchestration_error_category": orchestration_error.category.value,
+        "orchestration_phase": orchestration_error.phase.value,
+        "provider_error_code": orchestration_error.provider_error_code,
+        "retryable": orchestration_error.retryable,
+        "elapsed_seconds": orchestration_error.elapsed_seconds,
+        "poll_count": orchestration_error.poll_count,
+    }
+    provider_cause = orchestration_error.__cause__
+    if isinstance(provider_cause, ProviderClientError):
+        fields.update(
+            {
+                "provider_error_category": provider_cause.detail.category.value,
+                "provider_http_status": provider_cause.detail.http_status,
+                "provider_error_code": (
+                    provider_cause.detail.provider_code
+                    or orchestration_error.provider_error_code
+                ),
+                "retryable": provider_cause.detail.retryable,
+            }
+        )
+    return fields
+'''
+    _replace_once(PDF_INGESTION_PATH, old, new, label="durable provider failure metadata")
+
+    old = '''        print(
+            "PDF_INGESTION_UNHANDLED_FAILURE "
+            f"document_id={document_id} processing_attempt_id={ids.processing_attempt_id} "
+            f"error_type={type(exc).__name__}",
+            file=sys.stderr,
+            flush=True,
+        )
+'''
+    new = '''        _diagnostic(
+            "PDF_INGESTION_UNHANDLED_FAILURE",
+            document_id=document_id,
+            processing_attempt_id=ids.processing_attempt_id,
+            error_type=type(exc).__name__,
+            **_durable_failure_fields(exc),
+        )
+'''
+    _replace_once(PDF_INGESTION_PATH, old, new, label="durable ingestion failure event")
 
 
 def _patch_presentation_bridge() -> None:
