@@ -51,6 +51,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-ci.txt -r requirements-test.txt
 
+      - name: Compose durable event runtime
+        run: python scripts/apply_durable_processing_events.py
+
       - name: Upgrade schema and run durable event regressions
         run: |
           alembic upgrade head
@@ -58,6 +61,7 @@ jobs:
           python -m pytest -q \
             tests/test_processing_events.py \
             tests/test_postgresql_readiness.py
+          python -m pytest -q tests/test_postgresql_data_migration.py
 
       - name: Verify composition and idempotence
         run: |
@@ -68,21 +72,28 @@ jobs:
             app/processing/processing_events.py \
             app/processing/pdf_ingestion.py \
             app/processing/pdf_page_presentation_bridge.py \
+            app/postgresql_data_migration.py \
             app/routers/processing_events.py \
             app/main.py \
             scripts/apply_durable_processing_events.py
           grep -q 'record_processing_event(' app/processing/pdf_ingestion.py
           grep -q 'record_processing_event(' app/processing/pdf_page_presentation_bridge.py
           grep -q 'event.endswith("_SUMMARY")' scripts/apply_durable_processing_events.py
+          grep -q 'EXPECTED_SOURCE_ALEMBIC_HEAD = "0006_ingestion_dispatches"' app/postgresql_data_migration.py
+          grep -q 'EXPECTED_TARGET_ALEMBIC_HEAD = "0007_processing_events"' app/postgresql_data_migration.py
           grep -q 'app.include_router(processing_events.router)' app/main.py
           sha256sum \
             app/processing/pdf_ingestion.py \
             app/processing/pdf_page_presentation_bridge.py \
+            app/postgresql_data_migration.py \
+            tests/test_postgresql_data_migration.py \
             app/main.py > /tmp/processing-events-before.sha256
           python scripts/apply_durable_processing_events.py
           sha256sum \
             app/processing/pdf_ingestion.py \
             app/processing/pdf_page_presentation_bridge.py \
+            app/postgresql_data_migration.py \
+            tests/test_postgresql_data_migration.py \
             app/main.py > /tmp/processing-events-after.sha256
           diff -u /tmp/processing-events-before.sha256 /tmp/processing-events-after.sha256
           git diff --check
