@@ -1,4 +1,4 @@
-"""Install Staging-only S0 v5 Phase 0 observability plus Phase 1 sharing."""
+"""Install Staging-only S0 v5 Phase 0 observability plus Phase 1/2 sharing."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,10 +22,13 @@ _INSTALL = (
     "from app.processing.s0_v5_phase0_observability_compat import "
     "install_s0_v5_phase0_observability\n"
     "from app.processing.s0_v5_phase1_shared_analysis_compat import "
-    "install_s0_v5_phase1_shared_analysis\n\n"
+    "install_s0_v5_phase1_shared_analysis\n"
+    "from app.processing.s0_phase2_stage_observability import "
+    "install_s0_phase2_stage_observability\n\n"
     "install_s0_v5_cheap_shadow_geometry()\n"
     "install_s0_v5_phase0_observability()\n"
-    "install_s0_v5_phase1_shared_analysis()\n\n"
+    "install_s0_v5_phase1_shared_analysis()\n"
+    "install_s0_phase2_stage_observability()\n\n"
 )
 _PROVIDER_20MIB_FINAL_MARKERS = (
     "PROVIDER_TRANSPORT_SHARD_TARGET_BYTES = 20 * _MIB",
@@ -38,7 +41,7 @@ _PROVIDER_20MIB_FINAL_MARKERS = (
 def patch_s0_v5_phase0_observability(
     path: Path = PDF_INGESTION_PATH,
 ) -> None:
-    """Install Phase 0 first, then Phase 1 cache checks around its delegates."""
+    """Install Phase 0/1/2 observational wrappers around existing delegates."""
     source = path.read_text(encoding="utf-8")
     if _INSTALL in source:
         return
@@ -114,7 +117,7 @@ def main() -> None:
     # Staging executes this script after the heartbeat and provider-preflight
     # overlays. Keep the reusable Phase0 patch function independent for focused
     # tests, while the deployment entry point installs provider-input access
-    # immediately before the Phase0/Phase1 low-level wrappers capture delegates.
+    # immediately before the Phase0/Phase1/Phase2 low-level wrappers capture delegates.
     if __package__:
         from scripts.apply_durable_processing_events import (
             patch_durable_processing_events,
