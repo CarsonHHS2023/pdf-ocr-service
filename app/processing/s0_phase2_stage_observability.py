@@ -1,10 +1,17 @@
 """Staging-only S0 Phase 2 durable stage measurements.
 
 This compatibility layer is observational only. It wraps already-composed
-classification, preprocessing, canonicalization, and Provider integration
-callables, records bounded timing/resource evidence, and returns or raises the
-exact delegate result. It does not change routing, sharding, concurrency,
-timeouts, retries, storage placement, OCR options, or canonical selection.
+classification, preprocessing, canonicalization, and the final logical Provider
+integration callable, records bounded timing/resource evidence, and returns or
+raises the exact delegate result. It does not change routing, sharding,
+concurrency, timeouts, retries, storage placement, OCR options, or canonical
+selection.
+
+Wall elapsed values describe the wrapped operation. CPU and memory samples are
+explicitly process-wide evidence: ``process_time()`` is a process CPU delta over
+the wrapper interval, RSS is sampled at the wrapper endpoint, and VmHWM is the
+process-lifetime high-water mark. They must not be interpreted as stage-local
+resource ownership under concurrent execution.
 """
 from __future__ import annotations
 
@@ -32,16 +39,19 @@ def _finite_nonnegative(value: object) -> float | None:
 
 
 def _resource_fields() -> dict[str, float]:
-    """Return only finite non-negative process memory evidence."""
+    """Return explicitly process-scoped finite non-negative memory evidence."""
     try:
         snapshot = resource_snapshot()
     except Exception:
         return {}
     output: dict[str, float] = {}
-    for key in ("rss_mb", "peak_rss_mb"):
-        value = _finite_nonnegative(snapshot.get(key))
+    for source_key, output_key in (
+        ("rss_mb", "process_rss_endpoint_mb"),
+        ("peak_rss_mb", "process_lifetime_peak_rss_mb"),
+    ):
+        value = _finite_nonnegative(snapshot.get(source_key))
         if value is not None:
-            output[key] = value
+            output[output_key] = value
     return output
 
 
@@ -52,7 +62,11 @@ def _measurement_fields(
 ) -> dict[str, object]:
     return {
         "elapsed_seconds": round(max(0.0, perf_counter() - wall_started), 6),
-        "cpu_seconds": round(max(0.0, process_time() - cpu_started), 6),
+        "process_cpu_delta_seconds": round(
+            max(0.0, process_time() - cpu_started),
+            6,
+        ),
+        "resource_scope": "process_wide",
         **_resource_fields(),
     }
 
@@ -205,10 +219,18 @@ def _wrap_preprocessing(delegate: Callable[..., Any]) -> Callable[..., Any]:
         }
         preprocessing = getattr(result, "preprocessing", None)
         page_count = getattr(preprocessing, "page_count", None)
-        if isinstance(page_count, int) and not isinstance(page_count, bool) and page_count > 0:
+        if (
+            isinstance(page_count, int)
+            and not isinstance(page_count, bool)
+            and page_count > 0
+        ):
             fields["page_count"] = page_count
         provider_size = getattr(result, "byte_size", None)
-        if isinstance(provider_size, int) and not isinstance(provider_size, bool) and provider_size >= 0:
+        if (
+            isinstance(provider_size, int)
+            and not isinstance(provider_size, bool)
+            and provider_size >= 0
+        ):
             fields["provider_input_size_bytes"] = provider_size
         _record(
             processing_run_id=run_id,
@@ -230,11 +252,7 @@ def _wrap_canonicalization(delegate: Callable[..., Any]) -> Callable[..., Any]:
 
     @wraps(delegate)
     def wrapped(*args: object, **kwargs: object):
-        envelope = (
-            args[1]
-            if len(args) > 1
-            else kwargs.get("envelope")
-        )
+        envelope = args[1] if len(args) > 1 else kwargs.get("envelope")
         identity = getattr(envelope, "identity", None)
         run_id = _safe_identity(getattr(identity, "atlas_attempt_id", None))
         document_id = _safe_identity(getattr(identity, "document_id", None))
@@ -254,7 +272,11 @@ def _wrap_canonicalization(delegate: Callable[..., Any]) -> Callable[..., Any]:
                     cpu_started=cpu_started,
                 ),
             }
-            if isinstance(payload_size, int) and not isinstance(payload_size, bool) and payload_size >= 0:
+            if (
+                isinstance(payload_size, int)
+                and not isinstance(payload_size, bool)
+                and payload_size >= 0
+            ):
                 fields["raw_result_size_bytes"] = payload_size
             _record(
                 processing_run_id=run_id,
@@ -272,7 +294,11 @@ def _wrap_canonicalization(delegate: Callable[..., Any]) -> Callable[..., Any]:
                 cpu_started=cpu_started,
             ),
         }
-        if isinstance(payload_size, int) and not isinstance(payload_size, bool) and payload_size >= 0:
+        if (
+            isinstance(payload_size, int)
+            and not isinstance(payload_size, bool)
+            and payload_size >= 0
+        ):
             fields["raw_result_size_bytes"] = payload_size
         _record(
             processing_run_id=run_id,
@@ -338,10 +364,18 @@ def _wrap_provider_process(delegate: Callable[..., Any]) -> Callable[..., Any]:
         if provider_job_id is not None:
             fields["provider_job_id"] = provider_job_id
         poll_count = getattr(outcome, "poll_count", None)
-        if isinstance(poll_count, int) and not isinstance(poll_count, bool) and poll_count >= 0:
+        if (
+            isinstance(poll_count, int)
+            and not isinstance(poll_count, bool)
+            and poll_count >= 0
+        ):
             fields["poll_count"] = poll_count
         raw_size = getattr(outcome, "raw_result_size_bytes", None)
-        if isinstance(raw_size, int) and not isinstance(raw_size, bool) and raw_size >= 0:
+        if (
+            isinstance(raw_size, int)
+            and not isinstance(raw_size, bool)
+            and raw_size >= 0
+        ):
             fields["raw_result_size_bytes"] = raw_size
         status = getattr(outcome, "provider_terminal_status", None)
         status_value = getattr(status, "value", status)
@@ -362,7 +396,7 @@ def _wrap_provider_process(delegate: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def install_s0_phase2_stage_observability() -> None:
-    """Install low-frequency durable measurements around existing delegates."""
+    """Install measurements around the final Staging runtime delegates."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -370,7 +404,7 @@ def install_s0_phase2_stage_observability() -> None:
     from app.processing import pdf_canonicalization as canonicalization
     from app.processing import pdf_geometry_integration as geometry
     from app.processing import pdf_page_presentation_preprocess_compat as classification
-    from app.processing import integration
+    from app.processing import pdf_provider_sharding_compat as sharding_compat
 
     classification._classify_source_pages = _wrap_classification(
         classification._classify_source_pages
@@ -381,8 +415,15 @@ def install_s0_phase2_stage_observability() -> None:
     canonicalization.PdfCanonicalizationService.canonicalize = _wrap_canonicalization(
         canonicalization.PdfCanonicalizationService.canonicalize
     )
-    integration.EndToEndProcessingIntegrationService.process = _wrap_provider_process(
-        integration.EndToEndProcessingIntegrationService.process
+    # The production Staging ingestion path explicitly constructs this final
+    # sharding-aware service. Wrapping its logical process call captures both the
+    # single-job path and, when required, the complete shard/merge/canonicalization
+    # path exactly once. Do not wrap the base service: its per-shard calls would
+    # otherwise create misleading logical integration measurements.
+    sharding_compat.ShardingAwareEndToEndProcessingIntegrationService.process = (
+        _wrap_provider_process(
+            sharding_compat.ShardingAwareEndToEndProcessingIntegrationService.process
+        )
     )
     _INSTALLED = True
 
