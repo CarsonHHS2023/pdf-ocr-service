@@ -241,3 +241,118 @@ def test_historical_run_without_phase2_events_reports_mapped_metrics_unavailable
     # The process-wide CPU evidence still does not satisfy the required
     # stage-specific CPU contract, regardless of whether a historical event exists.
     assert _metric(snapshot, "preprocessing_cpu_seconds").status == "not_instrumented"
+
+
+def test_process_wide_auxiliaries_reject_wrong_resource_scope_without_hiding_wall_time() -> None:
+    db = _session()
+    run_id = _seed_phase2_run(db)
+    event = db.get(ProcessingEvent, "phase2-preprocessing")
+    assert event is not None
+    event.payload_json = encode_json_text(
+        {
+            "elapsed_seconds": 43.562509,
+            "page_count": 1,
+            "process_cpu_delta_seconds": 26.5654,
+            "process_lifetime_peak_rss_mb": 652.4,
+            "process_rss_endpoint_mb": 517.4,
+            "provider_input_size_bytes": 982_161,
+            "resource_scope": "stage_local",
+            "succeeded": True,
+        }
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    # Wall time is operation-scoped and does not depend on resource_scope.
+    assert _metric(snapshot, "preprocessing_wall_seconds").status == "observed"
+    assert _metric(snapshot, "preprocessing_wall_seconds").value == 43.562509
+
+    cpu = _metric(snapshot, "preprocessing_process_cpu_delta_seconds")
+    rss = _metric(snapshot, "preprocessing_process_rss_endpoint_mb")
+    assert cpu.status == "not_available"
+    assert cpu.value is None
+    assert rss.status == "not_available"
+    assert rss.value is None
+
+
+def test_duplicate_successful_stage_measurements_are_not_collapsed() -> None:
+    db = _session()
+    run_id = _seed_phase2_run(db)
+    started = datetime(2026, 8, 24, 22, 47, 28)
+    db.add(
+        ProcessingEvent(
+            id="phase2-preprocessing-duplicate",
+            processing_run_id=run_id,
+            document_id="doc-phase2-map",
+            schema_version="atlas.processing.event.v1",
+            event_name="PDF_S0_PREPROCESSING_MEASURED",
+            severity="info",
+            payload_json=encode_json_text(
+                {
+                    "elapsed_seconds": 50.0,
+                    "process_cpu_delta_seconds": 30.0,
+                    "process_lifetime_peak_rss_mb": 700.0,
+                    "process_rss_endpoint_mb": 550.0,
+                    "provider_input_size_bytes": 982_161,
+                    "resource_scope": "process_wide",
+                    "succeeded": True,
+                }
+            ),
+            created_at=started + timedelta(seconds=46),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    preprocessing_wall = _metric(snapshot, "preprocessing_wall_seconds")
+    assert preprocessing_wall.status == "not_available"
+    assert preprocessing_wall.value is None
+    assert "multiple successful" in (preprocessing_wall.note or "").lower()
+
+
+def test_truncated_window_marks_retained_phase2_measurement_partial() -> None:
+    db = _session()
+    run_id = _seed_phase2_run(db)
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id, max_events=2)
+
+    assert snapshot.event_window_truncated is True
+    preprocessing_wall = _metric(snapshot, "preprocessing_wall_seconds")
+    assert preprocessing_wall.status == "partial"
+    assert preprocessing_wall.value == 43.562509
+    assert "incomplete" in (preprocessing_wall.note or "").lower()
+
+    canonicalization = _metric(snapshot, "canonicalization_duration_seconds")
+    assert canonicalization.status == "not_available"
+    assert canonicalization.value is None
+
+
+def test_unrelated_elapsed_seconds_cannot_satisfy_phase2_required_measurements() -> None:
+    db = _session()
+    run_id = _seed_phase2_run(db, with_measurements=False)
+    started = datetime(2026, 8, 24, 22, 47, 28)
+    db.add(
+        ProcessingEvent(
+            id="unrelated-elapsed",
+            processing_run_id=run_id,
+            document_id="doc-phase2-map",
+            schema_version="atlas.processing.event.v1",
+            event_name="PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
+            severity="info",
+            payload_json=encode_json_text(
+                {"elapsed_seconds": 99.0, "shard_count": 2}
+            ),
+            created_at=started + timedelta(seconds=60),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    assert "elapsed_seconds" in snapshot.observed_numeric_event_fields
+    assert _metric(snapshot, "preprocessing_wall_seconds").status == "not_available"
+    assert _metric(snapshot, "preprocessing_wall_seconds").value is None
+    assert _metric(snapshot, "canonicalization_duration_seconds").status == "not_available"
+    assert _metric(snapshot, "canonicalization_duration_seconds").value is None
