@@ -902,14 +902,16 @@ def render_s0_markdown(snapshots: Iterable[S0RunSnapshot]) -> str:
                 "",
                 "### Auxiliary lifecycle/observability metrics",
                 "",
-                "| Metric | Status | Value | Unit | Source |",
-                "|---|---|---:|---|---|",
+                "| Metric | Status | Value | Unit | Source | Note |",
+                "|---|---|---:|---|---|---|",
             ]
         )
         for metric in snapshot.auxiliary_metrics:
             value = "—" if metric.value is None else str(metric.value)
+            note = (metric.note or "").replace("|", "\\|")
+            source = metric.source.replace("|", "\\|")
             lines.append(
-                f"| {metric.label} | `{metric.status}` | {value} | {metric.unit or '—'} | `{metric.source}` |"
+                f"| {metric.label} | `{metric.status}` | {value} | {metric.unit or '—'} | `{source}` | {note} |"
             )
         lines.extend(
             [
