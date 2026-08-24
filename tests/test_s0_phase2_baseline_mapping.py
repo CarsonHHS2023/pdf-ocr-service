@@ -156,9 +156,6 @@ def test_phase2_events_map_only_semantically_matching_required_metrics() -> None
     assert canonicalization.value == 15.962947
     assert "PDF_S0_CANONICALIZATION_MEASURED" in canonicalization.source
 
-    # Process-wide CPU/RSS and similarly named byte/duration signals are useful
-    # auxiliary evidence, but they must not be promoted to semantically narrower
-    # required metrics.
     assert _metric(snapshot, "preprocessing_cpu_seconds").status == "not_instrumented"
     assert _metric(snapshot, "backend_upload_peak_memory_mb").status == "not_instrumented"
     assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_instrumented"
@@ -237,9 +234,6 @@ def test_historical_run_without_phase2_events_reports_mapped_metrics_unavailable
     assert preprocessing_wall.value is None
     assert canonicalization.status == "not_available"
     assert canonicalization.value is None
-
-    # The process-wide CPU evidence still does not satisfy the required
-    # stage-specific CPU contract, regardless of whether a historical event exists.
     assert _metric(snapshot, "preprocessing_cpu_seconds").status == "not_instrumented"
 
 
@@ -264,7 +258,6 @@ def test_process_wide_auxiliaries_reject_wrong_resource_scope_without_hiding_wal
 
     snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
 
-    # Wall time is operation-scoped and does not depend on resource_scope.
     assert _metric(snapshot, "preprocessing_wall_seconds").status == "observed"
     assert _metric(snapshot, "preprocessing_wall_seconds").value == 43.562509
 
@@ -276,7 +269,7 @@ def test_process_wide_auxiliaries_reject_wrong_resource_scope_without_hiding_wal
     assert rss.value is None
 
 
-def test_duplicate_successful_stage_measurements_are_not_collapsed() -> None:
+def test_duplicate_successful_stage_measurements_are_not_collapsed_even_if_one_is_unusable() -> None:
     db = _session()
     run_id = _seed_phase2_run(db)
     started = datetime(2026, 8, 24, 22, 47, 28)
@@ -290,7 +283,6 @@ def test_duplicate_successful_stage_measurements_are_not_collapsed() -> None:
             severity="info",
             payload_json=encode_json_text(
                 {
-                    "elapsed_seconds": 50.0,
                     "process_cpu_delta_seconds": 30.0,
                     "process_lifetime_peak_rss_mb": 700.0,
                     "process_rss_endpoint_mb": 550.0,
