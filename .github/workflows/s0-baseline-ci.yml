@@ -20,6 +20,7 @@ on:
       - 'tests/test_s0_operator_run_record.py'
       - 'tests/test_s0_markdown_notes.py'
       - 'tests/test_s0_phase2_stage_observability.py'
+      - 'tests/test_s0_phase2_baseline_mapping.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
       - 'docs/reviews/s0-baseline-2026-08-23.md'
       - '.github/workflows/s0-baseline-ci.yml'
@@ -58,7 +59,8 @@ jobs:
             tests/test_s0_retryable_checksum_status.py \
             tests/test_s0_operator_run_record.py \
             tests/test_s0_markdown_notes.py \
-            tests/test_s0_phase2_stage_observability.py
+            tests/test_s0_phase2_stage_observability.py \
+            tests/test_s0_phase2_baseline_mapping.py
 
       - name: Run S0 baseline contract tests
         run: |
@@ -69,7 +71,8 @@ jobs:
             tests/test_s0_retryable_checksum_status.py \
             tests/test_s0_operator_run_record.py \
             tests/test_s0_markdown_notes.py \
-            tests/test_s0_phase2_stage_observability.py
+            tests/test_s0_phase2_stage_observability.py \
+            tests/test_s0_phase2_baseline_mapping.py
 
       - name: Verify operator CLI
         run: python scripts/report_s0_baseline.py --help >/dev/null
