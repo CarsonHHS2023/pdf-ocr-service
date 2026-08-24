@@ -177,15 +177,16 @@ def _validate_attached_source_assignments(
             )
 
         explicit_source_file_id = run_row.source_file_id
-        if explicit_source_file_id is None:
-            continue
-        if (
-            snapshot.source_file_id is not None
-            and snapshot.source_file_id != explicit_source_file_id
-        ):
+        # The snapshot and this validation query are separate reads under the
+        # database's normal isolation level. Require exact agreement, including
+        # NULL, so a concurrent attach/detach/repoint cannot produce a run record
+        # whose replay identity belongs to a different durable source association.
+        if snapshot.source_file_id != explicit_source_file_id:
             raise SystemExit(
                 "collected source association does not match the processing run; benchmark replay identity cannot be verified"
             )
+        if explicit_source_file_id is None:
+            continue
 
         source_row = session.execute(
             select(SourceFile.file_type.label("file_type")).where(
