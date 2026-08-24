@@ -392,6 +392,15 @@ def _event_measurement(
             status="not_available",
             note=f"No successful bounded {event_name} measurement is retained for this run.",
         )
+    if len(successful) > 1:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=(
+                f"Multiple successful bounded {event_name} measurements are retained; "
+                "the collector does not select one as definitive evidence."
+            ),
+        )
 
     values: list[float] = []
     unusable = False
