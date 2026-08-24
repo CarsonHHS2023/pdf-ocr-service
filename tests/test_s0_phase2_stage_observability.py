@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +36,7 @@ def _clock(monkeypatch, *, wall_start=10.0, wall_end=12.5, cpu_start=3.0, cpu_en
     monkeypatch.setattr(stage, "process_time", lambda: next(cpu))
 
 
-def test_preprocessing_wrapper_records_explicit_wall_cpu_memory_and_size(monkeypatch) -> None:
+def test_preprocessing_wrapper_records_wall_and_explicit_process_wide_resources(monkeypatch) -> None:
     events = _capture(monkeypatch)
     _clock(monkeypatch)
 
@@ -62,9 +63,13 @@ def test_preprocessing_wrapper_records_explicit_wall_cpu_memory_and_size(monkeyp
     payload = event["payload"]
     assert payload["succeeded"] is True
     assert payload["elapsed_seconds"] == 2.5
-    assert payload["cpu_seconds"] == 1.0
-    assert payload["rss_mb"] == 123.5
-    assert payload["peak_rss_mb"] == 150.25
+    assert payload["process_cpu_delta_seconds"] == 1.0
+    assert payload["resource_scope"] == "process_wide"
+    assert payload["process_rss_endpoint_mb"] == 123.5
+    assert payload["process_lifetime_peak_rss_mb"] == 150.25
+    assert "cpu_seconds" not in payload
+    assert "rss_mb" not in payload
+    assert "peak_rss_mb" not in payload
     assert payload["page_count"] == 7
     assert payload["provider_input_size_bytes"] == 4567
 
@@ -84,7 +89,8 @@ def test_classification_wrapper_uses_bound_processing_identity(monkeypatch) -> N
     assert events[0]["processing_run_id"] == RUN_ID
     assert events[0]["event_name"] == "PDF_S0_CLASSIFICATION_MEASURED"
     assert payload["elapsed_seconds"] == 1.25
-    assert payload["cpu_seconds"] == 0.5
+    assert payload["process_cpu_delta_seconds"] == 0.5
+    assert payload["resource_scope"] == "process_wide"
     assert payload["page_count"] == 3
 
 
@@ -115,11 +121,12 @@ def test_canonicalization_wrapper_records_raw_result_size_without_changing_resul
     assert event["event_name"] == "PDF_S0_CANONICALIZATION_MEASURED"
     payload = event["payload"]
     assert payload["elapsed_seconds"] == 4.0
-    assert payload["cpu_seconds"] == 1.25
+    assert payload["process_cpu_delta_seconds"] == 1.25
+    assert payload["resource_scope"] == "process_wide"
     assert payload["raw_result_size_bytes"] == 4321
 
 
-def test_provider_wrapper_records_per_integration_elapsed_poll_and_raw_result_size(monkeypatch) -> None:
+def test_provider_wrapper_records_one_logical_integration_measurement(monkeypatch) -> None:
     events = _capture(monkeypatch)
     _clock(monkeypatch, wall_start=40.0, wall_end=46.0, cpu_start=10.0, cpu_end=11.0)
 
@@ -128,35 +135,44 @@ def test_provider_wrapper_records_per_integration_elapsed_poll_and_raw_result_si
         poll_count=9,
         raw_result_size_bytes=7654,
         provider_terminal_status=SimpleNamespace(value="provider_completed"),
-        canonicalization=None,
+        canonicalization=SimpleNamespace(candidate_id="candidate-provider-logical"),
     )
 
     async def delegate(service, request):
         return expected
 
     wrapped = stage._wrap_provider_process(delegate)
-    service = SimpleNamespace(canonicalizer=None)
+    service = SimpleNamespace(canonicalizer=object())
     request = SimpleNamespace(
         processing_attempt_id=RUN_ID,
-        provider_job_id="pdf-job-phase2-s001",
+        provider_job_id="pdf-job-phase2-logical",
         retained_source=SimpleNamespace(document_id=DOCUMENT_ID),
     )
 
     result = asyncio.run(wrapped(service, request))
 
     assert result is expected
+    assert len(events) == 1
     event = events[0]
     assert event["processing_run_id"] == RUN_ID
     assert event["document_id"] == DOCUMENT_ID
     assert event["event_name"] == "PDF_S0_PROVIDER_INTEGRATION_MEASURED"
     payload = event["payload"]
     assert payload["succeeded"] is True
-    assert payload["canonicalizer_configured"] is False
+    assert payload["canonicalizer_configured"] is True
     assert payload["elapsed_seconds"] == 6.0
-    assert payload["cpu_seconds"] == 1.0
+    assert payload["process_cpu_delta_seconds"] == 1.0
+    assert payload["resource_scope"] == "process_wide"
     assert payload["poll_count"] == 9
     assert payload["raw_result_size_bytes"] == 7654
     assert payload["provider_status"] == "provider_completed"
+    assert payload["provider_job_id"] == "pdf-job-phase2-logical"
+
+
+def test_installer_wraps_final_sharding_aware_process_not_base_service() -> None:
+    source = inspect.getsource(stage.install_s0_phase2_stage_observability)
+    assert "ShardingAwareEndToEndProcessingIntegrationService.process" in source
+    assert "integration.EndToEndProcessingIntegrationService.process =" not in source
 
 
 def test_measurement_failure_is_fail_open_for_telemetry_but_preserves_delegate_error(monkeypatch) -> None:
@@ -178,11 +194,16 @@ def test_measurement_failure_is_fail_open_for_telemetry_but_preserves_delegate_e
     assert payload["succeeded"] is False
     assert payload["error_type"] == "RuntimeError"
     assert payload["elapsed_seconds"] == 0.75
+    assert payload["resource_scope"] == "process_wide"
 
 
 def test_recording_failure_never_changes_delegate_result(monkeypatch) -> None:
     _clock(monkeypatch, wall_start=60.0, wall_end=61.0, cpu_start=13.0, cpu_end=13.2)
-    monkeypatch.setattr(stage, "resource_snapshot", lambda: {"rss_mb": 1, "peak_rss_mb": 2})
+    monkeypatch.setattr(
+        stage,
+        "resource_snapshot",
+        lambda: {"rss_mb": 1, "peak_rss_mb": 2},
+    )
 
     def broken_recorder(**kwargs):
         raise RuntimeError("telemetry unavailable")
