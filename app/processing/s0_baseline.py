@@ -28,6 +28,14 @@ _METRIC_STATUSES = frozenset(
 )
 _SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}")
 _SAFE_FILE_TYPES = frozenset({"pdf", "txt"})
+_PHASE2_MEASUREMENT_EVENT_NAMES = frozenset(
+    {
+        "PDF_S0_CANONICALIZATION_MEASURED",
+        "PDF_S0_CLASSIFICATION_MEASURED",
+        "PDF_S0_PREPROCESSING_MEASURED",
+        "PDF_S0_PROVIDER_INTEGRATION_MEASURED",
+    }
+)
 
 # Event metadata is operator-visible output. Keep it fail-closed even though the
 # current producer sanitizes/bounds payloads: retained legacy or abnormal rows may
@@ -43,7 +51,7 @@ _SAFE_EVENT_NAMES = frozenset(
         "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
         "PDF_S0_RESOURCE_HEARTBEAT",
     }
-)
+) | _PHASE2_MEASUREMENT_EVENT_NAMES
 _SAFE_NUMERIC_EVENT_FIELDS = frozenset(
     {
         "byte_size",
@@ -52,11 +60,27 @@ _SAFE_NUMERIC_EVENT_FIELDS = frozenset(
         "page_number",
         "peak_rss_mb",
         "poll_count",
+        "process_cpu_delta_seconds",
+        "process_lifetime_peak_rss_mb",
+        "process_rss_endpoint_mb",
         "provider_http_status",
+        "provider_input_size_bytes",
+        "raw_result_size_bytes",
         "rss_mb",
         "shard_count",
         "shard_index",
         "size_bytes",
+    }
+)
+_NONNEGATIVE_EVENT_FIELDS = frozenset(
+    {
+        "elapsed_seconds",
+        "peak_rss_mb",
+        "process_cpu_delta_seconds",
+        "process_lifetime_peak_rss_mb",
+        "process_rss_endpoint_mb",
+        "provider_input_size_bytes",
+        "raw_result_size_bytes",
     }
 )
 
@@ -139,6 +163,21 @@ class _BoundedEventRow:
     payload_oversized: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _DecodedEvent:
+    """Bounded decoded payload kept together with its durable event contract."""
+
+    event_name: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _EventMeasurement:
+    value: float | None
+    status: str
+    note: str | None = None
+
+
 _REQUIRED_METRIC_META: tuple[tuple[str, str, str | None], ...] = (
     ("source_byte_size", "Source byte size", "bytes"),
     ("page_count", "Source page count", "pages"),
@@ -215,6 +254,11 @@ def _missing_metric(key: str, *, source: str, note: str) -> MetricReading:
     )
 
 
+def _combine_notes(*parts: str | None) -> str | None:
+    retained = [part.strip() for part in parts if isinstance(part, str) and part.strip()]
+    return " ".join(retained) if retained else None
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -274,9 +318,7 @@ def _usable_numeric_event_value(field: str, value: object) -> float | None:
     number = _finite_number(value)
     if number is None:
         return None
-    # Peak RSS is an absolute memory measurement. Legacy negative values are
-    # invalid evidence even though they are mathematically finite.
-    if field == "peak_rss_mb" and number < 0:
+    if field in _NONNEGATIVE_EVENT_FIELDS and number < 0:
         return None
     return number
 
@@ -323,6 +365,141 @@ def _retryable_evidence_available(
     return any(
         "retryable" not in payload or isinstance(payload["retryable"], bool)
         for payload in decoded_payloads
+    )
+
+
+def _event_measurement(
+    decoded_events: Iterable[_DecodedEvent],
+    *,
+    event_name: str,
+    field: str,
+    evidence_incomplete: bool,
+    require_process_wide: bool = False,
+) -> _EventMeasurement:
+    """Extract one unambiguous successful numeric measurement by exact event contract."""
+    matching = [event for event in decoded_events if event.event_name == event_name]
+    if not matching:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=f"No bounded {event_name} event is retained for this run.",
+        )
+
+    successful = [event for event in matching if event.payload.get("succeeded") is True]
+    if not successful:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=f"No successful bounded {event_name} measurement is retained for this run.",
+        )
+
+    values: list[float] = []
+    unusable = False
+    for event in successful:
+        payload = event.payload
+        if require_process_wide and payload.get("resource_scope") != "process_wide":
+            unusable = True
+            continue
+        if field not in payload:
+            unusable = True
+            continue
+        value = _usable_numeric_event_value(field, payload[field])
+        if value is None:
+            unusable = True
+            continue
+        values.append(value)
+
+    if len(values) > 1:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=(
+                f"Multiple successful bounded {event_name}.{field} measurements are retained; "
+                "the collector does not collapse them into one definitive value."
+            ),
+        )
+    if not values:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=f"No usable successful bounded {event_name}.{field} measurement is retained.",
+        )
+
+    incomplete = (
+        evidence_incomplete
+        or unusable
+        or len(matching) != 1
+        or len(successful) != 1
+    )
+    note_parts: list[str] = []
+    if len(matching) != 1 or len(successful) != 1:
+        note_parts.append(
+            "Additional matching or unsuccessful stage events are retained, so this value is partial evidence."
+        )
+    if unusable:
+        note_parts.append(
+            "At least one matching successful event carried unusable or incorrectly scoped evidence."
+        )
+    if evidence_incomplete:
+        note_parts.append(
+            "The bounded event/payload evidence for this snapshot is incomplete."
+        )
+    return _EventMeasurement(
+        value=values[0],
+        status="partial" if incomplete else "observed",
+        note=" ".join(note_parts) or None,
+    )
+
+
+def _phase2_process_lifetime_peak(
+    decoded_events: Iterable[_DecodedEvent],
+    *,
+    evidence_incomplete: bool,
+) -> _EventMeasurement:
+    """Return max process-lifetime VmHWM evidence across successful Phase 2 events."""
+    values: list[float] = []
+    unusable = False
+    saw_field = False
+    for event in decoded_events:
+        if event.event_name not in _PHASE2_MEASUREMENT_EVENT_NAMES:
+            continue
+        payload = event.payload
+        if payload.get("succeeded") is not True:
+            continue
+        if "process_lifetime_peak_rss_mb" not in payload:
+            continue
+        saw_field = True
+        if payload.get("resource_scope") != "process_wide":
+            unusable = True
+            continue
+        value = _usable_numeric_event_value(
+            "process_lifetime_peak_rss_mb",
+            payload["process_lifetime_peak_rss_mb"],
+        )
+        if value is None:
+            unusable = True
+            continue
+        values.append(value)
+
+    if not values:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=(
+                "Process-lifetime peak RSS was retained but unusable or incorrectly scoped."
+                if saw_field
+                else "No process-lifetime peak RSS evidence is retained in Phase 2 events for this run."
+            ),
+        )
+    incomplete = evidence_incomplete or unusable
+    return _EventMeasurement(
+        value=max(values),
+        status="partial" if incomplete else "observed",
+        note=(
+            "At least one Phase 2 process-lifetime RSS sample or bounded payload is incomplete."
+            if incomplete
+            else None
+        ),
     )
 
 
@@ -523,7 +700,7 @@ def collect_s0_run_snapshot(
         max_events=max_events,
     )
 
-    decoded_payloads: list[dict[str, Any]] = []
+    decoded_events: list[_DecodedEvent] = []
     event_payload_decode_incomplete = False
     event_payload_oversized_incomplete = False
     for row in rows:
@@ -534,8 +711,14 @@ def collect_s0_run_snapshot(
         if not decode_valid:
             event_payload_decode_incomplete = True
             continue
-        decoded_payloads.append(payload)
-    decoded_payloads_tuple = tuple(decoded_payloads)
+        decoded_events.append(_DecodedEvent(event_name=row.event_name, payload=payload))
+    decoded_events_tuple = tuple(decoded_events)
+    decoded_payloads_tuple = tuple(event.payload for event in decoded_events_tuple)
+    payload_evidence_incomplete = (
+        event_window_truncated
+        or event_payload_decode_incomplete
+        or event_payload_oversized_incomplete
+    )
 
     event_names = tuple(
         sorted({row.event_name for row in rows if row.event_name in _SAFE_EVENT_NAMES})
@@ -583,8 +766,21 @@ def collect_s0_run_snapshot(
         "peak_rss_mb",
     )
 
-    required: list[MetricReading] = [
-        _metric(
+    preprocessing_wall_measurement = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_PREPROCESSING_MEASURED",
+        field="elapsed_seconds",
+        evidence_incomplete=payload_evidence_incomplete,
+    )
+    canonicalization_measurement = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_CANONICALIZATION_MEASURED",
+        field="elapsed_seconds",
+        evidence_incomplete=payload_evidence_incomplete,
+    )
+
+    required_by_key: dict[str, MetricReading] = {
+        "source_byte_size": _metric(
             "source_byte_size",
             value=source_size if source_size_available else None,
             status="observed" if source_size_available else "not_available",
@@ -595,7 +791,7 @@ def collect_s0_run_snapshot(
                 else "No positive source byte size is durably associated with this ProcessingRun."
             ),
         ),
-        _metric(
+        "page_count": _metric(
             "page_count",
             value=page_count if page_count_available else None,
             status="observed" if page_count_available else "not_available",
@@ -606,95 +802,98 @@ def collect_s0_run_snapshot(
                 else "No positive page count is persisted for this document/run."
             ),
         ),
-    ]
-
-    for key, source_name, note in (
-        (
-            "backend_upload_peak_memory_mb",
-            "upload instrumentation",
-            "Generic processing RSS must not be substituted for upload-specific peak memory.",
+        "preprocessing_wall_seconds": _metric(
+            "preprocessing_wall_seconds",
+            value=preprocessing_wall_measurement.value,
+            status=preprocessing_wall_measurement.status,
+            source="processing_events.PDF_S0_PREPROCESSING_MEASURED.payload.elapsed_seconds",
+            note=_combine_notes(
+                "Dedicated preprocessing operation wall time. Classification can be nested inside this operation; do not sum nested durations.",
+                preprocessing_wall_measurement.note,
+            ),
         ),
-        (
-            "upload_duration_seconds",
+        "canonicalization_duration_seconds": _metric(
+            "canonicalization_duration_seconds",
+            value=canonicalization_measurement.value,
+            status=canonicalization_measurement.status,
+            source="processing_events.PDF_S0_CANONICALIZATION_MEASURED.payload.elapsed_seconds",
+            note=_combine_notes(
+                "Dedicated canonicalization wall time. It is nested inside logical Provider integration; do not sum nested durations.",
+                canonicalization_measurement.note,
+            ),
+        ),
+    }
+
+    missing_required_specs: dict[str, tuple[str, str]] = {
+        "backend_upload_peak_memory_mb": (
+            "upload instrumentation",
+            "Generic or process-wide processing RSS must not be substituted for upload-specific peak memory.",
+        ),
+        "upload_duration_seconds": (
             "upload instrumentation",
             "Upload start/end timing is not durably persisted.",
         ),
-        (
-            "backend_object_store_bytes",
+        "backend_object_store_bytes": (
             "object-store instrumentation",
             "Per-stage backend object-store byte counters are not durably persisted.",
         ),
-        (
-            "preprocessing_wall_seconds",
+        "preprocessing_cpu_seconds": (
             "preprocessing instrumentation",
-            "A dedicated durable preprocessing wall-time metric is not yet persisted.",
+            "Phase 2 persists a process-wide CPU delta over the preprocessing wrapper interval, not stage-owned CPU time; it remains auxiliary evidence only.",
         ),
-        (
-            "preprocessing_cpu_seconds",
-            "preprocessing instrumentation",
-            "A dedicated durable preprocessing CPU-time metric is not yet persisted.",
-        ),
-        (
-            "backend_to_modal_transport_bytes",
+        "backend_to_modal_transport_bytes": (
             "transport instrumentation",
-            "Backend-to-Modal bytes are not durably separated from other provider/source routes.",
+            "Provider input bytes are not equivalent to backend-to-Modal network bytes, which are not durably separated from other provider/source routes.",
         ),
-        (
-            "modal_download_seconds",
+        "modal_download_seconds": (
             "Modal instrumentation",
             "Modal download timing is not available in backend durable state.",
         ),
-        (
-            "ocr_batch_duration_seconds",
+        "ocr_batch_duration_seconds": (
             "OCR instrumentation",
-            "OCR page/batch duration is not yet normalized into a durable S0 metric.",
+            "Logical Provider integration wall time includes non-OCR work and is not equivalent to OCR page/batch duration.",
         ),
-        (
-            "gpu_busy_idle_proxy",
+        "gpu_busy_idle_proxy": (
             "GPU instrumentation",
             "No durable GPU busy/idle proxy is currently available.",
         ),
-        (
-            "raw_result_shard_bytes",
+        "raw_result_shard_bytes": (
             "artifact instrumentation",
-            "Raw-result/shard sizes are not normalized into a durable S0 metric.",
+            "Aggregate raw-result size is not equivalent to per-shard raw-result bytes.",
         ),
-        (
-            "canonicalization_duration_seconds",
-            "canonicalization instrumentation",
-            "Canonicalization duration is not durably normalized.",
-        ),
-        (
-            "visual_asset_generation_seconds",
+        "visual_asset_generation_seconds": (
             "visual instrumentation",
             "Visual asset generation duration is not durably normalized.",
         ),
-        (
-            "object_store_stage_io",
+        "object_store_stage_io": (
             "object-store instrumentation",
             "Stage-specific object-store read/write counters are not durably normalized.",
         ),
-        (
-            "reader_open_latency_seconds",
+        "reader_open_latency_seconds": (
             "Reader instrumentation",
             "Reader-open latency is outside ProcessingRun durable state today.",
         ),
-        (
-            "reader_bounded_query_count",
+        "reader_bounded_query_count": (
             "Reader instrumentation",
             "Reader query count is outside ProcessingRun durable state today.",
         ),
-        (
-            "upload_to_reader_ready_seconds",
+        "upload_to_reader_ready_seconds": (
             "cross-stage instrumentation",
             "Document acceptance/processing timestamps are not equivalent to upload-start -> Reader-ready latency.",
         ),
-        (
-            "failure_retry_counts",
+        "failure_retry_counts": (
             "retry instrumentation",
             "Durable error/retryable diagnostic signals may exist, but Atlas does not yet persist an explicit failure/retry-attempt counter contract.",
         ),
-    ):
+    }
+
+    required: list[MetricReading] = []
+    for key, _label, _unit in _REQUIRED_METRIC_META:
+        reading = required_by_key.get(key)
+        if reading is not None:
+            required.append(reading)
+            continue
+        source_name, note = missing_required_specs[key]
         required.append(_missing_metric(key, source=source_name, note=note))
 
     terminal = _terminal_at(run)
@@ -706,11 +905,6 @@ def collect_s0_run_snapshot(
         else None
     )
     row_aggregate_incomplete = event_window_truncated
-    payload_evidence_incomplete = (
-        event_window_truncated
-        or event_payload_decode_incomplete
-        or event_payload_oversized_incomplete
-    )
     event_signal_status = _event_aggregate_status(
         available=bool(rows),
         incomplete=row_aggregate_incomplete,
@@ -763,6 +957,43 @@ def collect_s0_run_snapshot(
         )
     if peak_rss is not None and event_window_truncated:
         peak_rss_note += " Maximum is partial because the durable event window is truncated."
+
+    preprocessing_cpu = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_PREPROCESSING_MEASURED",
+        field="process_cpu_delta_seconds",
+        evidence_incomplete=payload_evidence_incomplete,
+        require_process_wide=True,
+    )
+    preprocessing_rss = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_PREPROCESSING_MEASURED",
+        field="process_rss_endpoint_mb",
+        evidence_incomplete=payload_evidence_incomplete,
+        require_process_wide=True,
+    )
+    process_lifetime_peak = _phase2_process_lifetime_peak(
+        decoded_events_tuple,
+        evidence_incomplete=payload_evidence_incomplete,
+    )
+    provider_integration_wall = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_PROVIDER_INTEGRATION_MEASURED",
+        field="elapsed_seconds",
+        evidence_incomplete=payload_evidence_incomplete,
+    )
+    provider_input_size = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_PREPROCESSING_MEASURED",
+        field="provider_input_size_bytes",
+        evidence_incomplete=payload_evidence_incomplete,
+    )
+    raw_result_size = _event_measurement(
+        decoded_events_tuple,
+        event_name="PDF_S0_CANONICALIZATION_MEASURED",
+        field="raw_result_size_bytes",
+        evidence_incomplete=payload_evidence_incomplete,
+    )
 
     auxiliary: list[MetricReading] = [
         MetricReading(
@@ -835,6 +1066,78 @@ def collect_s0_run_snapshot(
             value=peak_rss,
             source="processing_events.payload.peak_rss_mb",
             note=peak_rss_note,
+        ),
+        MetricReading(
+            key="preprocessing_process_cpu_delta_seconds",
+            label="Preprocessing-wrapper process-wide CPU delta",
+            unit="seconds",
+            status=preprocessing_cpu.status,
+            value=preprocessing_cpu.value,
+            source="processing_events.PDF_S0_PREPROCESSING_MEASURED.payload.process_cpu_delta_seconds",
+            note=_combine_notes(
+                "Process-wide CPU delta over the preprocessing wrapper interval; it can include concurrent/unrelated process work and is not stage-owned CPU. It is not promoted to the required preprocessing CPU metric.",
+                preprocessing_cpu.note,
+            ),
+        ),
+        MetricReading(
+            key="preprocessing_process_rss_endpoint_mb",
+            label="Preprocessing-wrapper process-wide endpoint RSS",
+            unit="MiB",
+            status=preprocessing_rss.status,
+            value=preprocessing_rss.value,
+            source="processing_events.PDF_S0_PREPROCESSING_MEASURED.payload.process_rss_endpoint_mb",
+            note=_combine_notes(
+                "Process-wide RSS sampled at the preprocessing wrapper endpoint; it is not stage-owned memory and is not upload peak memory.",
+                preprocessing_rss.note,
+            ),
+        ),
+        MetricReading(
+            key="process_lifetime_peak_rss_mb",
+            label="Maximum observed process-lifetime peak RSS from Phase 2",
+            unit="MiB",
+            status=process_lifetime_peak.status,
+            value=process_lifetime_peak.value,
+            source="processing_events.PDF_S0_*_MEASURED.payload.process_lifetime_peak_rss_mb",
+            note=_combine_notes(
+                "Process-lifetime VmHWM evidence across successful Phase 2 measurements; it can reflect earlier or concurrent work and is not upload-specific peak memory.",
+                process_lifetime_peak.note,
+            ),
+        ),
+        MetricReading(
+            key="provider_integration_wall_seconds",
+            label="Logical Provider integration wall time",
+            unit="seconds",
+            status=provider_integration_wall.status,
+            value=provider_integration_wall.value,
+            source="processing_events.PDF_S0_PROVIDER_INTEGRATION_MEASURED.payload.elapsed_seconds",
+            note=_combine_notes(
+                "Logical Provider integration wall time can include sharding, polling, merge, and logical canonicalization; it is not equivalent to OCR page/batch duration.",
+                provider_integration_wall.note,
+            ),
+        ),
+        MetricReading(
+            key="provider_input_size_bytes",
+            label="Preprocessed Provider input size",
+            unit="bytes",
+            status=provider_input_size.status,
+            value=provider_input_size.value,
+            source="processing_events.PDF_S0_PREPROCESSING_MEASURED.payload.provider_input_size_bytes",
+            note=_combine_notes(
+                "Size of the geometry-preprocessed Provider input artifact; this is not backend-to-Modal network bytes.",
+                provider_input_size.note,
+            ),
+        ),
+        MetricReading(
+            key="raw_result_size_bytes",
+            label="Aggregate raw Provider result size",
+            unit="bytes",
+            status=raw_result_size.status,
+            value=raw_result_size.value,
+            source="processing_events.PDF_S0_CANONICALIZATION_MEASURED.payload.raw_result_size_bytes",
+            note=_combine_notes(
+                "Aggregate raw-result payload size entering canonicalization; it is not a per-shard raw-result byte measure.",
+                raw_result_size.note,
+            ),
         ),
     ]
 
