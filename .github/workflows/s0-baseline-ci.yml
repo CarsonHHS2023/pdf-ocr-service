@@ -9,6 +9,9 @@ on:
       - 'app/processing/processing_event_model.py'
       - 'app/processing/processing_events.py'
       - 'app/processing/s0_baseline.py'
+      - 'app/processing/s0_pdf_resource_heartbeat.py'
+      - 'app/processing/s0_phase2_stage_observability.py'
+      - 'scripts/apply_s0_v5_phase0_observability.py'
       - 'scripts/report_s0_baseline.py'
       - 'tests/test_s0_baseline.py'
       - 'tests/test_s0_terminal_status.py'
@@ -16,6 +19,7 @@ on:
       - 'tests/test_s0_retryable_checksum_status.py'
       - 'tests/test_s0_operator_run_record.py'
       - 'tests/test_s0_markdown_notes.py'
+      - 'tests/test_s0_phase2_stage_observability.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
       - 'docs/reviews/s0-baseline-2026-08-23.md'
       - '.github/workflows/s0-baseline-ci.yml'
@@ -45,13 +49,16 @@ jobs:
         run: |
           python -m py_compile \
             app/processing/s0_baseline.py \
+            app/processing/s0_phase2_stage_observability.py \
+            scripts/apply_s0_v5_phase0_observability.py \
             scripts/report_s0_baseline.py \
             tests/test_s0_baseline.py \
             tests/test_s0_terminal_status.py \
             tests/test_s0_payload_decode_status.py \
             tests/test_s0_retryable_checksum_status.py \
             tests/test_s0_operator_run_record.py \
-            tests/test_s0_markdown_notes.py
+            tests/test_s0_markdown_notes.py \
+            tests/test_s0_phase2_stage_observability.py
 
       - name: Run S0 baseline contract tests
         run: |
@@ -61,7 +68,8 @@ jobs:
             tests/test_s0_payload_decode_status.py \
             tests/test_s0_retryable_checksum_status.py \
             tests/test_s0_operator_run_record.py \
-            tests/test_s0_markdown_notes.py
+            tests/test_s0_markdown_notes.py \
+            tests/test_s0_phase2_stage_observability.py
 
       - name: Verify operator CLI
         run: python scripts/report_s0_baseline.py --help >/dev/null
