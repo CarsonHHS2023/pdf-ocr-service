@@ -21,14 +21,38 @@ class _OneRowResult:
         return self._row
 
 
-class _SourceTypeSession:
-    def __init__(self, *file_types: str | None):
-        self._file_types = iter(file_types)
+class _AssociationSession:
+    def __init__(
+        self,
+        source_file_id: str | None,
+        source_file_type: str | None = None,
+        *,
+        run_exists: bool = True,
+        source_exists: bool = True,
+    ):
+        self.source_file_id = source_file_id
+        self.source_file_type = source_file_type
+        self.run_exists = run_exists
+        self.source_exists = source_exists
+        self.execute_count = 0
 
     def execute(self, _statement):
-        file_type = next(self._file_types)
-        row = None if file_type is None else SimpleNamespace(file_type=file_type)
-        return _OneRowResult(row)
+        self.execute_count += 1
+        if self.execute_count == 1:
+            row = (
+                SimpleNamespace(source_file_id=self.source_file_id)
+                if self.run_exists
+                else None
+            )
+            return _OneRowResult(row)
+        if self.execute_count == 2:
+            row = (
+                SimpleNamespace(file_type=self.source_file_type)
+                if self.source_exists
+                else None
+            )
+            return _OneRowResult(row)
+        raise AssertionError("unexpected extra query")
 
 
 def _args(**overrides: object) -> Namespace:
@@ -191,7 +215,7 @@ def test_attached_source_assignments_accept_matching_source_media_type() -> None
     snapshots = [_snapshot(RUN_A, file_type="pdf")]
 
     report_s0_baseline._validate_attached_source_assignments(
-        _SourceTypeSession("pdf"), metadata, snapshots
+        _AssociationSession("source-1", "pdf"), metadata, snapshots
     )
 
 
@@ -215,7 +239,7 @@ def test_attached_source_assignments_reject_cross_media_source(
 
     with pytest.raises(SystemExit, match="attached source file type does not match"):
         report_s0_baseline._validate_attached_source_assignments(
-            _SourceTypeSession(source_type), metadata, snapshots
+            _AssociationSession("source-1", source_type), metadata, snapshots
         )
 
 
@@ -230,32 +254,63 @@ def test_attached_source_assignments_reject_unsafe_source_media_without_echo(
 
     with pytest.raises(SystemExit, match="source file type is unavailable") as exc_info:
         report_s0_baseline._validate_attached_source_assignments(
-            _SourceTypeSession(source_type), metadata, snapshots
+            _AssociationSession("source-1", source_type), metadata, snapshots
         )
     assert source_type not in str(exc_info.value)
 
 
-def test_attached_source_assignments_reject_missing_attached_source_row() -> None:
+def test_explicit_missing_source_is_not_misclassified_as_legacy_unattached() -> None:
     metadata = report_s0_baseline._benchmark_record_metadata(
         _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
     )
-    snapshots = [_snapshot(RUN_A, file_type="pdf")]
+    # This is the real collector shape for an explicitly associated source that
+    # cannot be resolved: the snapshot fails closed to source_file_id=None, while
+    # ProcessingRun still durably retains the explicit source association.
+    snapshots = [_snapshot(RUN_A, file_type="pdf", source_file_id=None)]
 
     with pytest.raises(SystemExit, match="source file identity is unavailable"):
         report_s0_baseline._validate_attached_source_assignments(
-            _SourceTypeSession(None), metadata, snapshots
+            _AssociationSession("missing-source", source_exists=False),
+            metadata,
+            snapshots,
         )
 
 
-def test_attached_source_assignments_leave_legacy_unattached_run_unchanged() -> None:
+def test_attached_source_assignments_reject_collector_run_source_disagreement() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+    snapshots = [_snapshot(RUN_A, file_type="pdf", source_file_id="source-other")]
+
+    with pytest.raises(SystemExit, match="collected source association does not match"):
+        report_s0_baseline._validate_attached_source_assignments(
+            _AssociationSession("source-1", "pdf"), metadata, snapshots
+        )
+
+
+def test_attached_source_assignments_leave_true_legacy_unattached_run_unchanged() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+    snapshots = [_snapshot(RUN_A, file_type="pdf", source_file_id=None)]
+    session = _AssociationSession(None)
+
+    report_s0_baseline._validate_attached_source_assignments(
+        session, metadata, snapshots
+    )
+    assert session.execute_count == 1
+
+
+def test_attached_source_assignments_reject_missing_processing_run_association_row() -> None:
     metadata = report_s0_baseline._benchmark_record_metadata(
         _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
     )
     snapshots = [_snapshot(RUN_A, file_type="pdf", source_file_id=None)]
 
-    report_s0_baseline._validate_attached_source_assignments(
-        _SourceTypeSession(), metadata, snapshots
-    )
+    with pytest.raises(SystemExit, match="processing run source association is unavailable"):
+        report_s0_baseline._validate_attached_source_assignments(
+            _AssociationSession(None, run_exists=False), metadata, snapshots
+        )
 
 
 def test_benchmark_record_markdown_contains_required_fixture_and_runtime_identity() -> None:

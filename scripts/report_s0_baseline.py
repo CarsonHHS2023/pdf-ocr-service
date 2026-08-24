@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.database import SessionLocal
-from app.models import SourceFile
+from app.models import ProcessingRun, SourceFile
 from app.processing.s0_baseline import (
     S0RunSnapshot,
     collect_s0_run_snapshot,
@@ -156,7 +156,7 @@ def _validate_attached_source_assignments(
     metadata: dict[str, object],
     snapshots: list[S0RunSnapshot],
 ) -> None:
-    """Fail closed when an explicitly attached source contradicts benchmark media identity."""
+    """Validate the run's explicit source association independently of the snapshot."""
     assignments = metadata["runs"]
     if not isinstance(assignments, list) or len(assignments) != len(snapshots):
         raise RuntimeError("benchmark run assignments do not match collected snapshots")
@@ -164,21 +164,41 @@ def _validate_attached_source_assignments(
     for assignment, snapshot in zip(assignments, snapshots, strict=True):
         if not isinstance(assignment, dict):
             raise RuntimeError("benchmark run assignment is malformed")
-        if snapshot.source_file_id is None:
-            continue
 
-        row = session.execute(
+        run_row = session.execute(
+            select(ProcessingRun.source_file_id.label("source_file_id")).where(
+                ProcessingRun.processing_run_id == snapshot.processing_run_id,
+                ProcessingRun.document_id == snapshot.document_id,
+            )
+        ).one_or_none()
+        if run_row is None:
+            raise SystemExit(
+                "processing run source association is unavailable; benchmark replay identity cannot be verified"
+            )
+
+        explicit_source_file_id = run_row.source_file_id
+        if explicit_source_file_id is None:
+            continue
+        if (
+            snapshot.source_file_id is not None
+            and snapshot.source_file_id != explicit_source_file_id
+        ):
+            raise SystemExit(
+                "collected source association does not match the processing run; benchmark replay identity cannot be verified"
+            )
+
+        source_row = session.execute(
             select(SourceFile.file_type.label("file_type")).where(
-                SourceFile.id == snapshot.source_file_id,
+                SourceFile.id == explicit_source_file_id,
                 SourceFile.document_id == snapshot.document_id,
             )
         ).one_or_none()
-        if row is None:
+        if source_row is None:
             raise SystemExit(
                 "attached source file identity is unavailable; benchmark replay identity cannot be verified"
             )
 
-        source_file_type = row.file_type
+        source_file_type = source_row.file_type
         if not isinstance(source_file_type, str) or source_file_type not in _SAFE_MEDIA_TYPES:
             raise SystemExit(
                 "attached source file type is unavailable; benchmark replay identity cannot be verified"
