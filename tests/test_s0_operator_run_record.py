@@ -13,6 +13,24 @@ BACKEND_SHA = "80e43fb4651a388806779b33ab42156c5483d0e3"
 STAGING_REVISION = "staging-release_20260823-r1"
 
 
+class _OneRowResult:
+    def __init__(self, row):
+        self._row = row
+
+    def one_or_none(self):
+        return self._row
+
+
+class _SourceTypeSession:
+    def __init__(self, *file_types: str | None):
+        self._file_types = iter(file_types)
+
+    def execute(self, _statement):
+        file_type = next(self._file_types)
+        row = None if file_type is None else SimpleNamespace(file_type=file_type)
+        return _OneRowResult(row)
+
+
 def _args(**overrides: object) -> Namespace:
     values: dict[str, object] = {
         "processing_run_ids": [RUN_A, RUN_B],
@@ -23,6 +41,21 @@ def _args(**overrides: object) -> Namespace:
     }
     values.update(overrides)
     return Namespace(**values)
+
+
+def _snapshot(
+    run_id: str,
+    *,
+    file_type: str | None,
+    source_file_id: str | None = "source-1",
+    document_id: str = "doc-1",
+):
+    return SimpleNamespace(
+        processing_run_id=run_id,
+        file_type=file_type,
+        source_file_id=source_file_id,
+        document_id=document_id,
+    )
 
 
 def test_benchmark_record_metadata_pairs_fixture_and_run_identity() -> None:
@@ -120,8 +153,8 @@ def test_benchmark_record_rejects_unregistered_fixture() -> None:
 def test_snapshot_assignments_accept_matching_collected_media_type() -> None:
     metadata = report_s0_baseline._benchmark_record_metadata(_args())
     snapshots = [
-        SimpleNamespace(processing_run_id=RUN_A, file_type="pdf"),
-        SimpleNamespace(processing_run_id=RUN_B, file_type="pdf"),
+        _snapshot(RUN_A, file_type="pdf", source_file_id=None),
+        _snapshot(RUN_B, file_type="pdf", source_file_id=None),
     ]
 
     report_s0_baseline._validate_snapshot_assignments(metadata, snapshots)
@@ -135,7 +168,7 @@ def test_snapshot_assignments_reject_collected_media_mismatch() -> None:
     with pytest.raises(SystemExit, match="does not match"):
         report_s0_baseline._validate_snapshot_assignments(
             metadata,
-            [SimpleNamespace(processing_run_id=RUN_A, file_type="txt")],
+            [_snapshot(RUN_A, file_type="txt")],
         )
 
 
@@ -147,8 +180,82 @@ def test_snapshot_assignments_reject_unavailable_collected_media_type() -> None:
     with pytest.raises(SystemExit, match="file type is unavailable"):
         report_s0_baseline._validate_snapshot_assignments(
             metadata,
-            [SimpleNamespace(processing_run_id=RUN_A, file_type=None)],
+            [_snapshot(RUN_A, file_type=None)],
         )
+
+
+def test_attached_source_assignments_accept_matching_source_media_type() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+    snapshots = [_snapshot(RUN_A, file_type="pdf")]
+
+    report_s0_baseline._validate_attached_source_assignments(
+        _SourceTypeSession("pdf"), metadata, snapshots
+    )
+
+
+@pytest.mark.parametrize(
+    ("processing_run_id", "fixture_id", "document_type", "source_type"),
+    [
+        (RUN_A, "pdf-small-v1", "pdf", "txt"),
+        (TXT_RUN, "txt-small-v1", "txt", "pdf"),
+    ],
+)
+def test_attached_source_assignments_reject_cross_media_source(
+    processing_run_id: str,
+    fixture_id: str,
+    document_type: str,
+    source_type: str,
+) -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[processing_run_id], fixture_ids=[fixture_id])
+    )
+    snapshots = [_snapshot(processing_run_id, file_type=document_type)]
+
+    with pytest.raises(SystemExit, match="attached source file type does not match"):
+        report_s0_baseline._validate_attached_source_assignments(
+            _SourceTypeSession(source_type), metadata, snapshots
+        )
+
+
+@pytest.mark.parametrize("source_type", ["secret.pdf", "pdf`\nprivate.pdf"])
+def test_attached_source_assignments_reject_unsafe_source_media_without_echo(
+    source_type: str,
+) -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+    snapshots = [_snapshot(RUN_A, file_type="pdf")]
+
+    with pytest.raises(SystemExit, match="source file type is unavailable") as exc_info:
+        report_s0_baseline._validate_attached_source_assignments(
+            _SourceTypeSession(source_type), metadata, snapshots
+        )
+    assert source_type not in str(exc_info.value)
+
+
+def test_attached_source_assignments_reject_missing_attached_source_row() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+    snapshots = [_snapshot(RUN_A, file_type="pdf")]
+
+    with pytest.raises(SystemExit, match="source file identity is unavailable"):
+        report_s0_baseline._validate_attached_source_assignments(
+            _SourceTypeSession(None), metadata, snapshots
+        )
+
+
+def test_attached_source_assignments_leave_legacy_unattached_run_unchanged() -> None:
+    metadata = report_s0_baseline._benchmark_record_metadata(
+        _args(processing_run_ids=[RUN_A], fixture_ids=["pdf-small-v1"])
+    )
+    snapshots = [_snapshot(RUN_A, file_type="pdf", source_file_id=None)]
+
+    report_s0_baseline._validate_attached_source_assignments(
+        _SourceTypeSession(), metadata, snapshots
+    )
 
 
 def test_benchmark_record_markdown_contains_required_fixture_and_runtime_identity() -> None:
