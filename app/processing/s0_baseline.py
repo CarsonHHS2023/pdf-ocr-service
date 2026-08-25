@@ -374,9 +374,20 @@ def _event_measurement(
     event_name: str,
     field: str,
     evidence_incomplete: bool,
+    uninspectable_event_names: frozenset[str] = frozenset(),
     require_process_wide: bool = False,
 ) -> _EventMeasurement:
     """Extract one unambiguous successful numeric measurement by exact event contract."""
+    if event_name in uninspectable_event_names:
+        return _EventMeasurement(
+            value=None,
+            status="not_available",
+            note=(
+                f"At least one retained {event_name} payload could not be inspected; "
+                "the collector cannot rule out an ambiguous duplicate successful measurement."
+            ),
+        )
+
     matching = [event for event in decoded_events if event.event_name == event_name]
     if not matching:
         return _EventMeasurement(
@@ -710,18 +721,22 @@ def collect_s0_run_snapshot(
     )
 
     decoded_events: list[_DecodedEvent] = []
+    uninspectable_event_names: set[str] = set()
     event_payload_decode_incomplete = False
     event_payload_oversized_incomplete = False
     for row in rows:
         if row.payload_oversized:
             event_payload_oversized_incomplete = True
+            uninspectable_event_names.add(row.event_name)
             continue
         payload, decode_valid = _decode_event_payload(row.payload_json)
         if not decode_valid:
             event_payload_decode_incomplete = True
+            uninspectable_event_names.add(row.event_name)
             continue
         decoded_events.append(_DecodedEvent(event_name=row.event_name, payload=payload))
     decoded_events_tuple = tuple(decoded_events)
+    uninspectable_event_names_frozen = frozenset(uninspectable_event_names)
     decoded_payloads_tuple = tuple(event.payload for event in decoded_events_tuple)
     payload_evidence_incomplete = (
         event_window_truncated
@@ -780,12 +795,14 @@ def collect_s0_run_snapshot(
         event_name="PDF_S0_PREPROCESSING_MEASURED",
         field="elapsed_seconds",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
     )
     canonicalization_measurement = _event_measurement(
         decoded_events_tuple,
         event_name="PDF_S0_CANONICALIZATION_MEASURED",
         field="elapsed_seconds",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
     )
 
     required_by_key: dict[str, MetricReading] = {
@@ -972,6 +989,7 @@ def collect_s0_run_snapshot(
         event_name="PDF_S0_PREPROCESSING_MEASURED",
         field="process_cpu_delta_seconds",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
         require_process_wide=True,
     )
     preprocessing_rss = _event_measurement(
@@ -979,6 +997,7 @@ def collect_s0_run_snapshot(
         event_name="PDF_S0_PREPROCESSING_MEASURED",
         field="process_rss_endpoint_mb",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
         require_process_wide=True,
     )
     process_lifetime_peak = _phase2_process_lifetime_peak(
@@ -990,18 +1009,21 @@ def collect_s0_run_snapshot(
         event_name="PDF_S0_PROVIDER_INTEGRATION_MEASURED",
         field="elapsed_seconds",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
     )
     provider_input_size = _event_measurement(
         decoded_events_tuple,
         event_name="PDF_S0_PREPROCESSING_MEASURED",
         field="provider_input_size_bytes",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
     )
     raw_result_size = _event_measurement(
         decoded_events_tuple,
         event_name="PDF_S0_CANONICALIZATION_MEASURED",
         field="raw_result_size_bytes",
         evidence_incomplete=payload_evidence_incomplete,
+        uninspectable_event_names=uninspectable_event_names_frozen,
     )
 
     auxiliary: list[MetricReading] = [

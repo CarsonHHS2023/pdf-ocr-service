@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
+from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES
 from app.processing.s0_baseline import collect_s0_run_snapshot
 
 
@@ -348,3 +349,57 @@ def test_unrelated_elapsed_seconds_cannot_satisfy_phase2_required_measurements()
     assert _metric(snapshot, "preprocessing_wall_seconds").value is None
     assert _metric(snapshot, "canonicalization_duration_seconds").status == "not_available"
     assert _metric(snapshot, "canonicalization_duration_seconds").value is None
+
+
+def test_malformed_same_name_event_blocks_definitive_preprocessing_measurement() -> None:
+    db = _session()
+    run_id = _seed_phase2_run(db)
+    started = datetime(2026, 8, 24, 22, 47, 28)
+    db.add(
+        ProcessingEvent(
+            id="phase2-preprocessing-malformed",
+            processing_run_id=run_id,
+            document_id="doc-phase2-map",
+            schema_version="atlas.processing.event.v1",
+            event_name="PDF_S0_PREPROCESSING_MEASURED",
+            severity="info",
+            payload_json="{malformed-json",
+            created_at=started + timedelta(seconds=46),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    assert snapshot.event_payload_decode_incomplete is True
+    preprocessing_wall = _metric(snapshot, "preprocessing_wall_seconds")
+    assert preprocessing_wall.status == "not_available"
+    assert preprocessing_wall.value is None
+    assert "could not be inspected" in (preprocessing_wall.note or "").lower()
+
+
+def test_oversized_same_name_event_blocks_definitive_canonicalization_measurement() -> None:
+    db = _session()
+    run_id = _seed_phase2_run(db)
+    started = datetime(2026, 8, 24, 22, 47, 28)
+    db.add(
+        ProcessingEvent(
+            id="phase2-canonicalization-oversized",
+            processing_run_id=run_id,
+            document_id="doc-phase2-map",
+            schema_version="atlas.processing.event.v1",
+            event_name="PDF_S0_CANONICALIZATION_MEASURED",
+            severity="info",
+            payload_json="x" * (MAX_EVENT_PAYLOAD_BYTES + 1),
+            created_at=started + timedelta(seconds=152, microseconds=1),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    assert snapshot.event_payload_oversized_incomplete is True
+    canonicalization = _metric(snapshot, "canonicalization_duration_seconds")
+    assert canonicalization.status == "not_available"
+    assert canonicalization.value is None
+    assert "could not be inspected" in (canonicalization.note or "").lower()
