@@ -24,12 +24,25 @@ This index provides milestone navigation, current milestone status, and links be
 
 ## Horizontal Scalability Track
 
-Atlas now also maintains a horizontal storage/processing scalability track, separate from product milestone numbering:
+Atlas also maintains a horizontal storage/processing scalability track, separate from product milestone numbering:
 
 - [Scalable Storage and Processing Architecture](../architecture/scalable-storage-and-processing-architecture.md)
 - [Scalable Processing Migration Plan](../plans/scalable-processing-migration-plan.md)
+- [S0 Observability Closure Plan — 2026-08-25](../plans/s0-observability-closure-plan-2026-08-25.md)
+- [S0 Phase 2 Baseline Reconciliation — 2026-08-25](../reviews/s0-phase2-baseline-reconciliation-2026-08-25.md)
 
 The implementation phases are S0–S9. This work may support M5, M6, M7, and the external-pilot/commercial gate. It does **not** redefine M6 Smart Reading Intelligence as an infrastructure milestone.
+
+### Current scalability status — 2026-08-25
+
+- **Current scalability phase:** S0 — Baseline and observability.
+- **S0 status:** **In Progress**.
+- Formal exact-identity Staging baselines for `pdf-small-v1` and `pdf-medium-v1` are accepted on backend/runtime revision `6fe56d35bfb39cf1e1016beb2694464fb1fc2e4f`.
+- The medium acceptance exercised selective routing and the sequential two-shard Provider transport path.
+- The next scalability work is instrumentation-only S0 closure work for upload, network/object-store, Modal/Provider/GPU, failure/retry, and Reader metrics.
+- TXT representative timing and the large PDF baseline remain open.
+- The 528-page fixture is deferred until the missing instrumentation can produce materially useful closure evidence and execution is explicitly approved.
+- **S1/S2 are not started by the current S0 closure plan.**
 
 Future PRs should identify both a product milestone relationship and a scalability phase when applicable.
 
@@ -69,4 +82,5 @@ M1, M2, and M3 preserve their official historical titles and statuses. Former M4
 - The roadmap governs current sequencing and high-level scope boundaries.
 - The 2026-08-15 M5 reconciliation is a point-in-time progress review; it does not erase historical plan/PR evidence.
 - The S0–S9 scalability plan is horizontal implementation guidance and does not independently change M5/M6/M7 status.
+- The 2026-08-25 S0 reconciliation and closure plan are the current execution/evidence overlay for S0; they do not authorize S1/S2 or change product milestone status.
 - Product milestone status does not itself authorize Production changes, Reader cutover, destructive migration/backfill, external pilot, or commercial release.
