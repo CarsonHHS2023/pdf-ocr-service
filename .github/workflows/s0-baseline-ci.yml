@@ -49,190 +49,67 @@ jobs:
       - name: Install focused dependencies
         run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic
 
-      - name: Apply exact reviewed fix
+      - name: Apply exact reviewed fix idempotently
         shell: bash
         run: |
-          cat > /tmp/pr31-fix.patch <<'PATCH'
-          --- a/app/processing/s0_baseline.py
-          +++ b/app/processing/s0_baseline.py
-          @@ -374,9 +374,20 @@
-               event_name: str,
-               field: str,
-               evidence_incomplete: bool,
-          +    uninspectable_event_names: frozenset[str] = frozenset(),
-               require_process_wide: bool = False,
-           ) -> _EventMeasurement:
-               """Extract one unambiguous successful numeric measurement by exact event contract."""
-          +    if event_name in uninspectable_event_names:
-          +        return _EventMeasurement(
-          +            value=None,
-          +            status="not_available",
-          +            note=(
-          +                f"At least one retained {event_name} payload could not be inspected; "
-          +                "the collector cannot rule out an ambiguous duplicate successful measurement."
-          +            ),
-          +        )
-          +
-               matching = [event for event in decoded_events if event.event_name == event_name]
-               if not matching:
-                   return _EventMeasurement(
-          @@ -710,18 +721,22 @@
-               )
-           
-               decoded_events: list[_DecodedEvent] = []
-          +    uninspectable_event_names: set[str] = set()
-               event_payload_decode_incomplete = False
-               event_payload_oversized_incomplete = False
-               for row in rows:
-                   if row.payload_oversized:
-                       event_payload_oversized_incomplete = True
-          +            uninspectable_event_names.add(row.event_name)
-                       continue
-                   payload, decode_valid = _decode_event_payload(row.payload_json)
-                   if not decode_valid:
-                       event_payload_decode_incomplete = True
-          +            uninspectable_event_names.add(row.event_name)
-                       continue
-                   decoded_events.append(_DecodedEvent(event_name=row.event_name, payload=payload))
-               decoded_events_tuple = tuple(decoded_events)
-          +    uninspectable_event_names_frozen = frozenset(uninspectable_event_names)
-               decoded_payloads_tuple = tuple(event.payload for event in decoded_events_tuple)
-               payload_evidence_incomplete = (
-                   event_window_truncated
-          @@ -780,12 +795,14 @@
-                   event_name="PDF_S0_PREPROCESSING_MEASURED",
-                   field="elapsed_seconds",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-               )
-               canonicalization_measurement = _event_measurement(
-                   decoded_events_tuple,
-                   event_name="PDF_S0_CANONICALIZATION_MEASURED",
-                   field="elapsed_seconds",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-               )
-           
-               required_by_key: dict[str, MetricReading] = {
-          @@ -972,6 +989,7 @@
-                   event_name="PDF_S0_PREPROCESSING_MEASURED",
-                   field="process_cpu_delta_seconds",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-                   require_process_wide=True,
-               )
-               preprocessing_rss = _event_measurement(
-          @@ -979,6 +997,7 @@
-                   event_name="PDF_S0_PREPROCESSING_MEASURED",
-                   field="process_rss_endpoint_mb",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-                   require_process_wide=True,
-               )
-               process_lifetime_peak = _phase2_process_lifetime_peak(
-          @@ -990,18 +1009,21 @@
-                   event_name="PDF_S0_PROVIDER_INTEGRATION_MEASURED",
-                   field="elapsed_seconds",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-               )
-               provider_input_size = _event_measurement(
-                   decoded_events_tuple,
-                   event_name="PDF_S0_PREPROCESSING_MEASURED",
-                   field="provider_input_size_bytes",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-               )
-               raw_result_size = _event_measurement(
-                   decoded_events_tuple,
-                   event_name="PDF_S0_CANONICALIZATION_MEASURED",
-                   field="raw_result_size_bytes",
-                   evidence_incomplete=payload_evidence_incomplete,
-          +        uninspectable_event_names=uninspectable_event_names_frozen,
-               )
-           
-               auxiliary: list[MetricReading] = [
-          --- a/tests/test_s0_phase2_baseline_mapping.py
-          +++ b/tests/test_s0_phase2_baseline_mapping.py
-          @@ -7,6 +7,7 @@
-           
-           from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
-           from app.processing.processing_event_model import ProcessingEvent
-          +from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES
-           from app.processing.s0_baseline import collect_s0_run_snapshot
-           
-           
-          @@ -348,3 +349,57 @@
-               assert _metric(snapshot, "preprocessing_wall_seconds").value is None
-               assert _metric(snapshot, "canonicalization_duration_seconds").status == "not_available"
-               assert _metric(snapshot, "canonicalization_duration_seconds").value is None
-          +
-          +
-          +def test_malformed_same_name_event_blocks_definitive_preprocessing_measurement() -> None:
-          +    db = _session()
-          +    run_id = _seed_phase2_run(db)
-          +    started = datetime(2026, 8, 24, 22, 47, 28)
-          +    db.add(
-          +        ProcessingEvent(
-          +            id="phase2-preprocessing-malformed",
-          +            processing_run_id=run_id,
-          +            document_id="doc-phase2-map",
-          +            schema_version="atlas.processing.event.v1",
-          +            event_name="PDF_S0_PREPROCESSING_MEASURED",
-          +            severity="info",
-          +            payload_json="{malformed-json",
-          +            created_at=started + timedelta(seconds=46),
-          +        )
-          +    )
-          +    db.commit()
-          +
-          +    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
-          +
-          +    assert snapshot.event_payload_decode_incomplete is True
-          +    preprocessing_wall = _metric(snapshot, "preprocessing_wall_seconds")
-          +    assert preprocessing_wall.status == "not_available"
-          +    assert preprocessing_wall.value is None
-          +    assert "could not be inspected" in (preprocessing_wall.note or "").lower()
-          +
-          +
-          +def test_oversized_same_name_event_blocks_definitive_canonicalization_measurement() -> None:
-          +    db = _session()
-          +    run_id = _seed_phase2_run(db)
-          +    started = datetime(2026, 8, 24, 22, 47, 28)
-          +    db.add(
-          +        ProcessingEvent(
-          +            id="phase2-canonicalization-oversized",
-          +            processing_run_id=run_id,
-          +            document_id="doc-phase2-map",
-          +            schema_version="atlas.processing.event.v1",
-          +            event_name="PDF_S0_CANONICALIZATION_MEASURED",
-          +            severity="info",
-          +            payload_json="x" * (MAX_EVENT_PAYLOAD_BYTES + 1),
-          +            created_at=started + timedelta(seconds=152, microseconds=1),
-          +        )
-          +    )
-          +    db.commit()
-          +
-          +    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
-          +
-          +    assert snapshot.event_payload_oversized_incomplete is True
-          +    canonicalization = _metric(snapshot, "canonicalization_duration_seconds")
-          +    assert canonicalization.status == "not_available"
-          +    assert canonicalization.value is None
-          +    assert "could not be inspected" in (canonicalization.note or "").lower()
-          PATCH
-          sed -i 's/^          //' /tmp/pr31-fix.patch
-          git apply --check /tmp/pr31-fix.patch
-          git apply /tmp/pr31-fix.patch
+          python - <<'PY'
+          from pathlib import Path
+
+          collector = Path('app/processing/s0_baseline.py')
+          text = collector.read_text()
+          if 'uninspectable_event_names: frozenset[str] = frozenset(),' not in text:
+              old = '''    evidence_incomplete: bool,\n    require_process_wide: bool = False,\n) -> _EventMeasurement:\n    """Extract one unambiguous successful numeric measurement by exact event contract."""\n    matching = [event for event in decoded_events if event.event_name == event_name]\n'''
+              new = '''    evidence_incomplete: bool,\n    uninspectable_event_names: frozenset[str] = frozenset(),\n    require_process_wide: bool = False,\n) -> _EventMeasurement:\n    """Extract one unambiguous successful numeric measurement by exact event contract."""\n    if event_name in uninspectable_event_names:\n        return _EventMeasurement(\n            value=None,\n            status="not_available",\n            note=(\n                f"At least one retained {event_name} payload could not be inspected; "\n                "the collector cannot rule out an ambiguous duplicate successful measurement."\n            ),\n        )\n\n    matching = [event for event in decoded_events if event.event_name == event_name]\n'''
+              assert text.count(old) == 1
+              text = text.replace(old, new)
+
+              old = '''    decoded_events: list[_DecodedEvent] = []\n    event_payload_decode_incomplete = False\n    event_payload_oversized_incomplete = False\n    for row in rows:\n        if row.payload_oversized:\n            event_payload_oversized_incomplete = True\n            continue\n        payload, decode_valid = _decode_event_payload(row.payload_json)\n        if not decode_valid:\n            event_payload_decode_incomplete = True\n            continue\n        decoded_events.append(_DecodedEvent(event_name=row.event_name, payload=payload))\n    decoded_events_tuple = tuple(decoded_events)\n'''
+              new = '''    decoded_events: list[_DecodedEvent] = []\n    uninspectable_event_names: set[str] = set()\n    event_payload_decode_incomplete = False\n    event_payload_oversized_incomplete = False\n    for row in rows:\n        if row.payload_oversized:\n            event_payload_oversized_incomplete = True\n            uninspectable_event_names.add(row.event_name)\n            continue\n        payload, decode_valid = _decode_event_payload(row.payload_json)\n        if not decode_valid:\n            event_payload_decode_incomplete = True\n            uninspectable_event_names.add(row.event_name)\n            continue\n        decoded_events.append(_DecodedEvent(event_name=row.event_name, payload=payload))\n    decoded_events_tuple = tuple(decoded_events)\n    uninspectable_event_names_frozen = frozenset(uninspectable_event_names)\n'''
+              assert text.count(old) == 1
+              text = text.replace(old, new)
+
+              calls = [
+                  ('PDF_S0_PREPROCESSING_MEASURED', 'elapsed_seconds'),
+                  ('PDF_S0_CANONICALIZATION_MEASURED', 'elapsed_seconds'),
+                  ('PDF_S0_PREPROCESSING_MEASURED', 'process_cpu_delta_seconds'),
+                  ('PDF_S0_PREPROCESSING_MEASURED', 'process_rss_endpoint_mb'),
+                  ('PDF_S0_PROVIDER_INTEGRATION_MEASURED', 'elapsed_seconds'),
+                  ('PDF_S0_PREPROCESSING_MEASURED', 'provider_input_size_bytes'),
+                  ('PDF_S0_CANONICALIZATION_MEASURED', 'raw_result_size_bytes'),
+              ]
+              for event_name, field in calls:
+                  needle = f'''        event_name="{event_name}",\n        field="{field}",\n        evidence_incomplete=payload_evidence_incomplete,\n'''
+                  replacement = needle + '        uninspectable_event_names=uninspectable_event_names_frozen,\n'
+                  assert text.count(needle) == 1, (event_name, field, text.count(needle))
+                  text = text.replace(needle, replacement)
+              collector.write_text(text)
+
+          tests = Path('tests/test_s0_phase2_baseline_mapping.py')
+          test_text = tests.read_text()
+          if 'from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES' not in test_text:
+              needle = 'from app.processing.processing_event_model import ProcessingEvent\n'
+              assert test_text.count(needle) == 1
+              test_text = test_text.replace(
+                  needle,
+                  needle + 'from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES\n',
+              )
+          if 'def test_malformed_same_name_event_blocks_definitive_preprocessing_measurement' not in test_text:
+              test_text += '''\n\ndef test_malformed_same_name_event_blocks_definitive_preprocessing_measurement() -> None:\n    db = _session()\n    run_id = _seed_phase2_run(db)\n    started = datetime(2026, 8, 24, 22, 47, 28)\n    db.add(\n        ProcessingEvent(\n            id="phase2-preprocessing-malformed",\n            processing_run_id=run_id,\n            document_id="doc-phase2-map",\n            schema_version="atlas.processing.event.v1",\n            event_name="PDF_S0_PREPROCESSING_MEASURED",\n            severity="info",\n            payload_json="{malformed-json",\n            created_at=started + timedelta(seconds=46),\n        )\n    )\n    db.commit()\n\n    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)\n\n    assert snapshot.event_payload_decode_incomplete is True\n    preprocessing_wall = _metric(snapshot, "preprocessing_wall_seconds")\n    assert preprocessing_wall.status == "not_available"\n    assert preprocessing_wall.value is None\n    assert "could not be inspected" in (preprocessing_wall.note or "").lower()\n\n\ndef test_oversized_same_name_event_blocks_definitive_canonicalization_measurement() -> None:\n    db = _session()\n    run_id = _seed_phase2_run(db)\n    started = datetime(2026, 8, 24, 22, 47, 28)\n    db.add(\n        ProcessingEvent(\n            id="phase2-canonicalization-oversized",\n            processing_run_id=run_id,\n            document_id="doc-phase2-map",\n            schema_version="atlas.processing.event.v1",\n            event_name="PDF_S0_CANONICALIZATION_MEASURED",\n            severity="info",\n            payload_json="x" * (MAX_EVENT_PAYLOAD_BYTES + 1),\n            created_at=started + timedelta(seconds=152, microseconds=1),\n        )\n    )\n    db.commit()\n\n    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)\n\n    assert snapshot.event_payload_oversized_incomplete is True\n    canonicalization = _metric(snapshot, "canonicalization_duration_seconds")\n    assert canonicalization.status == "not_available"\n    assert canonicalization.value is None\n    assert "could not be inspected" in (canonicalization.note or "").lower()\n'''
+              tests.write_text(test_text)
+          PY
 
       - name: Run focused collector regressions
         run: |
           python -m py_compile app/processing/s0_baseline.py tests/test_s0_phase2_baseline_mapping.py
           python -m pytest -q tests/test_s0_phase2_baseline_mapping.py
 
-      - name: Commit exact fix
+      - name: Commit exact fix if needed
         shell: bash
         run: |
+          if git diff --quiet -- app/processing/s0_baseline.py tests/test_s0_phase2_baseline_mapping.py; then
+            echo "Exact fix already present; nothing to push."
+            exit 0
+          fi
           git config user.name "atlas-pr31-helper"
           git config user.email "atlas-pr31-helper@users.noreply.github.com"
           git add app/processing/s0_baseline.py tests/test_s0_phase2_baseline_mapping.py
