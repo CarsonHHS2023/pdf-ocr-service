@@ -1,9 +1,9 @@
 name: PR31 Apply Uninspectable Event Fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - s0/phase2-collector-mapping
+      - staging
     paths:
       - '.github/workflows/pr31-apply-uninspectable-fix.yml'
 
@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   apply-fix:
+    if: github.event.pull_request.head.ref == 's0/phase2-collector-mapping'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
