@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-import inspect
+from pathlib import Path
 from threading import Barrier
 
 import pytest
@@ -69,9 +69,7 @@ def test_existing_record_retrieval_api_is_preserved() -> None:
 
 
 def test_source_transport_consumes_atomic_ordinal_without_post_record_inspect() -> None:
-    from app.routers import source_transport
-
-    source = inspect.getsource(source_transport.get_source_transport)
+    source = Path("app/routers/source_transport.py").read_text(encoding="utf-8")
     if "record_provider_source_transport_read" not in source:
         pytest.skip("S0.3.2 source-transport overlay is not installed")
 
