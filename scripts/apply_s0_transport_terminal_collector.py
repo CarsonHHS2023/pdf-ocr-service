@@ -52,6 +52,11 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
             "Provider integration evidence could not be inspected, so terminal "
             "transport-scope completeness cannot be established."
         )
+    if "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION" in uninspectable_event_names:
+        return None, None, "not_available", (
+            "Provider sharding decision evidence could not be inspected, so the "
+            "expected number of transport scopes cannot be established."
+        )
     if "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL" in uninspectable_event_names:
         return None, None, "not_available", (
             "Provider sharding terminal evidence could not be inspected, so the "
@@ -148,25 +153,71 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
     )
     expected_terminal_scope_count: int | None = None
     if provider_successful:
-        expected_terminal_scope_count = 1
-        sharding_terminal = [
+        sharding_decisions = [
+            event
+            for event in decoded_events
+            if event.event_name == "PDF_PROVIDER_TRANSPORT_SHARDING_DECISION"
+        ]
+        if len(sharding_decisions) > 1:
+            return None, None, "not_available", (
+                "Multiple Provider sharding decision events make the expected "
+                "transport-scope count ambiguous."
+            )
+        sharding_required: bool | None = None
+        if sharding_decisions:
+            value = sharding_decisions[0].payload.get("sharding_required")
+            if not isinstance(value, bool):
+                return None, None, "not_available", (
+                    "Provider sharding decision evidence has an invalid sharding_required value."
+                )
+            sharding_required = value
+
+        sharding_terminal_all = [
             event
             for event in decoded_events
             if event.event_name == "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL"
-            and event.payload.get("succeeded") is True
         ]
-        if len(sharding_terminal) > 1:
+        if len(sharding_terminal_all) > 1:
             return None, None, "not_available", (
-                "Multiple successful Provider sharding terminal events make the expected "
+                "Multiple Provider sharding terminal events make the expected "
                 "transport-scope count ambiguous."
             )
-        if sharding_terminal:
-            shard_count = sharding_terminal[0].payload.get("shard_count")
+        successful_sharding_terminal = [
+            event for event in sharding_terminal_all if event.payload.get("succeeded") is True
+        ]
+        if sharding_terminal_all and len(successful_sharding_terminal) != 1:
+            return None, None, "not_available", (
+                "Provider sharding terminal evidence is not a successful terminal proof."
+            )
+
+        if successful_sharding_terminal:
+            if sharding_required is False:
+                return None, None, "not_available", (
+                    "Provider sharding decision and terminal evidence disagree about whether "
+                    "the successful Provider run was sharded."
+                )
+            shard_count = successful_sharding_terminal[0].payload.get("shard_count")
             if not isinstance(shard_count, int) or isinstance(shard_count, bool) or shard_count < 1:
                 return None, None, "not_available", (
                     "Provider sharding terminal evidence has an invalid shard count."
                 )
             expected_terminal_scope_count = shard_count
+        elif sharding_required is False:
+            # A durable negative sharding decision is the only valid proof that
+            # absence of a sharding terminal means this successful run was single-scope.
+            expected_terminal_scope_count = 1
+        elif sharding_required is True:
+            return None, None, "not_available", (
+                "Provider sharding was required but no successful terminal shard-count "
+                "evidence is retained."
+            )
+        else:
+            return None, None, "not_available", (
+                "No Provider sharding decision or terminal shard-count evidence is retained; "
+                "absence cannot prove that the successful run was non-sharded, so terminal "
+                "proof for every expected transport scope cannot be established."
+            )
+
         if len(terminal_retrieval_counts) != expected_terminal_scope_count:
             return None, None, "not_available", (
                 "The successful Provider run does not retain terminal proof for every "
