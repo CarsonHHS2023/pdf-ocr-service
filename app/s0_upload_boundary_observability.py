@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 
 CANONICAL_UPLOAD_PATH = "/api/v1/upload"
+CANONICAL_UPLOAD_METHOD = "POST"
 CANONICAL_UPLOAD_ROUTE = "canonical_multipart"
 UPLOAD_MEASUREMENT_SCOPE = "canonical_request_ingress_to_durable_acceptance"
 UPLOAD_MEASUREMENT_EVENT = "S0_UPLOAD_ACCEPTANCE_MEASURED"
@@ -187,26 +188,28 @@ def _finalize_from_background_task(
         return
     processing_run_id, document_id, source_file_id = identity
 
+    # Capture the operation boundary immediately when canonical processing is
+    # successfully registered. Telemetry-only DB reads/event persistence below
+    # must not inflate the measured upload duration.
+    elapsed = _finite_nonnegative(perf_counter() - observation.wall_started)
+    observation.finalized = True
+    if elapsed is None:
+        _diagnostic(
+            "S0_UPLOAD_MEASUREMENT_UNAVAILABLE",
+            upload_route=CANONICAL_UPLOAD_ROUTE,
+            reason="invalid_elapsed_time",
+        )
+        return
+
     # The task is queued only after source retention and the Document/SourceFile
     # commit. Use the committed SourceFile row as the accepted source-byte truth.
     accepted_source_size = _load_accepted_source_size(source_file_id)
-    observation.finalized = True
     if accepted_source_size is None:
         _diagnostic(
             "S0_UPLOAD_MEASUREMENT_UNAVAILABLE",
             upload_route=CANONICAL_UPLOAD_ROUTE,
             reason="accepted_source_size_unavailable",
             http_body_bytes_received=observation.http_body_bytes_received,
-        )
-        return
-
-    elapsed = _finite_nonnegative(perf_counter() - observation.wall_started)
-    if elapsed is None:
-        _diagnostic(
-            "S0_UPLOAD_MEASUREMENT_UNAVAILABLE",
-            upload_route=CANONICAL_UPLOAD_ROUTE,
-            reason="invalid_elapsed_time",
-            accepted_source_size_bytes=accepted_source_size,
         )
         return
 
@@ -248,6 +251,7 @@ def _wrap_fastapi_call(delegate: Callable[..., Any]) -> Callable[..., Any]:
     ):
         if (
             scope.get("type") != "http"
+            or str(scope.get("method") or "").upper() != CANONICAL_UPLOAD_METHOD
             or scope.get("path") != CANONICAL_UPLOAD_PATH
             or _CURRENT_UPLOAD.get() is not None
         ):
@@ -369,6 +373,7 @@ def install_s0_upload_boundary_observability(*, force: bool = False) -> bool:
 
 
 __all__ = [
+    "CANONICAL_UPLOAD_METHOD",
     "CANONICAL_UPLOAD_PATH",
     "CANONICAL_UPLOAD_ROUTE",
     "UPLOAD_MEASUREMENT_EVENT",
