@@ -134,6 +134,9 @@ def main() -> None:
         from scripts.apply_provider_terminal_poll_diagnostic import (
             main as apply_provider_terminal_poll_diagnostic,
         )
+        from scripts.apply_s0_upload_baseline_mapping import (
+            patch_s0_upload_baseline_mapping,
+        )
         from scripts.apply_staging_baseline_observability_hotfix import (
             main as apply_staging_baseline_observability_hotfix,
         )
@@ -175,6 +178,7 @@ def main() -> None:
         from apply_provider_terminal_poll_diagnostic import (
             main as apply_provider_terminal_poll_diagnostic,
         )
+        from apply_s0_upload_baseline_mapping import patch_s0_upload_baseline_mapping
         from apply_staging_baseline_observability_hotfix import (
             main as apply_staging_baseline_observability_hotfix,
         )
@@ -208,6 +212,10 @@ def main() -> None:
     apply_structure_refinement_batch_safety()
     apply_structure_refinement_shared_node_ownership()
     apply_structure_refinement_soft_batch_targets()
+    # Patch the read-only S0 collector before either the fast-path return or the
+    # remaining Provider composition. This is idempotent and changes only how
+    # already-durable upload evidence is interpreted in the tested artifact.
+    patch_s0_upload_baseline_mapping()
 
     # Durable telemetry is deliberately finalized after the historical Provider
     # rewrite chain. A prior preflight pass may install it early, but v2-v5 can

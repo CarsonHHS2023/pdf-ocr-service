@@ -5,12 +5,16 @@ on:
     branches:
       - staging
     paths:
+      - 'app/access_middleware.py'
       - 'app/models.py'
+      - 'app/s0_upload_boundary_observability.py'
+      - 'app/s0_upload_durable_dispatch_compat.py'
       - 'app/processing/processing_event_model.py'
       - 'app/processing/processing_events.py'
       - 'app/processing/s0_baseline.py'
       - 'app/processing/s0_pdf_resource_heartbeat.py'
       - 'app/processing/s0_phase2_stage_observability.py'
+      - 'scripts/apply_s0_upload_baseline_mapping.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
       - 'scripts/report_s0_baseline.py'
       - 'tests/test_s0_baseline.py'
@@ -21,6 +25,8 @@ on:
       - 'tests/test_s0_markdown_notes.py'
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
+      - 'tests/test_s0_upload_boundary_observability.py'
+      - 'tests/test_s0_upload_durable_dispatch_compat.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
       - 'docs/reviews/s0-baseline-2026-08-23.md'
       - '.github/workflows/s0-baseline-ci.yml'
@@ -46,11 +52,19 @@ jobs:
       - name: Install focused dependencies
         run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic
 
+      - name: Apply canonical upload collector mapping
+        run: |
+          python scripts/apply_s0_upload_baseline_mapping.py
+          python scripts/apply_s0_upload_baseline_mapping.py
+
       - name: Static syntax check
         run: |
           python -m py_compile \
+            app/s0_upload_boundary_observability.py \
+            app/s0_upload_durable_dispatch_compat.py \
             app/processing/s0_baseline.py \
             app/processing/s0_phase2_stage_observability.py \
+            scripts/apply_s0_upload_baseline_mapping.py \
             scripts/apply_s0_v5_phase0_observability.py \
             scripts/report_s0_baseline.py \
             tests/test_s0_baseline.py \
@@ -60,7 +74,9 @@ jobs:
             tests/test_s0_operator_run_record.py \
             tests/test_s0_markdown_notes.py \
             tests/test_s0_phase2_stage_observability.py \
-            tests/test_s0_phase2_baseline_mapping.py
+            tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_upload_boundary_observability.py \
+            tests/test_s0_upload_durable_dispatch_compat.py
 
       - name: Run S0 baseline contract tests
         run: |
@@ -72,7 +88,9 @@ jobs:
             tests/test_s0_operator_run_record.py \
             tests/test_s0_markdown_notes.py \
             tests/test_s0_phase2_stage_observability.py \
-            tests/test_s0_phase2_baseline_mapping.py
+            tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_upload_boundary_observability.py \
+            tests/test_s0_upload_durable_dispatch_compat.py
 
       - name: Verify operator CLI
         run: python scripts/report_s0_baseline.py --help >/dev/null
