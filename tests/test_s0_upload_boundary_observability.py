@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.processing import s0_upload_boundary_observability as upload
+from app import s0_upload_boundary_observability as upload
 
 
 RUN_ID = "pdf-ingest-" + "a" * 32
@@ -258,7 +258,11 @@ def test_txt_background_identity_is_supported() -> None:
     txt_task.__name__ = "process_txt_document_background"
     identity = upload._background_identity(
         txt_task,
-        (DOCUMENT_ID, SOURCE_FILE_ID, SimpleNamespace(processing_run_ref="txt-ingest-" + "b" * 32)),
+        (
+            DOCUMENT_ID,
+            SOURCE_FILE_ID,
+            SimpleNamespace(processing_run_ref="txt-ingest-" + "b" * 32),
+        ),
         {},
     )
     assert identity == ("txt-ingest-" + "b" * 32, DOCUMENT_ID, SOURCE_FILE_ID)
@@ -266,6 +270,6 @@ def test_txt_background_identity_is_supported() -> None:
 
 def test_installer_is_noop_when_staging_runtime_gate_is_closed(monkeypatch) -> None:
     monkeypatch.setattr(upload, "_INSTALLED", False)
-    monkeypatch.setattr(upload, "staging_processing_events_enabled", lambda: False)
+    monkeypatch.setattr(upload, "staging_upload_observability_enabled", lambda: False)
     assert upload.install_s0_upload_boundary_observability() is False
     assert upload._INSTALLED is False
