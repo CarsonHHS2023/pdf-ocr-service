@@ -180,6 +180,31 @@ class _ObservedStorageProvider:
         return getattr(self._delegate, name)
 
 
+def _storage_for_tracker(storage: object, tracker: _RunTracker | None) -> object:
+    """Return one tracker-aware wrapper without stacking duplicate observers."""
+    if tracker is None:
+        return storage
+    if isinstance(storage, _ObservedStorageProvider):
+        if storage._tracker is tracker:
+            return storage
+        storage = storage._delegate
+    return _ObservedStorageProvider(storage, tracker)
+
+
+def _wrap_storage_dependency(delegate: Callable[[], object]) -> Callable[[], object]:
+    """Make dynamic storage dependency lookups honor the active PDF run context."""
+    if getattr(delegate, "__atlas_s0_storage_dependency__", False):
+        return delegate
+
+    @wraps(delegate)
+    def wrapped() -> object:
+        return _storage_for_tracker(delegate(), _CURRENT_TRACKER.get())
+
+    setattr(wrapped, "__atlas_s0_storage_dependency__", True)
+    setattr(wrapped, "__atlas_s0_storage_delegate__", delegate)
+    return wrapped
+
+
 def _load_source_reference(source_file_id: str) -> str | None:
     db = None
     try:
@@ -277,8 +302,10 @@ def install_s0_object_store_pdf_observability(*, force: bool = False) -> bool:
         return False
 
     from app.processing import pdf_ingestion
+    from app.storage import dependencies as storage_dependencies
 
     original_get_storage = pdf_ingestion.get_storage_provider
+    original_dependency_get_storage = storage_dependencies.get_storage_provider
     original_process = pdf_ingestion.process_pdf_document_background
     if getattr(original_process, "__atlas_s0_storage_pdf__", False):
         _PDF_INSTALLED = True
@@ -286,9 +313,7 @@ def install_s0_object_store_pdf_observability(*, force: bool = False) -> bool:
 
     @wraps(original_get_storage)
     def observed_get_storage_provider():
-        storage = original_get_storage()
-        tracker = _CURRENT_TRACKER.get()
-        return storage if tracker is None else _ObservedStorageProvider(storage, tracker)
+        return _storage_for_tracker(original_get_storage(), _CURRENT_TRACKER.get())
 
     @wraps(original_process)
     async def observed_process(document_id: str, source_file_id: str, ids: object) -> None:
@@ -309,7 +334,14 @@ def install_s0_object_store_pdf_observability(*, force: bool = False) -> bool:
             _emit_tracker(tracker)
 
     setattr(observed_process, "__atlas_s0_storage_pdf__", True)
+    # ``pdf_ingestion`` imported the dependency eagerly, while presentation
+    # lifecycle code resolves it dynamically during grant creation. Install both
+    # context-aware entry points so one ProcessingRun sees the complete logical
+    # StorageProvider read/write path without changing unrelated requests.
     pdf_ingestion.get_storage_provider = observed_get_storage_provider
+    storage_dependencies.get_storage_provider = _wrap_storage_dependency(
+        original_dependency_get_storage
+    )
     pdf_ingestion.process_pdf_document_background = observed_process
     _PDF_INSTALLED = True
     return True
