@@ -31,9 +31,19 @@ _pdf_background_task.__name__ = "process_pdf_document_background"
 def test_canonical_request_measures_ingress_through_durable_acceptance(monkeypatch) -> None:
     recorded: list[dict[str, object]] = []
     diagnostics: list[tuple[str, dict[str, object]]] = []
+    call_order: list[str] = []
     clock = iter((10.0, 12.5))
-    monkeypatch.setattr(upload, "perf_counter", lambda: next(clock))
-    monkeypatch.setattr(upload, "_load_accepted_source_size", lambda source_id: 120)
+
+    def measured_clock():
+        call_order.append("clock")
+        return next(clock)
+
+    def load_accepted_source_size(source_id):
+        call_order.append("load_source")
+        return 120
+
+    monkeypatch.setattr(upload, "perf_counter", measured_clock)
+    monkeypatch.setattr(upload, "_load_accepted_source_size", load_accepted_source_size)
     monkeypatch.setattr(
         upload,
         "_record_success",
@@ -92,13 +102,18 @@ def test_canonical_request_measures_ingress_through_durable_acceptance(monkeypat
     result = asyncio.run(
         wrapped_app(
             object(),
-            {"type": "http", "path": upload.CANONICAL_UPLOAD_PATH},
+            {
+                "type": "http",
+                "method": upload.CANONICAL_UPLOAD_METHOD,
+                "path": upload.CANONICAL_UPLOAD_PATH,
+            },
             receive,
             send,
         )
     )
 
     assert result == "response"
+    assert call_order[:3] == ["clock", "clock", "load_source"]
     assert len(recorded) == 1
     event = recorded[0]
     assert event["processing_run_id"] == RUN_ID
@@ -143,7 +158,11 @@ def test_noncanonical_route_is_not_measured(monkeypatch) -> None:
         asyncio.run(
             wrapped(
                 object(),
-                {"type": "http", "path": "/api/v1/upload-sessions/session/chunks/0"},
+                {
+                    "type": "http",
+                    "method": upload.CANONICAL_UPLOAD_METHOD,
+                    "path": "/api/v1/upload-sessions/session/chunks/0",
+                },
                 receive,
                 send,
             )
@@ -151,6 +170,36 @@ def test_noncanonical_route_is_not_measured(monkeypatch) -> None:
         == "ok"
     )
     assert recorded == []
+
+
+def test_non_post_canonical_path_is_not_measured(monkeypatch) -> None:
+    async def app_delegate(app_self, scope, receive, send):
+        assert upload._CURRENT_UPLOAD.get() is None
+        return "ok"
+
+    wrapped = upload._wrap_fastapi_call(app_delegate)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        return None
+
+    assert (
+        asyncio.run(
+            wrapped(
+                object(),
+                {
+                    "type": "http",
+                    "method": "OPTIONS",
+                    "path": upload.CANONICAL_UPLOAD_PATH,
+                },
+                receive,
+                send,
+            )
+        )
+        == "ok"
+    )
 
 
 def test_background_task_without_canonical_context_cannot_create_measurement(monkeypatch) -> None:
@@ -200,7 +249,11 @@ def test_failed_request_emits_bounded_diagnostic_without_completed_duration(monk
         asyncio.run(
             wrapped(
                 object(),
-                {"type": "http", "path": upload.CANONICAL_UPLOAD_PATH},
+                {
+                    "type": "http",
+                    "method": upload.CANONICAL_UPLOAD_METHOD,
+                    "path": upload.CANONICAL_UPLOAD_PATH,
+                },
                 receive,
                 send,
             )
@@ -243,7 +296,11 @@ def test_unaccepted_completed_request_does_not_fabricate_upload_duration(monkeyp
     asyncio.run(
         wrapped(
             object(),
-            {"type": "http", "path": upload.CANONICAL_UPLOAD_PATH},
+            {
+                "type": "http",
+                "method": upload.CANONICAL_UPLOAD_METHOD,
+                "path": upload.CANONICAL_UPLOAD_PATH,
+            },
             receive,
             send,
         )
