@@ -4,6 +4,10 @@ from __future__ import annotations
 import logging
 import sys
 
+from app.processing.s0_upload_boundary_observability import (
+    install_s0_upload_boundary_observability,
+)
+
 _PROVIDER_EVENT_PREFIX = "PDF_STRUCTURE_REFINEMENT_PROVIDER_"
 _PROVIDER_STDERR_HANDLER_MARKER = "_atlas_refinement_provider_stderr"
 
@@ -39,5 +43,11 @@ def install_refinement_provider_stderr_handler() -> None:
 
 
 install_refinement_provider_stderr_handler()
+# No-op outside an exact Staging runtime artifact.  In Staging this installs
+# before request handling begins and does not alter route/business semantics.
+install_s0_upload_boundary_observability()
 
-__all__ = ["install_refinement_provider_stderr_handler"]
+__all__ = [
+    "install_refinement_provider_stderr_handler",
+    "install_s0_upload_boundary_observability",
+]
