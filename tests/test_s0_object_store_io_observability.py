@@ -225,3 +225,55 @@ def test_storage_for_tracker_does_not_stack_same_tracker_observer() -> None:
     tracker = io._RunTracker(RUN_ID, DOCUMENT_ID, SOURCE_REF)
     observed = io._ObservedStorageProvider(_Storage(), tracker)
     assert io._storage_for_tracker(observed, tracker) is observed
+
+
+def test_federated_storage_keeps_outer_type_and_observes_leaves(monkeypatch) -> None:
+    from app.storage.federated import FederatedStorageProvider
+    from app.storage import visual_assets
+
+    tracker = io._RunTracker(RUN_ID, DOCUMENT_ID, SOURCE_REF)
+    primary = _Storage()
+    secondary = _Storage()
+    federated = FederatedStorageProvider(primary, secondary)
+
+    observed = io._storage_for_tracker(federated, tracker)
+    assert observed is federated
+    assert isinstance(observed, FederatedStorageProvider)
+    assert isinstance(observed.primary, io._ObservedStorageProvider)
+    assert isinstance(observed.secondary, io._ObservedStorageProvider)
+
+    monkeypatch.setattr(visual_assets, "_staging_artifact_is_active", lambda: True)
+    selected = visual_assets.select_visual_asset_storage(observed)
+    assert selected is observed.secondary
+
+    selected.put(b"visual", "src_" + "f" * 32)
+    generated = tracker.stages[io.STAGE_GENERATED_ARTIFACT]
+    assert (generated.write_bytes, generated.write_operations) == (6, 1)
+
+
+def test_federated_provider_input_secondary_remains_observable() -> None:
+    from app.storage.federated import FederatedStorageProvider
+    from app.storage.provider_input_access import ProviderInputStorageRouter
+
+    class _Client:
+        def generate_presigned_url(self, *args, **kwargs):
+            return "https://example.invalid/object"
+
+    class _PresignStorage(_Storage):
+        bucket = "bucket"
+        client = _Client()
+
+        def object_key(self, reference):
+            return str(reference)
+
+    tracker = io._RunTracker(RUN_ID, DOCUMENT_ID, SOURCE_REF)
+    federated = FederatedStorageProvider(_Storage(), _PresignStorage())
+    observed = io._storage_for_tracker(federated, tracker)
+
+    # ProviderInputStorageRouter must still choose the durable secondary, but
+    # that leaf remains observed so the real write is counted.
+    router = ProviderInputStorageRouter(observed)
+    assert router.remote is observed.secondary
+    router.put(b"subset", "src_" + "9" * 32)
+    generated = tracker.stages[io.STAGE_GENERATED_ARTIFACT]
+    assert (generated.write_bytes, generated.write_operations) == (6, 1)
