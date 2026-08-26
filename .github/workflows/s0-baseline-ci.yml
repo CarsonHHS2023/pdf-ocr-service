@@ -8,6 +8,7 @@ on:
       - 'app/access_middleware.py'
       - 'app/models.py'
       - 'app/s0_object_store_io_observability.py'
+      - 'app/s0_transport_scope_terminal_observability.py'
       - 'app/s0_upload_boundary_observability.py'
       - 'app/s0_upload_durable_dispatch_compat.py'
       - 'app/processing/processing_event_model.py'
@@ -17,6 +18,7 @@ on:
       - 'app/processing/s0_phase2_stage_observability.py'
       - 'app/processing/transport/service.py'
       - 'scripts/apply_s0_object_store_io_observability.py'
+      - 'scripts/apply_s0_transport_terminal_collector.py'
       - 'scripts/apply_s0_upload_baseline_mapping.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
       - 'scripts/report_s0_baseline.py'
@@ -65,12 +67,15 @@ jobs:
       - name: Apply object-store I/O observability
         run: |
           python scripts/apply_s0_object_store_io_observability.py
+          python scripts/apply_s0_transport_terminal_collector.py
           python scripts/apply_s0_object_store_io_observability.py
+          python scripts/apply_s0_transport_terminal_collector.py
 
       - name: Static syntax check
         run: |
           python -m py_compile \
             app/s0_object_store_io_observability.py \
+            app/s0_transport_scope_terminal_observability.py \
             app/s0_upload_boundary_observability.py \
             app/s0_upload_durable_dispatch_compat.py \
             app/processing/pdf_ingestion.py \
@@ -79,6 +84,7 @@ jobs:
             app/processing/transport/service.py \
             app/routers/source_transport.py \
             scripts/apply_s0_object_store_io_observability.py \
+            scripts/apply_s0_transport_terminal_collector.py \
             scripts/apply_s0_upload_baseline_mapping.py \
             scripts/apply_s0_v5_phase0_observability.py \
             scripts/report_s0_baseline.py \
