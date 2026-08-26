@@ -13,6 +13,14 @@ from app.access_security import (
     is_access_gate_enabled,
     verify_access_token,
 )
+from app.s0_upload_boundary_observability import (
+    install_s0_upload_boundary_observability,
+)
+
+# Exact-Staging gated and observational only. Install before app.main constructs
+# the FastAPI application so the canonical upload request boundary includes
+# multipart body receipt/parsing. Outside a tested Staging artifact this is a no-op.
+install_s0_upload_boundary_observability()
 
 _PUBLIC_EXACT_PATHS = {
     "/",
