@@ -13,6 +13,7 @@ on:
       - 'app/processing/s0_baseline.py'
       - 'app/processing/s0_pdf_resource_heartbeat.py'
       - 'app/processing/s0_phase2_stage_observability.py'
+      - 'scripts/apply_s0_upload_baseline_mapping.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
       - 'scripts/report_s0_baseline.py'
       - 'tests/test_s0_baseline.py'
@@ -49,12 +50,18 @@ jobs:
       - name: Install focused dependencies
         run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic
 
+      - name: Apply canonical upload collector mapping
+        run: |
+          python scripts/apply_s0_upload_baseline_mapping.py
+          python scripts/apply_s0_upload_baseline_mapping.py
+
       - name: Static syntax check
         run: |
           python -m py_compile \
             app/s0_upload_boundary_observability.py \
             app/processing/s0_baseline.py \
             app/processing/s0_phase2_stage_observability.py \
+            scripts/apply_s0_upload_baseline_mapping.py \
             scripts/apply_s0_v5_phase0_observability.py \
             scripts/report_s0_baseline.py \
             tests/test_s0_baseline.py \
