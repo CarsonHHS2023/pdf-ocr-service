@@ -201,3 +201,27 @@ def test_transport_event_uses_hashed_scope_and_retrieval_ordinal(monkeypatch) ->
     assert captured["scope_ordinal"] == 3
     assert captured["scope_id"].startswith("transport_")
     assert "tg_private" not in captured["scope_id"]
+
+
+def test_dynamic_storage_dependency_observes_active_pdf_tracker() -> None:
+    tracker = io._RunTracker(RUN_ID, DOCUMENT_ID, SOURCE_REF)
+    delegate = _Storage()
+    dependency = io._wrap_storage_dependency(lambda: delegate)
+
+    assert dependency() is delegate
+    token = io._CURRENT_TRACKER.set(tracker)
+    try:
+        observed = dependency()
+        assert isinstance(observed, io._ObservedStorageProvider)
+        observed.put(b"subset", "src_" + "e" * 32)
+    finally:
+        io._CURRENT_TRACKER.reset(token)
+
+    generated = tracker.stages[io.STAGE_GENERATED_ARTIFACT]
+    assert (generated.write_bytes, generated.write_operations) == (6, 1)
+
+
+def test_storage_for_tracker_does_not_stack_same_tracker_observer() -> None:
+    tracker = io._RunTracker(RUN_ID, DOCUMENT_ID, SOURCE_REF)
+    observed = io._ObservedStorageProvider(_Storage(), tracker)
+    assert io._storage_for_tracker(observed, tracker) is observed
