@@ -7,7 +7,8 @@
 | Product Relationship | M5 Reader MVP reliability / horizontal scalability |
 | Registry Version | v1 |
 | Date | 2026-08-23 |
-| Status | Active; representative reruns still required |
+| Status | Active; formal PDF small + medium accepted on 2026-08-25; TXT/large evidence still open |
+| Latest Reconciliation | [S0 Phase 2 Baseline Reconciliation — 2026-08-25](../reviews/s0-phase2-baseline-reconciliation-2026-08-25.md) |
 
 ## Purpose
 
@@ -19,13 +20,15 @@ Exact source SHA-256 is read from `SourceFile.checksum_sha256` by the operator-s
 
 | Fixture id | Type | Size class | Expected pages | Reference byte size | Current evidence state | Intended use |
 |---|---|---|---:|---:|---|---|
-| `pdf-small-v1` | PDF | small | 1 | 784,772 | Historical retained ProcessingRun exists | Fast end-to-end control; route/timing sanity |
-| `pdf-medium-v1` | PDF | medium | 11 | 4,558,903 | Historical retained ProcessingRun exists | Multi-page routing/Provider/Reader baseline |
-| `pdf-large-v1` | PDF | large | 528 | 65,445,424 | Source retained; current Document is nonterminal and has no ProcessingRun | Large-memory/network/long-run baseline after explicit rerun approval |
+| `pdf-small-v1` | PDF | small | 1 | 784,772 | **Formal exact-revision Staging baseline accepted 2026-08-25** | Fast end-to-end control; route/timing sanity |
+| `pdf-medium-v1` | PDF | medium | 11 | 4,558,903 | **Formal exact-revision Staging baseline accepted 2026-08-25; sharded Provider route exercised** | Multi-page routing/Provider/Reader baseline |
+| `pdf-large-v1` | PDF | large | 528 | 65,445,424 | Source retained; current Document is nonterminal and has no ProcessingRun; rerun deferred until missing S0 metrics justify execution | Large-memory/network/long-run baseline after explicit rerun approval |
 | `txt-small-v1` | TXT | small | n/a | 89,396 | Historical run exists, but lifecycle timestamps are not suitable for timing baseline | TXT correctness/control baseline |
 | `txt-medium-v1` | TXT | medium | n/a | 202,256 | Historical run exists, but lifecycle timestamps are not suitable for timing baseline | Larger TXT control baseline |
 
 Reference byte size is a guardrail, not source identity. Before recording a new authoritative benchmark result, the operator should confirm the intended private source identity and record the actual source checksum in the private run evidence.
+
+The accepted 2026-08-25 PDF small/medium evidence used Staging backend/runtime revision `6fe56d35bfb39cf1e1016beb2694464fb1fc2e4f`. Private checksum identity was verified for both accepted runs before they were recorded as authoritative benchmark evidence.
 
 ## Required run record
 
@@ -45,8 +48,9 @@ Each accepted S0 benchmark run should record at least:
 
 - Do not commit filenames, titles, text excerpts, signed URLs, bearer tokens, bucket credentials, request/response bodies, or raw Provider payloads.
 - Do not treat client-supplied hash values as authoritative source identity.
-- Do not rerun the large fixture merely to fill a table. Large-run execution remains an explicit Staging test action because it consumes significant CPU/GPU/provider resources.
+- Do not rerun the large fixture merely to fill a table. Large-run execution remains an explicit Staging test action because it consumes significant CPU/GPU/provider resources and should only occur after the instrumentation can capture materially useful closure evidence.
 - Historical lifecycle timestamps may be retained as preliminary evidence but must not be relabeled as measurements they do not represent.
+- Keep process-wide CPU/RSS, Provider artifact size, Provider-selected payload size, shard-object size, and actual network-transfer metrics semantically separate.
 
 ## Versioning
 
