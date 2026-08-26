@@ -122,6 +122,7 @@ _IMPORT_BLOCK = '''from app.s0_object_store_io_observability import (
     STORAGE_IO_STAGES as _S0_STORAGE_IO_STAGES,
     STAGE_GENERATED_ARTIFACT as _S0_STAGE_GENERATED_ARTIFACT,
     STAGE_PROCESSING_SOURCE as _S0_STAGE_PROCESSING_SOURCE,
+    STAGE_PROVIDER_SOURCE_TRANSPORT as _S0_STAGE_PROVIDER_SOURCE_TRANSPORT,
     STAGE_UPLOAD_SOURCE_RETENTION as _S0_STAGE_UPLOAD_SOURCE_RETENTION,
 )
 from app.s0_upload_boundary_observability import (
@@ -176,7 +177,7 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
     evidence_incomplete: bool,
     uninspectable_event_names: frozenset[str],
 ) -> tuple[object | None, object | None, str, str | None]:
-    """Aggregate unique stage/scope counters from the backend StorageProvider boundary."""
+    """Aggregate complete stage/scope counters from the backend StorageProvider boundary."""
     if _S0_STORAGE_IO_EVENT in uninspectable_event_names:
         return None, None, "not_available", (
             f"At least one retained {_S0_STORAGE_IO_EVENT} payload could not be inspected; "
@@ -195,6 +196,7 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
         return None, None, "not_available", "A positive retained source size is required."
 
     seen: set[tuple[str, str, int]] = set()
+    transport_ordinals: dict[str, set[int]] = {}
     stages: dict[str, dict[str, int]] = {}
     for event in matching:
         payload = event.payload
@@ -213,6 +215,8 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
         if key in seen:
             return None, None, "not_available", "Duplicate storage I/O stage/scope evidence is ambiguous."
         seen.add(key)
+        if stage == _S0_STAGE_PROVIDER_SOURCE_TRANSPORT:
+            transport_ordinals.setdefault(scope_id, set()).add(ordinal)
 
         values: dict[str, int] = {}
         for field in ("read_bytes", "write_bytes", "read_operations", "write_operations"):
@@ -235,6 +239,14 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
         })
         for field, value in values.items():
             aggregate[field] += value
+
+    for ordinals in transport_ordinals.values():
+        ordered = sorted(ordinals)
+        if ordered != list(range(1, len(ordered) + 1)):
+            return None, None, "not_available", (
+                "Provider source-transport retrieval ordinals are not contiguous from 1; "
+                "one or more successful storage reads may be missing durable evidence."
+            )
 
     required_stages = {
         _S0_STAGE_UPLOAD_SOURCE_RETENTION,
@@ -329,6 +341,7 @@ _FINAL_MARKERS = (
     '"backend_object_store_bytes": _metric(',
     '"object_store_stage_io": _metric(',
     "_S0_STORAGE_IO_EVENT,",
+    "transport_ordinals: dict[str, set[int]] = {}",
 )
 
 
