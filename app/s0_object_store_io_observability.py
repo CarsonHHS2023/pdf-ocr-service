@@ -181,13 +181,28 @@ class _ObservedStorageProvider:
 
 
 def _storage_for_tracker(storage: object, tracker: _RunTracker | None) -> object:
-    """Return one tracker-aware wrapper without stacking duplicate observers."""
+    """Observe one storage graph without changing federated routing semantics."""
     if tracker is None:
         return storage
     if isinstance(storage, _ObservedStorageProvider):
         if storage._tracker is tracker:
             return storage
         storage = storage._delegate
+
+    # Federated routing is selected with ``isinstance`` in storage helpers. Keep
+    # the outer object intact and observe its concrete primary/secondary leaves
+    # instead of replacing it with a proxy that would change that type check.
+    try:
+        from app.storage.federated import FederatedStorageProvider
+    except Exception:
+        FederatedStorageProvider = None  # type: ignore[assignment,misc]
+    if FederatedStorageProvider is not None and isinstance(
+        storage, FederatedStorageProvider
+    ):
+        storage.primary = _storage_for_tracker(storage.primary, tracker)
+        storage.secondary = _storage_for_tracker(storage.secondary, tracker)
+        return storage
+
     return _ObservedStorageProvider(storage, tracker)
 
 
