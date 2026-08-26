@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import s0_object_store_io_observability as io
+from app import s0_transport_scope_terminal_observability as terminal
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
 from app.processing.s0_baseline import MAX_EVENT_PAYLOAD_BYTES, collect_s0_run_snapshot
@@ -16,6 +17,7 @@ RUN_ID = "pdf-ingest-" + "4" * 32
 DOCUMENT_ID = "11111111-1111-4111-8111-111111111111"
 SOURCE_FILE_ID = "22222222-2222-4222-8222-222222222222"
 SOURCE_REF = "src_" + "a" * 32
+TRANSPORT_SCOPE = "transport_0123456789abcdef"
 
 
 class _Storage:
@@ -80,20 +82,65 @@ def _event(event_id, stage, *, read_bytes=0, write_bytes=0, read_ops=0, write_op
             "read_operations": read_ops,
             "write_operations": write_ops,
         }),
-        created_at=datetime(2026, 8, 26, 10, 0, ordinal),
+        created_at=datetime(2026, 8, 26, 10, 0, min(ordinal, 59)),
     )
 
 
-def _uninspectable_event(event_id: str, payload_json: str, *, second: int) -> ProcessingEvent:
+def _terminal_event(event_id: str, scope_id: str, count: int, *, second: int = 20) -> ProcessingEvent:
     return ProcessingEvent(
         id=event_id,
         processing_run_id=RUN_ID,
         document_id=DOCUMENT_ID,
         schema_version="atlas.processing.event.v1",
-        event_name=io.STORAGE_IO_EVENT,
+        event_name=terminal.TRANSPORT_SCOPE_TERMINAL_EVENT,
+        severity="info",
+        payload_json=encode_json_text({
+            "succeeded": True,
+            "measurement_scope": io.STORAGE_IO_SCOPE,
+            "stage": io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+            "scope_id": scope_id,
+            "terminal_retrieval_count": count,
+        }),
+        created_at=datetime(2026, 8, 26, 10, 1, second),
+    )
+
+
+def _provider_measurement(event_id: str = "provider-measured") -> ProcessingEvent:
+    return ProcessingEvent(
+        id=event_id,
+        processing_run_id=RUN_ID,
+        document_id=DOCUMENT_ID,
+        schema_version="atlas.processing.event.v1",
+        event_name="PDF_S0_PROVIDER_INTEGRATION_MEASURED",
+        severity="info",
+        payload_json=encode_json_text({"succeeded": True, "elapsed_seconds": 1.0}),
+        created_at=datetime(2026, 8, 26, 10, 1, 30),
+    )
+
+
+def _sharding_terminal(shard_count: int) -> ProcessingEvent:
+    return ProcessingEvent(
+        id="provider-sharding-terminal",
+        processing_run_id=RUN_ID,
+        document_id=DOCUMENT_ID,
+        schema_version="atlas.processing.event.v1",
+        event_name="PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
+        severity="info",
+        payload_json=encode_json_text({"succeeded": True, "shard_count": shard_count}),
+        created_at=datetime(2026, 8, 26, 10, 1, 31),
+    )
+
+
+def _uninspectable_event(event_id: str, payload_json: str, *, second: int, event_name: str = io.STORAGE_IO_EVENT) -> ProcessingEvent:
+    return ProcessingEvent(
+        id=event_id,
+        processing_run_id=RUN_ID,
+        document_id=DOCUMENT_ID,
+        schema_version="atlas.processing.event.v1",
+        event_name=event_name,
         severity="info",
         payload_json=payload_json,
-        created_at=datetime(2026, 8, 26, 10, 1, second),
+        created_at=datetime(2026, 8, 26, 10, 2, second),
     )
 
 
@@ -106,7 +153,8 @@ def _seed(db):
         _event("io-upload", io.STAGE_UPLOAD_SOURCE_RETENTION, write_bytes=456, write_ops=1, scope_id="upload_acceptance"),
         _event("io-source", io.STAGE_PROCESSING_SOURCE, read_bytes=456, read_ops=1),
         _event("io-generated", io.STAGE_GENERATED_ARTIFACT, read_bytes=900, write_bytes=1000, read_ops=1, write_ops=1),
-        _event("io-transport", io.STAGE_PROVIDER_SOURCE_TRANSPORT, read_bytes=1000, read_ops=1, scope_id="transport_0123456789abcdef"),
+        _event("io-transport", io.STAGE_PROVIDER_SOURCE_TRANSPORT, read_bytes=1000, read_ops=1, scope_id=TRANSPORT_SCOPE),
+        _terminal_event("io-transport-terminal", TRANSPORT_SCOPE, 1),
     ])
     db.commit()
 
@@ -145,7 +193,7 @@ def test_collector_fails_closed_when_transport_scope_starts_at_ordinal_two() -> 
         "succeeded": True,
         "measurement_scope": io.STORAGE_IO_SCOPE,
         "stage": io.STAGE_PROVIDER_SOURCE_TRANSPORT,
-        "scope_id": "transport_0123456789abcdef",
+        "scope_id": TRANSPORT_SCOPE,
         "scope_ordinal": 2,
         "read_bytes": 1000,
         "write_bytes": 0,
@@ -158,18 +206,26 @@ def test_collector_fails_closed_when_transport_scope_starts_at_ordinal_two() -> 
     for key in ("backend_object_store_bytes", "object_store_stage_io"):
         metric = _metric(snapshot, key)
         assert metric.status == "not_available"
-        assert "not contiguous from 1" in (metric.note or "").lower()
+        assert "terminal retrieval count" in (metric.note or "").lower()
 
 
 def test_collector_fails_closed_for_gap_inside_transport_scope() -> None:
     db = _session()
     _seed(db)
+    terminal_row = db.get(ProcessingEvent, "io-transport-terminal")
+    terminal_row.payload_json = encode_json_text({
+        "succeeded": True,
+        "measurement_scope": io.STORAGE_IO_SCOPE,
+        "stage": io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+        "scope_id": TRANSPORT_SCOPE,
+        "terminal_retrieval_count": 3,
+    })
     db.add(_event(
         "io-transport-3",
         io.STAGE_PROVIDER_SOURCE_TRANSPORT,
         read_bytes=500,
         read_ops=1,
-        scope_id="transport_0123456789abcdef",
+        scope_id=TRANSPORT_SCOPE,
         ordinal=3,
     ))
     db.commit()
@@ -178,20 +234,86 @@ def test_collector_fails_closed_for_gap_inside_transport_scope() -> None:
     for key in ("backend_object_store_bytes", "object_store_stage_io"):
         metric = _metric(snapshot, key)
         assert metric.status == "not_available"
-        assert "not contiguous from 1" in (metric.note or "").lower()
+        assert "terminal retrieval count" in (metric.note or "").lower()
+
+
+def test_collector_detects_dropped_trailing_transport_event() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_event("io-transport-2", io.STAGE_PROVIDER_SOURCE_TRANSPORT, read_bytes=600, read_ops=1, scope_id=TRANSPORT_SCOPE, ordinal=2))
+    terminal_row = db.get(ProcessingEvent, "io-transport-terminal")
+    terminal_row.payload_json = encode_json_text({
+        "succeeded": True,
+        "measurement_scope": io.STORAGE_IO_SCOPE,
+        "stage": io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+        "scope_id": TRANSPORT_SCOPE,
+        "terminal_retrieval_count": 3,
+    })
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "backend_object_store_bytes")
+    assert metric.status == "not_available"
+    assert "terminal retrieval count" in (metric.note or "").lower()
+
+
+def test_collector_rejects_read_scope_without_terminal_proof() -> None:
+    db = _session()
+    _seed(db)
+    db.delete(db.get(ProcessingEvent, "io-transport-terminal"))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "object_store_stage_io")
+    assert metric.status == "not_available"
+    assert "no post-revoke terminal proof" in (metric.note or "").lower()
+
+
+def test_collector_rejects_terminal_count_when_read_event_is_missing() -> None:
+    db = _session()
+    _seed(db)
+    db.delete(db.get(ProcessingEvent, "io-transport"))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "object_store_stage_io")
+    assert metric.status == "not_available"
+    assert "terminal retrieval count" in (metric.note or "").lower()
+
+
+def test_collector_accepts_zero_terminal_count_without_backend_transport_read() -> None:
+    db = _session()
+    _seed(db)
+    db.delete(db.get(ProcessingEvent, "io-transport"))
+    terminal_row = db.get(ProcessingEvent, "io-transport-terminal")
+    terminal_row.payload_json = encode_json_text({
+        "succeeded": True,
+        "measurement_scope": io.STORAGE_IO_SCOPE,
+        "stage": io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+        "scope_id": TRANSPORT_SCOPE,
+        "terminal_retrieval_count": 0,
+    })
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    assert _metric(snapshot, "backend_object_store_bytes").status == "observed"
 
 
 def test_collector_checks_transport_ordinals_per_scope_not_globally() -> None:
     db = _session()
     _seed(db)
-    db.add(_event(
-        "io-transport-other",
-        io.STAGE_PROVIDER_SOURCE_TRANSPORT,
-        read_bytes=777,
-        read_ops=1,
-        scope_id="transport_fedcba9876543210",
-        ordinal=1,
-    ))
+    other_scope = "transport_fedcba9876543210"
+    db.add_all([
+        _event(
+            "io-transport-other",
+            io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+            read_bytes=777,
+            read_ops=1,
+            scope_id=other_scope,
+            ordinal=1,
+        ),
+        _terminal_event("io-transport-other-terminal", other_scope, 1, second=21),
+    ])
     db.commit()
 
     snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
@@ -199,6 +321,59 @@ def test_collector_checks_transport_ordinals_per_scope_not_globally() -> None:
     stages = _metric(snapshot, "object_store_stage_io")
     assert stages.status == "observed"
     assert stages.value["stages"][io.STAGE_PROVIDER_SOURCE_TRANSPORT]["read_bytes"] == 1777
+
+
+def test_collector_requires_one_terminal_scope_for_successful_nonsharded_provider() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_provider_measurement())
+    db.delete(db.get(ProcessingEvent, "io-transport-terminal"))
+    db.delete(db.get(ProcessingEvent, "io-transport"))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "backend_object_store_bytes")
+    assert metric.status == "not_available"
+    assert "every expected transport scope" in (metric.note or "").lower()
+
+
+def test_collector_requires_shard_count_terminal_scopes() -> None:
+    db = _session()
+    _seed(db)
+    db.add_all([_provider_measurement(), _sharding_terminal(2)])
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "backend_object_store_bytes")
+    assert metric.status == "not_available"
+    assert "every expected transport scope" in (metric.note or "").lower()
+
+
+def test_collector_accepts_complete_sharded_terminal_scope_set() -> None:
+    db = _session()
+    _seed(db)
+    other_scope = "transport_fedcba9876543210"
+    db.add_all([
+        _provider_measurement(),
+        _sharding_terminal(2),
+        _terminal_event("second-terminal", other_scope, 0, second=22),
+    ])
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    assert _metric(snapshot, "backend_object_store_bytes").status == "observed"
+
+
+def test_collector_fails_closed_for_duplicate_terminal_scope() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_terminal_event("duplicate-terminal", TRANSPORT_SCOPE, 1, second=23))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "object_store_stage_io")
+    assert metric.status == "not_available"
+    assert "duplicate transport terminal" in (metric.note or "").lower()
 
 
 def test_collector_fails_closed_when_source_retention_does_not_match() -> None:
@@ -254,6 +429,18 @@ def test_collector_fails_closed_for_oversized_same_name_payload() -> None:
         assert "payload could not be inspected" in (metric.note or "")
 
 
+def test_collector_fails_closed_for_malformed_terminal_payload() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_uninspectable_event("terminal-malformed", "{", second=3, event_name=terminal.TRANSPORT_SCOPE_TERMINAL_EVENT))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    metric = _metric(snapshot, "backend_object_store_bytes")
+    assert metric.status == "not_available"
+    assert terminal.TRANSPORT_SCOPE_TERMINAL_EVENT in (metric.note or "")
+
+
 def test_transport_event_uses_hashed_scope_and_retrieval_ordinal(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(io, "staging_storage_io_observability_enabled", lambda: True)
@@ -263,8 +450,52 @@ def test_transport_event_uses_hashed_scope_and_retrieval_ordinal(monkeypatch) ->
     assert captured["stage"] == io.STAGE_PROVIDER_SOURCE_TRANSPORT
     assert captured["read_bytes"] == 99
     assert captured["scope_ordinal"] == 3
-    assert captured["scope_id"].startswith("transport_")
+    assert captured["scope_id"] == terminal.transport_scope_id("tg_private")
     assert "tg_private" not in captured["scope_id"]
+
+
+def test_terminal_recorder_emits_privacy_safe_final_count(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(io, "staging_storage_io_observability_enabled", lambda: True)
+    from app.processing import processing_events
+    monkeypatch.setattr(processing_events, "record_processing_event", lambda **kwargs: captured.update(kwargs) or True)
+    descriptor = SimpleNamespace(
+        atlas_attempt_id=RUN_ID,
+        document_id=DOCUMENT_ID,
+        grant_id="tg_private",
+        retrieval_count=3,
+        state=SimpleNamespace(value="revoked"),
+    )
+
+    assert terminal.record_transport_scope_terminal(descriptor) is True
+    assert captured["event_name"] == terminal.TRANSPORT_SCOPE_TERMINAL_EVENT
+    assert captured["payload"]["scope_id"] == terminal.transport_scope_id("tg_private")
+    assert captured["payload"]["terminal_retrieval_count"] == 3
+    assert "tg_private" not in str(captured["payload"])
+
+
+def test_finalize_wrapper_emits_only_after_successful_revoke(monkeypatch) -> None:
+    emitted = []
+    descriptor = SimpleNamespace(state=SimpleNamespace(value="revoked"))
+    final = SimpleNamespace(revoked=True, descriptor=descriptor)
+    wrapped = terminal._wrap_finalize(lambda self, grant_id, *, revoke, warnings: final)
+    monkeypatch.setattr(terminal, "record_transport_scope_terminal", lambda value: emitted.append(value) or True)
+
+    assert wrapped(object(), "grant", revoke=True, warnings=[]) is final
+    assert emitted == [descriptor]
+    emitted.clear()
+    assert wrapped(object(), "grant", revoke=False, warnings=[]) is final
+    assert emitted == []
+
+
+def test_finalize_wrapper_does_not_emit_when_revoke_failed(monkeypatch) -> None:
+    emitted = []
+    final = SimpleNamespace(revoked=False, descriptor=SimpleNamespace())
+    wrapped = terminal._wrap_finalize(lambda self, grant_id, *, revoke, warnings: final)
+    monkeypatch.setattr(terminal, "record_transport_scope_terminal", lambda value: emitted.append(value) or True)
+
+    assert wrapped(object(), "grant", revoke=True, warnings=[]) is final
+    assert emitted == []
 
 
 def test_dynamic_storage_dependency_observes_active_pdf_tracker() -> None:
