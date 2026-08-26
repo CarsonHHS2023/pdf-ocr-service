@@ -137,6 +137,70 @@ def test_collector_fails_closed_for_duplicate_stage_scope() -> None:
     assert "duplicate" in (_metric(snapshot, "object_store_stage_io").note or "").lower()
 
 
+def test_collector_fails_closed_when_transport_scope_starts_at_ordinal_two() -> None:
+    db = _session()
+    _seed(db)
+    event = db.get(ProcessingEvent, "io-transport")
+    event.payload_json = encode_json_text({
+        "succeeded": True,
+        "measurement_scope": io.STORAGE_IO_SCOPE,
+        "stage": io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+        "scope_id": "transport_0123456789abcdef",
+        "scope_ordinal": 2,
+        "read_bytes": 1000,
+        "write_bytes": 0,
+        "read_operations": 1,
+        "write_operations": 0,
+    })
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    for key in ("backend_object_store_bytes", "object_store_stage_io"):
+        metric = _metric(snapshot, key)
+        assert metric.status == "not_available"
+        assert "not contiguous from 1" in (metric.note or "").lower()
+
+
+def test_collector_fails_closed_for_gap_inside_transport_scope() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_event(
+        "io-transport-3",
+        io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+        read_bytes=500,
+        read_ops=1,
+        scope_id="transport_0123456789abcdef",
+        ordinal=3,
+    ))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    for key in ("backend_object_store_bytes", "object_store_stage_io"):
+        metric = _metric(snapshot, key)
+        assert metric.status == "not_available"
+        assert "not contiguous from 1" in (metric.note or "").lower()
+
+
+def test_collector_checks_transport_ordinals_per_scope_not_globally() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_event(
+        "io-transport-other",
+        io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+        read_bytes=777,
+        read_ops=1,
+        scope_id="transport_fedcba9876543210",
+        ordinal=1,
+    ))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    assert _metric(snapshot, "backend_object_store_bytes").status == "observed"
+    stages = _metric(snapshot, "object_store_stage_io")
+    assert stages.status == "observed"
+    assert stages.value["stages"][io.STAGE_PROVIDER_SOURCE_TRANSPORT]["read_bytes"] == 1777
+
+
 def test_collector_fails_closed_when_source_retention_does_not_match() -> None:
     db = _session()
     _seed(db)
