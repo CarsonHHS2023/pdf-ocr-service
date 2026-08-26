@@ -5,14 +5,14 @@ on:
     branches:
       - staging
     paths:
+      - 'app/access_middleware.py'
       - 'app/models.py'
-      - 'app/processing/__init__.py'
+      - 'app/s0_upload_boundary_observability.py'
       - 'app/processing/processing_event_model.py'
       - 'app/processing/processing_events.py'
       - 'app/processing/s0_baseline.py'
       - 'app/processing/s0_pdf_resource_heartbeat.py'
       - 'app/processing/s0_phase2_stage_observability.py'
-      - 'app/processing/s0_upload_boundary_observability.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
       - 'scripts/report_s0_baseline.py'
       - 'tests/test_s0_baseline.py'
@@ -52,9 +52,9 @@ jobs:
       - name: Static syntax check
         run: |
           python -m py_compile \
+            app/s0_upload_boundary_observability.py \
             app/processing/s0_baseline.py \
             app/processing/s0_phase2_stage_observability.py \
-            app/processing/s0_upload_boundary_observability.py \
             scripts/apply_s0_v5_phase0_observability.py \
             scripts/report_s0_baseline.py \
             tests/test_s0_baseline.py \
