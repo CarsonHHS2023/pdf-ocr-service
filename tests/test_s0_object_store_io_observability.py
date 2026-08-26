@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app import s0_object_store_io_observability as io
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
-from app.processing.s0_baseline import collect_s0_run_snapshot
+from app.processing.s0_baseline import MAX_EVENT_PAYLOAD_BYTES, collect_s0_run_snapshot
 from app.storage.models import PutResult, StorageReference
 
 RUN_ID = "pdf-ingest-" + "4" * 32
@@ -84,6 +84,19 @@ def _event(event_id, stage, *, read_bytes=0, write_bytes=0, read_ops=0, write_op
     )
 
 
+def _uninspectable_event(event_id: str, payload_json: str, *, second: int) -> ProcessingEvent:
+    return ProcessingEvent(
+        id=event_id,
+        processing_run_id=RUN_ID,
+        document_id=DOCUMENT_ID,
+        schema_version="atlas.processing.event.v1",
+        event_name=io.STORAGE_IO_EVENT,
+        severity="info",
+        payload_json=payload_json,
+        created_at=datetime(2026, 8, 26, 10, 1, second),
+    )
+
+
 def _seed(db):
     started = datetime(2026, 8, 26, 10, 0, 0)
     db.add(Document(id=DOCUMENT_ID, title="private", file_type="pdf", pages_count=1, status="completed", created_at=started, updated_at=started))
@@ -143,6 +156,38 @@ def test_collector_fails_closed_when_source_retention_does_not_match() -> None:
     snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
     assert _metric(snapshot, "backend_object_store_bytes").status == "not_available"
     assert "does not match" in (_metric(snapshot, "backend_object_store_bytes").note or "").lower()
+
+
+def test_collector_fails_closed_for_malformed_same_name_payload() -> None:
+    db = _session()
+    _seed(db)
+    db.add(_uninspectable_event("io-malformed", "{", second=1))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    for key in ("backend_object_store_bytes", "object_store_stage_io"):
+        metric = _metric(snapshot, key)
+        assert metric.status == "not_available"
+        assert "payload could not be inspected" in (metric.note or "")
+
+
+def test_collector_fails_closed_for_oversized_same_name_payload() -> None:
+    db = _session()
+    _seed(db)
+    db.add(
+        _uninspectable_event(
+            "io-oversized",
+            "x" * (MAX_EVENT_PAYLOAD_BYTES + 1),
+            second=2,
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+    for key in ("backend_object_store_bytes", "object_store_stage_io"):
+        metric = _metric(snapshot, key)
+        assert metric.status == "not_available"
+        assert "payload could not be inspected" in (metric.note or "")
 
 
 def test_transport_event_uses_hashed_scope_and_retrieval_ordinal(monkeypatch) -> None:
