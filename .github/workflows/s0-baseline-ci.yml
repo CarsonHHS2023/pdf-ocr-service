@@ -32,6 +32,7 @@ on:
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
+      - 'tests/test_s0_transport_sharding_decision_completeness.py'
       - 'tests/test_s0_upload_boundary_observability.py'
       - 'tests/test_s0_upload_durable_dispatch_compat.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
@@ -98,6 +99,7 @@ jobs:
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_transport_atomic_ordinal.py \
+            tests/test_s0_transport_sharding_decision_completeness.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
 
@@ -114,6 +116,7 @@ jobs:
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_transport_atomic_ordinal.py \
+            tests/test_s0_transport_sharding_decision_completeness.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
 
