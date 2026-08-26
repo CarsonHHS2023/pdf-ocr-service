@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app import s0_upload_boundary_observability as upload
+from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
+from app.processing.processing_event_model import ProcessingEvent
+from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES
+from app.processing.s0_baseline import collect_s0_run_snapshot
 
 
 RUN_ID = "pdf-ingest-" + "a" * 32
@@ -273,3 +280,228 @@ def test_installer_is_noop_when_staging_runtime_gate_is_closed(monkeypatch) -> N
     monkeypatch.setattr(upload, "staging_upload_observability_enabled", lambda: False)
     assert upload.install_s0_upload_boundary_observability() is False
     assert upload._INSTALLED is False
+
+
+def _baseline_session():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)()
+
+
+def _baseline_metric(snapshot, key: str):
+    for metric in (*snapshot.required_metrics, *snapshot.auxiliary_metrics):
+        if metric.key == key:
+            return metric
+    raise AssertionError(f"metric not found: {key}")
+
+
+def _upload_payload(*, source_size: int = 456) -> dict[str, object]:
+    return {
+        "succeeded": True,
+        "upload_route": upload.CANONICAL_UPLOAD_ROUTE,
+        "measurement_scope": upload.UPLOAD_MEASUREMENT_SCOPE,
+        "upload_duration_seconds": 4.25,
+        "accepted_source_size_bytes": source_size,
+        "http_body_bytes_received": 600,
+        "max_asgi_receive_chunk_bytes": 128,
+        "uploadfile_read_total_bytes": source_size,
+        "max_uploadfile_read_bytes": source_size,
+        "memory_component_scope": upload.UPLOAD_MEMORY_COMPONENT_SCOPE,
+    }
+
+
+def _seed_upload_baseline_run(
+    db,
+    *,
+    with_measurement: bool = True,
+    payload: dict[str, object] | None = None,
+) -> str:
+    started = datetime(2026, 8, 26, 8, 5, 0)
+    document = Document(
+        id=DOCUMENT_ID,
+        title="private-title",
+        file_type="pdf",
+        pages_count=1,
+        status="completed",
+        created_at=started - timedelta(seconds=6),
+        updated_at=started + timedelta(seconds=20),
+    )
+    source = SourceFile(
+        id=SOURCE_FILE_ID,
+        document_id=DOCUMENT_ID,
+        original_filename="private.pdf",
+        file_type="pdf",
+        byte_size=456,
+        checksum_sha256="c" * 64,
+        retained=1,
+        is_primary=1,
+        created_at=started - timedelta(seconds=2),
+    )
+    run = ProcessingRun(
+        id="upload-baseline-row",
+        processing_run_id=RUN_ID,
+        document_id=DOCUMENT_ID,
+        source_file_id=SOURCE_FILE_ID,
+        status="succeeded",
+        started_at=started,
+        completed_at=started + timedelta(seconds=15),
+        created_at=started,
+    )
+    db.add_all([document, source, run])
+    db.flush()
+    if with_measurement:
+        db.add(
+            ProcessingEvent(
+                id="upload-measured",
+                processing_run_id=RUN_ID,
+                document_id=DOCUMENT_ID,
+                schema_version="atlas.processing.event.v1",
+                event_name=upload.UPLOAD_MEASUREMENT_EVENT,
+                severity="info",
+                payload_json=encode_json_text(payload or _upload_payload()),
+                created_at=started - timedelta(seconds=1),
+            )
+        )
+    db.commit()
+    return RUN_ID
+
+
+def test_collector_promotes_only_strict_canonical_upload_duration() -> None:
+    db = _baseline_session()
+    run_id = _seed_upload_baseline_run(db)
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "observed"
+    assert duration.value == 4.25
+    assert upload.UPLOAD_MEASUREMENT_EVENT in duration.source
+    assert "canonical multipart" in (duration.note or "").lower()
+
+    body_bytes = _baseline_metric(snapshot, "canonical_upload_http_body_bytes_received")
+    assert body_bytes.status == "observed"
+    assert body_bytes.value == 600
+
+    max_read = _baseline_metric(snapshot, "canonical_upload_max_uploadfile_read_bytes")
+    assert max_read.status == "observed"
+    assert max_read.value == 456
+    assert "not promoted" in (max_read.note or "").lower()
+
+    memory = _baseline_metric(snapshot, "backend_upload_peak_memory_mb")
+    assert memory.status == "not_instrumented"
+    assert memory.value is None
+
+    assert upload.UPLOAD_MEASUREMENT_EVENT in snapshot.observed_event_names
+    assert set(snapshot.observed_numeric_event_fields) >= {
+        "upload_duration_seconds",
+        "accepted_source_size_bytes",
+        "http_body_bytes_received",
+        "max_asgi_receive_chunk_bytes",
+        "max_uploadfile_read_bytes",
+        "uploadfile_read_total_bytes",
+    }
+
+
+def test_collector_requires_exactly_one_upload_measurement_event() -> None:
+    db = _baseline_session()
+    run_id = _seed_upload_baseline_run(db)
+    started = datetime(2026, 8, 26, 8, 5, 0)
+    db.add(
+        ProcessingEvent(
+            id="upload-measured-duplicate",
+            processing_run_id=RUN_ID,
+            document_id=DOCUMENT_ID,
+            schema_version="atlas.processing.event.v1",
+            event_name=upload.UPLOAD_MEASUREMENT_EVENT,
+            severity="info",
+            payload_json=encode_json_text(_upload_payload()),
+            created_at=started - timedelta(milliseconds=500),
+        )
+    )
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "not_available"
+    assert duration.value is None
+    assert "exactly one" in (duration.note or "").lower()
+
+
+def test_collector_rejects_wrong_upload_scope_or_source_identity() -> None:
+    db = _baseline_session()
+    wrong_scope = _upload_payload()
+    wrong_scope["measurement_scope"] = "handler_only"
+    run_id = _seed_upload_baseline_run(db, payload=wrong_scope)
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "not_available"
+    assert "unsupported timing scope" in (duration.note or "").lower()
+
+    event = db.get(ProcessingEvent, "upload-measured")
+    assert event is not None
+    event.payload_json = encode_json_text(_upload_payload(source_size=455))
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "not_available"
+    assert "does not match" in (duration.note or "").lower()
+
+
+def test_collector_rejects_wrong_upload_route_and_memory_component_scope() -> None:
+    db = _baseline_session()
+    wrong_route = _upload_payload()
+    wrong_route["upload_route"] = "direct_object"
+    run_id = _seed_upload_baseline_run(db, payload=wrong_route)
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    assert _baseline_metric(snapshot, "upload_duration_seconds").status == "not_available"
+
+    event = db.get(ProcessingEvent, "upload-measured")
+    assert event is not None
+    wrong_memory_scope = _upload_payload()
+    wrong_memory_scope["memory_component_scope"] = "process_peak"
+    event.payload_json = encode_json_text(wrong_memory_scope)
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    assert _baseline_metric(snapshot, "upload_duration_seconds").status == "observed"
+    max_read = _baseline_metric(snapshot, "canonical_upload_max_uploadfile_read_bytes")
+    assert max_read.status == "not_available"
+    assert "memory-component scope" in (max_read.note or "").lower()
+
+
+def test_collector_fails_closed_for_malformed_or_oversized_upload_event() -> None:
+    db = _baseline_session()
+    run_id = _seed_upload_baseline_run(db)
+    event = db.get(ProcessingEvent, "upload-measured")
+    assert event is not None
+    event.payload_json = "{malformed-json"
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    assert snapshot.event_payload_decode_incomplete is True
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "not_available"
+    assert "could not be inspected" in (duration.note or "").lower()
+
+    event.payload_json = "x" * (MAX_EVENT_PAYLOAD_BYTES + 1)
+    db.commit()
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    assert snapshot.event_payload_oversized_incomplete is True
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "not_available"
+    assert "could not be inspected" in (duration.note or "").lower()
+
+
+def test_historical_run_without_upload_event_reports_duration_unavailable() -> None:
+    db = _baseline_session()
+    run_id = _seed_upload_baseline_run(db, with_measurement=False)
+
+    snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
+    duration = _baseline_metric(snapshot, "upload_duration_seconds")
+    assert duration.status == "not_available"
+    assert duration.value is None
+    assert _baseline_metric(snapshot, "backend_upload_peak_memory_mb").status == "not_instrumented"
