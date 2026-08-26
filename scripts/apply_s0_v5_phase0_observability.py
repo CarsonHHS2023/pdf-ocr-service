@@ -134,6 +134,9 @@ def main() -> None:
         from scripts.apply_provider_terminal_poll_diagnostic import (
             main as apply_provider_terminal_poll_diagnostic,
         )
+        from scripts.apply_s0_object_store_io_observability import (
+            main as apply_s0_object_store_io_observability,
+        )
         from scripts.apply_s0_upload_baseline_mapping import (
             patch_s0_upload_baseline_mapping,
         )
@@ -178,6 +181,9 @@ def main() -> None:
         from apply_provider_terminal_poll_diagnostic import (
             main as apply_provider_terminal_poll_diagnostic,
         )
+        from apply_s0_object_store_io_observability import (
+            main as apply_s0_object_store_io_observability,
+        )
         from apply_s0_upload_baseline_mapping import patch_s0_upload_baseline_mapping
         from apply_staging_baseline_observability_hotfix import (
             main as apply_staging_baseline_observability_hotfix,
@@ -216,6 +222,7 @@ def main() -> None:
     # remaining Provider composition. This is idempotent and changes only how
     # already-durable upload evidence is interpreted in the tested artifact.
     patch_s0_upload_baseline_mapping()
+    apply_s0_object_store_io_observability()
 
     # Durable telemetry is deliberately finalized after the historical Provider
     # rewrite chain. A prior preflight pass may install it early, but v2-v5 can
