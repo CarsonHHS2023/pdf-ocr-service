@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 PDF_INGESTION_PATH = Path("app/processing/pdf_ingestion.py")
+TRANSPORT_SERVICE_PATH = Path("app/processing/transport/service.py")
 SOURCE_TRANSPORT_PATH = Path("app/routers/source_transport.py")
 BASELINE_PATH = Path("app/processing/s0_baseline.py")
 
@@ -14,6 +15,55 @@ _PDF_INSTALL = '''
 from app.s0_object_store_io_observability import install_s0_object_store_pdf_observability
 install_s0_object_store_pdf_observability()
 '''
+_TRANSPORT_SERVICE_ANCHOR = '''    def record_retrieval(self, token: str) -> AuthorizedTransportGrant:
+        """Atomically authorize and count one successful retrieval completion."""
+        if not self._valid_token_text(token):
+            raise InvalidToken()
+        digest = self._digest(token)
+        with self._lock:
+            record = self._by_digest.get(digest)
+            if record is None or not secrets.compare_digest(record.token_digest, digest):
+                raise GrantNotFound()
+            now = self._now()
+            self._ensure_authorized(record, now)
+            updated = replace(
+                record,
+                retrieval_count=record.retrieval_count + 1,
+                first_retrieved_at=record.first_retrieved_at or now,
+                last_retrieved_at=now,
+            )
+            self._by_digest[digest] = updated
+        return self._authorized_descriptor(updated)
+'''
+_TRANSPORT_SERVICE_BLOCK = '''    def record_retrieval_with_ordinal(
+        self,
+        token: str,
+    ) -> tuple[AuthorizedTransportGrant, int]:
+        """Atomically count one retrieval and return that exact retrieval ordinal."""
+        if not self._valid_token_text(token):
+            raise InvalidToken()
+        digest = self._digest(token)
+        with self._lock:
+            record = self._by_digest.get(digest)
+            if record is None or not secrets.compare_digest(record.token_digest, digest):
+                raise GrantNotFound()
+            now = self._now()
+            self._ensure_authorized(record, now)
+            updated = replace(
+                record,
+                retrieval_count=record.retrieval_count + 1,
+                first_retrieved_at=record.first_retrieved_at or now,
+                last_retrieved_at=now,
+            )
+            self._by_digest[digest] = updated
+            retrieval_ordinal = updated.retrieval_count
+        return self._authorized_descriptor(updated), retrieval_ordinal
+
+    def record_retrieval(self, token: str) -> AuthorizedTransportGrant:
+        """Preserve the existing API while sharing the atomic retrieval update."""
+        authorized, _ = self.record_retrieval_with_ordinal(token)
+        return authorized
+'''
 _TRANSPORT_ANCHOR = '''    try:
         grants.record_retrieval(token)
     except TransportGrantError:
@@ -21,7 +71,7 @@ _TRANSPORT_ANCHOR = '''    try:
 
     return response
 '''
-_TRANSPORT_BLOCK = '''    try:
+_TRANSPORT_RACY_BLOCK = '''    try:
         grants.record_retrieval(token)
     except TransportGrantError:
         _collapsed_not_found()
@@ -37,6 +87,26 @@ _TRANSPORT_BLOCK = '''    try:
                 len(payload),
                 int(descriptor.retrieval_count),
             )
+    except Exception:
+        # S0 telemetry must never affect the provider source response.
+        pass
+
+    return response
+'''
+_TRANSPORT_BLOCK = '''    try:
+        _, retrieval_ordinal = grants.record_retrieval_with_ordinal(token)
+    except TransportGrantError:
+        _collapsed_not_found()
+
+    try:
+        from app.s0_object_store_io_observability import (
+            record_provider_source_transport_read,
+        )
+        record_provider_source_transport_read(
+            grant,
+            len(payload),
+            retrieval_ordinal,
+        )
     except Exception:
         # S0 telemetry must never affect the provider source response.
         pass
@@ -275,11 +345,32 @@ def patch_pdf_runtime(path: Path = PDF_INGESTION_PATH) -> None:
     path.write_text(source.rstrip() + "\n" + _PDF_INSTALL, encoding="utf-8")
 
 
+def patch_transport_service(path: Path = TRANSPORT_SERVICE_PATH) -> None:
+    source = path.read_text(encoding="utf-8")
+    if "def record_retrieval_with_ordinal(" in source:
+        return
+    source = _replace_once(
+        source,
+        _TRANSPORT_SERVICE_ANCHOR,
+        _TRANSPORT_SERVICE_BLOCK,
+        "atomic transport retrieval ordinal",
+    )
+    path.write_text(source, encoding="utf-8")
+
+
 def patch_source_transport(path: Path = SOURCE_TRANSPORT_PATH) -> None:
     source = path.read_text(encoding="utf-8")
-    if "record_provider_source_transport_read(" in source:
+    if "record_retrieval_with_ordinal(token)" in source:
         return
-    source = _replace_once(source, _TRANSPORT_ANCHOR, _TRANSPORT_BLOCK, "source transport completion")
+    if _TRANSPORT_RACY_BLOCK in source:
+        source = source.replace(_TRANSPORT_RACY_BLOCK, _TRANSPORT_BLOCK, 1)
+    else:
+        source = _replace_once(
+            source,
+            _TRANSPORT_ANCHOR,
+            _TRANSPORT_BLOCK,
+            "source transport completion",
+        )
     path.write_text(source, encoding="utf-8")
 
 
@@ -305,6 +396,7 @@ def patch_baseline(path: Path = BASELINE_PATH) -> None:
 
 def main() -> None:
     patch_pdf_runtime()
+    patch_transport_service()
     patch_source_transport()
     patch_baseline()
 

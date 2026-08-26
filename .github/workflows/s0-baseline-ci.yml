@@ -15,6 +15,7 @@ on:
       - 'app/processing/s0_baseline.py'
       - 'app/processing/s0_pdf_resource_heartbeat.py'
       - 'app/processing/s0_phase2_stage_observability.py'
+      - 'app/processing/transport/service.py'
       - 'scripts/apply_s0_object_store_io_observability.py'
       - 'scripts/apply_s0_upload_baseline_mapping.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
@@ -28,6 +29,7 @@ on:
       - 'tests/test_s0_object_store_io_observability.py'
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
+      - 'tests/test_s0_transport_atomic_ordinal.py'
       - 'tests/test_s0_upload_boundary_observability.py'
       - 'tests/test_s0_upload_durable_dispatch_compat.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
@@ -74,6 +76,7 @@ jobs:
             app/processing/pdf_ingestion.py \
             app/processing/s0_baseline.py \
             app/processing/s0_phase2_stage_observability.py \
+            app/processing/transport/service.py \
             app/routers/source_transport.py \
             scripts/apply_s0_object_store_io_observability.py \
             scripts/apply_s0_upload_baseline_mapping.py \
@@ -88,6 +91,7 @@ jobs:
             tests/test_s0_object_store_io_observability.py \
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_transport_atomic_ordinal.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
 
@@ -103,6 +107,7 @@ jobs:
             tests/test_s0_object_store_io_observability.py \
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_transport_atomic_ordinal.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
 
