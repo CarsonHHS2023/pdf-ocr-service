@@ -323,6 +323,11 @@ def install_s0_object_store_pdf_observability(*, force: bool = False) -> bool:
     original_dependency_get_storage = storage_dependencies.get_storage_provider
     original_process = pdf_ingestion.process_pdf_document_background
     if getattr(original_process, "__atlas_s0_storage_pdf__", False):
+        from app.s0_transport_scope_terminal_observability import (
+            install_s0_transport_scope_terminal_observability,
+        )
+
+        install_s0_transport_scope_terminal_observability(force=force)
         _PDF_INSTALLED = True
         return True
 
@@ -358,6 +363,12 @@ def install_s0_object_store_pdf_observability(*, force: bool = False) -> bool:
         original_dependency_get_storage
     )
     pdf_ingestion.process_pdf_document_background = observed_process
+
+    from app.s0_transport_scope_terminal_observability import (
+        install_s0_transport_scope_terminal_observability,
+    )
+
+    install_s0_transport_scope_terminal_observability(force=force)
     _PDF_INSTALLED = True
     return True
 
