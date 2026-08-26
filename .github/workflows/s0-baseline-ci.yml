@@ -7,6 +7,8 @@ on:
     paths:
       - 'app/access_middleware.py'
       - 'app/models.py'
+      - 'app/s0_object_store_io_observability.py'
+      - 'app/s0_transport_scope_terminal_observability.py'
       - 'app/s0_upload_boundary_observability.py'
       - 'app/s0_upload_durable_dispatch_compat.py'
       - 'app/processing/processing_event_model.py'
@@ -14,6 +16,9 @@ on:
       - 'app/processing/s0_baseline.py'
       - 'app/processing/s0_pdf_resource_heartbeat.py'
       - 'app/processing/s0_phase2_stage_observability.py'
+      - 'app/processing/transport/service.py'
+      - 'scripts/apply_s0_object_store_io_observability.py'
+      - 'scripts/apply_s0_transport_terminal_collector.py'
       - 'scripts/apply_s0_upload_baseline_mapping.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
       - 'scripts/report_s0_baseline.py'
@@ -23,8 +28,11 @@ on:
       - 'tests/test_s0_retryable_checksum_status.py'
       - 'tests/test_s0_operator_run_record.py'
       - 'tests/test_s0_markdown_notes.py'
+      - 'tests/test_s0_object_store_io_observability.py'
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
+      - 'tests/test_s0_transport_atomic_ordinal.py'
+      - 'tests/test_s0_transport_sharding_decision_completeness.py'
       - 'tests/test_s0_upload_boundary_observability.py'
       - 'tests/test_s0_upload_durable_dispatch_compat.py'
       - 'docs/testing/s0-benchmark-fixtures-v1.md'
@@ -57,13 +65,27 @@ jobs:
           python scripts/apply_s0_upload_baseline_mapping.py
           python scripts/apply_s0_upload_baseline_mapping.py
 
+      - name: Apply object-store I/O observability
+        run: |
+          python scripts/apply_s0_object_store_io_observability.py
+          python scripts/apply_s0_transport_terminal_collector.py
+          python scripts/apply_s0_object_store_io_observability.py
+          python scripts/apply_s0_transport_terminal_collector.py
+
       - name: Static syntax check
         run: |
           python -m py_compile \
+            app/s0_object_store_io_observability.py \
+            app/s0_transport_scope_terminal_observability.py \
             app/s0_upload_boundary_observability.py \
             app/s0_upload_durable_dispatch_compat.py \
+            app/processing/pdf_ingestion.py \
             app/processing/s0_baseline.py \
             app/processing/s0_phase2_stage_observability.py \
+            app/processing/transport/service.py \
+            app/routers/source_transport.py \
+            scripts/apply_s0_object_store_io_observability.py \
+            scripts/apply_s0_transport_terminal_collector.py \
             scripts/apply_s0_upload_baseline_mapping.py \
             scripts/apply_s0_v5_phase0_observability.py \
             scripts/report_s0_baseline.py \
@@ -73,8 +95,11 @@ jobs:
             tests/test_s0_retryable_checksum_status.py \
             tests/test_s0_operator_run_record.py \
             tests/test_s0_markdown_notes.py \
+            tests/test_s0_object_store_io_observability.py \
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_transport_atomic_ordinal.py \
+            tests/test_s0_transport_sharding_decision_completeness.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
 
@@ -87,8 +112,11 @@ jobs:
             tests/test_s0_retryable_checksum_status.py \
             tests/test_s0_operator_run_record.py \
             tests/test_s0_markdown_notes.py \
+            tests/test_s0_object_store_io_observability.py \
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_transport_atomic_ordinal.py \
+            tests/test_s0_transport_sharding_decision_completeness.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
 

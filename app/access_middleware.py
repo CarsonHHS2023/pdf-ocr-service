@@ -13,6 +13,9 @@ from app.access_security import (
     is_access_gate_enabled,
     verify_access_token,
 )
+from app.s0_object_store_io_observability import (
+    install_s0_object_store_upload_observability,
+)
 from app.s0_upload_boundary_observability import (
     install_s0_upload_boundary_observability,
 )
@@ -25,6 +28,7 @@ from app.s0_upload_durable_dispatch_compat import (
 # multipart body receipt/parsing. Outside a tested Staging artifact these are no-ops.
 install_s0_upload_boundary_observability()
 install_s0_upload_durable_dispatch_compat()
+install_s0_object_store_upload_observability()
 
 _PUBLIC_EXACT_PATHS = {
     "/",
