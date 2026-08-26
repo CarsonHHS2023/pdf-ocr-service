@@ -83,6 +83,44 @@ def test_durable_dispatch_finalizes_before_telemetry_db_reads(monkeypatch) -> No
     assert fields["max_uploadfile_read_bytes"] == 456
 
 
+def test_existing_background_wrapper_uses_later_finalize_extension(monkeypatch) -> None:
+    recorded: list[dict[str, object]] = []
+    monkeypatch.setattr(upload, "perf_counter", lambda: 12.5)
+    monkeypatch.setattr(
+        compat,
+        "_load_dispatch_identity",
+        lambda dispatch_id: (RUN_ID, DOCUMENT_ID, SOURCE_FILE_ID),
+    )
+    monkeypatch.setattr(upload, "_load_accepted_source_size", lambda source_id: 456)
+    monkeypatch.setattr(
+        upload,
+        "_record_success",
+        lambda **kwargs: recorded.append(dict(kwargs)) or True,
+    )
+
+    original_finalize = upload._finalize_from_background_task
+    add_task = upload._wrap_background_add_task(
+        lambda background_self, func, *args, **kwargs: "queued"
+    )
+    monkeypatch.setattr(
+        upload,
+        "_finalize_from_background_task",
+        compat._wrap_upload_finalize(original_finalize),
+    )
+
+    observation = upload._UploadObservation(wall_started=10.0)
+    token = upload._CURRENT_UPLOAD.set(observation)
+    try:
+        assert add_task(object(), _durable_dispatch_task, DISPATCH_ID) == "queued"
+    finally:
+        upload._CURRENT_UPLOAD.reset(token)
+
+    assert observation.finalized is True
+    assert len(recorded) == 1
+    assert recorded[0]["processing_run_id"] == RUN_ID
+    assert recorded[0]["document_id"] == DOCUMENT_ID
+
+
 def test_non_dispatch_task_delegates_to_existing_finalize() -> None:
     calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
 
