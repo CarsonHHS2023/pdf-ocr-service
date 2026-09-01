@@ -143,6 +143,9 @@ def main() -> None:
         from scripts.apply_s0_transport_download_observability import (
             main as apply_s0_transport_download_observability,
         )
+        from scripts.apply_s0_provider_compute_observability import (
+            main as apply_s0_provider_compute_observability,
+        )
         from scripts.apply_s0_provider_source_download_observability import (
             main as apply_s0_provider_source_download_observability,
         )
@@ -202,6 +205,9 @@ def main() -> None:
         from apply_s0_transport_download_observability import (
             main as apply_s0_transport_download_observability,
         )
+        from apply_s0_provider_compute_observability import (
+            main as apply_s0_provider_compute_observability,
+        )
         from apply_s0_provider_source_download_observability import (
             main as apply_s0_provider_source_download_observability,
         )
@@ -251,11 +257,13 @@ def main() -> None:
     # S0.3.3 must be part of the authoritative tested Staging artifact, not only
     # the focused baseline CI. Compose Backend send/route evidence first, then
     # Provider consumer-download evidence, then the exact-Staging Provider route.
-    # All three overlays are idempotent and fail open at runtime / closed in the
+    # These overlays are idempotent and fail open at runtime / closed in the
     # collector. The endpoint resolver changes routing only when staging-revision.txt
     # contains a valid exact tested Staging SHA.
     apply_s0_transport_download_observability()
     apply_s0_provider_source_download_observability()
+    # S0.3.4 closes compute evidence against the S0.3.3 Provider scopes.
+    apply_s0_provider_compute_observability()
     apply_s0_provider_staging_routing()
 
     # Durable telemetry is deliberately finalized after the historical Provider

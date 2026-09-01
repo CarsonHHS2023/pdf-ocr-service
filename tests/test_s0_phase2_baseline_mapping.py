@@ -160,8 +160,11 @@ def test_phase2_events_map_only_semantically_matching_required_metrics() -> None
     assert _metric(snapshot, "preprocessing_cpu_seconds").status == "not_instrumented"
     assert _metric(snapshot, "backend_upload_peak_memory_mb").status == "not_instrumented"
     assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_available"
-    assert _metric(snapshot, "ocr_batch_duration_seconds").status == "not_instrumented"
-    assert _metric(snapshot, "raw_result_shard_bytes").status == "not_instrumented"
+    # S0.3.4 is instrumented, but historical Phase 2 aggregate evidence cannot
+    # stand in for the new per-batch/per-shard measurements.
+    for key in ("ocr_batch_duration_seconds", "raw_result_shard_bytes", "gpu_busy_idle_proxy"):
+        assert _metric(snapshot, key).status == "not_available"
+        assert _metric(snapshot, key).value is None
 
 
 def test_phase2_process_wide_and_size_evidence_is_auxiliary_only() -> None:

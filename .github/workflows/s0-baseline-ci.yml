@@ -9,6 +9,7 @@ on:
       - 'app/models.py'
       - 'app/s0_object_store_io_observability.py'
       - 'app/s0_provider_source_download_observability.py'
+      - 'app/s0_provider_compute_observability.py'
       - 'app/s0_provider_staging_routing.py'
       - 'app/s0_transport_download_observability.py'
       - 'app/s0_transport_scope_terminal_observability.py'
@@ -25,6 +26,7 @@ on:
       - 'app/routers/source_transport.py'
       - 'scripts/apply_s0_object_store_io_observability.py'
       - 'scripts/apply_s0_provider_source_download_observability.py'
+      - 'scripts/apply_s0_provider_compute_observability.py'
       - 'scripts/apply_s0_provider_staging_routing.py'
       - 'scripts/apply_s0_transport_download_observability.py'
       - 'scripts/apply_s0_transport_terminal_collector.py'
@@ -41,6 +43,7 @@ on:
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
       - 'tests/test_s0_provider_source_download_observability.py'
+      - 'tests/test_s0_provider_compute_observability.py'
       - 'tests/test_s0_provider_staging_routing.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
       - 'tests/test_s0_transport_download_observability.py'
@@ -88,9 +91,11 @@ jobs:
         run: |
           python scripts/apply_s0_transport_download_observability.py
           python scripts/apply_s0_provider_source_download_observability.py
+          python scripts/apply_s0_provider_compute_observability.py
           python scripts/apply_s0_provider_staging_routing.py
           python scripts/apply_s0_transport_download_observability.py
           python scripts/apply_s0_provider_source_download_observability.py
+          python scripts/apply_s0_provider_compute_observability.py
           python scripts/apply_s0_provider_staging_routing.py
 
       - name: Static syntax check
@@ -98,6 +103,7 @@ jobs:
           python -m py_compile \
             app/s0_object_store_io_observability.py \
             app/s0_provider_source_download_observability.py \
+            app/s0_provider_compute_observability.py \
             app/s0_provider_staging_routing.py \
             app/s0_transport_download_observability.py \
             app/s0_transport_scope_terminal_observability.py \
@@ -112,6 +118,7 @@ jobs:
             app/routers/source_transport.py \
             scripts/apply_s0_object_store_io_observability.py \
             scripts/apply_s0_provider_source_download_observability.py \
+            scripts/apply_s0_provider_compute_observability.py \
             scripts/apply_s0_provider_staging_routing.py \
             scripts/apply_s0_transport_download_observability.py \
             scripts/apply_s0_transport_terminal_collector.py \
@@ -128,6 +135,7 @@ jobs:
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
             tests/test_s0_transport_download_observability.py \
@@ -148,6 +156,7 @@ jobs:
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
             tests/test_s0_transport_download_observability.py \
