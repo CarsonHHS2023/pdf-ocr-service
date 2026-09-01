@@ -41,6 +41,8 @@ Key current scaling signals are already visible:
 
 These signals justify targeted observability work before any expensive large-fixture rerun.
 
+**2026-09-01 S0.3.3 evidence update:** [Small and medium transport/download acceptance](../reviews/s0-3-3-transport-download-acceptance-2026-09-01.md) passed on exact Staging revision `37a3c41fc6f968ef442a723aaccdec2f90af3ce3`. Both required transport/download metrics are `observed`: small exercises one Backend fallback download; medium exercises two presigned shards, including a validated Backend source-body byte count of zero. This update changes only the S0.3.3 evidence status. S0 remains In Progress; S0.3.4 is the next planned work item and S1/S2 are not started.
+
 ## 3. Scope rule
 
 Every PR under this closure plan must be instrumentation-only unless this plan is explicitly revised.
@@ -95,6 +97,8 @@ At minimum distinguish:
 Do not infer network transfer from object size alone.
 
 ### S0.3.3 Transport and compute-source download measurements
+
+**Staging acceptance: PASS (2026-09-01)** for `pdf-small-v1` and `pdf-medium-v1`; see the [scope, provenance, and limits](../reviews/s0-3-3-transport-download-acceptance-2026-09-01.md). The required distinctions below remain the contract.
 
 Create explicit transport-route evidence that remains semantically valid across fallback and direct/presigned paths.
 
@@ -179,8 +183,8 @@ The 528-page fixture requires explicit approval at execution time and must not b
 | backend source/object-store bytes | open | S0.3.2 |
 | preprocessing wall time | observed for accepted PDF small/medium | retain current contract |
 | preprocessing CPU time | open as stage-owned metric; process-wide delta is auxiliary | S0.3.3/collector mapping only if exact scope exists |
-| Backend -> compute transport bytes | open | S0.3.3 |
-| compute/Modal download time | open | S0.3.3 |
+| Backend -> compute transport bytes | observed for small fallback and medium presigned shards (2026-09-01) | S0.3.3 representative acceptance PASS; keep ASGI body semantics |
+| compute/Modal download time | observed for small and both medium shards (2026-09-01) | S0.3.3 representative acceptance PASS; sum download operations only |
 | OCR page/batch duration | open | S0.3.4 |
 | GPU busy/idle proxy | open | S0.3.4 |
 | raw result/shard size | open as per-shard metric; aggregate size is auxiliary | S0.3.4 |
