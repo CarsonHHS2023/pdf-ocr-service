@@ -148,7 +148,7 @@ def test_missing_s0_metrics_are_explicit_not_inferred() -> None:
     assert _metric(snapshot, "backend_upload_peak_memory_mb").status == "not_instrumented"
     assert _metric(snapshot, "backend_upload_peak_memory_mb").value is None
     assert _metric(snapshot, "upload_duration_seconds").status == "not_available"
-    assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_instrumented"
+    assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_available"
     assert _metric(snapshot, "reader_open_latency_seconds").status == "not_instrumented"
     assert _metric(snapshot, "upload_to_reader_ready_seconds").status == "not_instrumented"
     assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
