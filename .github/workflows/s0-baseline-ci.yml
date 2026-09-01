@@ -8,16 +8,25 @@ on:
       - 'app/access_middleware.py'
       - 'app/models.py'
       - 'app/s0_object_store_io_observability.py'
+      - 'app/s0_provider_source_download_observability.py'
+      - 'app/s0_provider_staging_routing.py'
+      - 'app/s0_transport_download_observability.py'
       - 'app/s0_transport_scope_terminal_observability.py'
       - 'app/s0_upload_boundary_observability.py'
       - 'app/s0_upload_durable_dispatch_compat.py'
+      - 'app/processing/integration.py'
+      - 'app/processing/orchestration.py'
       - 'app/processing/processing_event_model.py'
       - 'app/processing/processing_events.py'
       - 'app/processing/s0_baseline.py'
       - 'app/processing/s0_pdf_resource_heartbeat.py'
       - 'app/processing/s0_phase2_stage_observability.py'
       - 'app/processing/transport/service.py'
+      - 'app/routers/source_transport.py'
       - 'scripts/apply_s0_object_store_io_observability.py'
+      - 'scripts/apply_s0_provider_source_download_observability.py'
+      - 'scripts/apply_s0_provider_staging_routing.py'
+      - 'scripts/apply_s0_transport_download_observability.py'
       - 'scripts/apply_s0_transport_terminal_collector.py'
       - 'scripts/apply_s0_upload_baseline_mapping.py'
       - 'scripts/apply_s0_v5_phase0_observability.py'
@@ -31,7 +40,10 @@ on:
       - 'tests/test_s0_object_store_io_observability.py'
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
+      - 'tests/test_s0_provider_source_download_observability.py'
+      - 'tests/test_s0_provider_staging_routing.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
+      - 'tests/test_s0_transport_download_observability.py'
       - 'tests/test_s0_transport_sharding_decision_completeness.py'
       - 'tests/test_s0_upload_boundary_observability.py'
       - 'tests/test_s0_upload_durable_dispatch_compat.py'
@@ -72,19 +84,36 @@ jobs:
           python scripts/apply_s0_object_store_io_observability.py
           python scripts/apply_s0_transport_terminal_collector.py
 
+      - name: Apply S0.3.3 transport, Provider download, and Staging routing
+        run: |
+          python scripts/apply_s0_transport_download_observability.py
+          python scripts/apply_s0_provider_source_download_observability.py
+          python scripts/apply_s0_provider_staging_routing.py
+          python scripts/apply_s0_transport_download_observability.py
+          python scripts/apply_s0_provider_source_download_observability.py
+          python scripts/apply_s0_provider_staging_routing.py
+
       - name: Static syntax check
         run: |
           python -m py_compile \
             app/s0_object_store_io_observability.py \
+            app/s0_provider_source_download_observability.py \
+            app/s0_provider_staging_routing.py \
+            app/s0_transport_download_observability.py \
             app/s0_transport_scope_terminal_observability.py \
             app/s0_upload_boundary_observability.py \
             app/s0_upload_durable_dispatch_compat.py \
+            app/processing/integration.py \
+            app/processing/orchestration.py \
             app/processing/pdf_ingestion.py \
             app/processing/s0_baseline.py \
             app/processing/s0_phase2_stage_observability.py \
             app/processing/transport/service.py \
             app/routers/source_transport.py \
             scripts/apply_s0_object_store_io_observability.py \
+            scripts/apply_s0_provider_source_download_observability.py \
+            scripts/apply_s0_provider_staging_routing.py \
+            scripts/apply_s0_transport_download_observability.py \
             scripts/apply_s0_transport_terminal_collector.py \
             scripts/apply_s0_upload_baseline_mapping.py \
             scripts/apply_s0_v5_phase0_observability.py \
@@ -98,7 +127,10 @@ jobs:
             tests/test_s0_object_store_io_observability.py \
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
+            tests/test_s0_transport_download_observability.py \
             tests/test_s0_transport_sharding_decision_completeness.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py
@@ -115,7 +147,10 @@ jobs:
             tests/test_s0_object_store_io_observability.py \
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
+            tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
+            tests/test_s0_transport_download_observability.py \
             tests/test_s0_transport_sharding_decision_completeness.py \
             tests/test_s0_upload_boundary_observability.py \
             tests/test_s0_upload_durable_dispatch_compat.py

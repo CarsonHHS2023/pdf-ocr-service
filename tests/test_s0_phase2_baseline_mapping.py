@@ -159,7 +159,7 @@ def test_phase2_events_map_only_semantically_matching_required_metrics() -> None
 
     assert _metric(snapshot, "preprocessing_cpu_seconds").status == "not_instrumented"
     assert _metric(snapshot, "backend_upload_peak_memory_mb").status == "not_instrumented"
-    assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_instrumented"
+    assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_available"
     assert _metric(snapshot, "ocr_batch_duration_seconds").status == "not_instrumented"
     assert _metric(snapshot, "raw_result_shard_bytes").status == "not_instrumented"
 
