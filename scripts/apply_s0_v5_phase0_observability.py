@@ -140,6 +140,15 @@ def main() -> None:
         from scripts.apply_s0_transport_terminal_collector import (
             main as apply_s0_transport_terminal_collector,
         )
+        from scripts.apply_s0_transport_download_observability import (
+            main as apply_s0_transport_download_observability,
+        )
+        from scripts.apply_s0_provider_source_download_observability import (
+            main as apply_s0_provider_source_download_observability,
+        )
+        from scripts.apply_s0_provider_staging_routing import (
+            main as apply_s0_provider_staging_routing,
+        )
         from scripts.apply_s0_upload_baseline_mapping import (
             patch_s0_upload_baseline_mapping,
         )
@@ -190,6 +199,15 @@ def main() -> None:
         from apply_s0_transport_terminal_collector import (
             main as apply_s0_transport_terminal_collector,
         )
+        from apply_s0_transport_download_observability import (
+            main as apply_s0_transport_download_observability,
+        )
+        from apply_s0_provider_source_download_observability import (
+            main as apply_s0_provider_source_download_observability,
+        )
+        from apply_s0_provider_staging_routing import (
+            main as apply_s0_provider_staging_routing,
+        )
         from apply_s0_upload_baseline_mapping import patch_s0_upload_baseline_mapping
         from apply_staging_baseline_observability_hotfix import (
             main as apply_staging_baseline_observability_hotfix,
@@ -230,6 +248,15 @@ def main() -> None:
     patch_s0_upload_baseline_mapping()
     apply_s0_object_store_io_observability()
     apply_s0_transport_terminal_collector()
+    # S0.3.3 must be part of the authoritative tested Staging artifact, not only
+    # the focused baseline CI. Compose Backend send/route evidence first, then
+    # Provider consumer-download evidence, then the exact-Staging Provider route.
+    # All three overlays are idempotent and fail open at runtime / closed in the
+    # collector. The endpoint resolver changes routing only when staging-revision.txt
+    # contains a valid exact tested Staging SHA.
+    apply_s0_transport_download_observability()
+    apply_s0_provider_source_download_observability()
+    apply_s0_provider_staging_routing()
 
     # Durable telemetry is deliberately finalized after the historical Provider
     # rewrite chain. A prior preflight pass may install it early, but v2-v5 can
