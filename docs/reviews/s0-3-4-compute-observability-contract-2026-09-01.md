@@ -24,7 +24,7 @@ Primary semantics: [NVIDIA utilization structure](https://docs.nvidia.com/deploy
 
 Provider emits `ocr_compute` with scope `provider_ocr_document_v1`, complete page/batch counts, at most 128 ordered batches, and raw-size scope `sanitized_raw_page_list_json_utf8_v1`. Each batch includes its shard-local page range, ordinal, predict seconds, and an allowlisted GPU summary or unavailable reason. Exceeding the batch bound omits the contract rather than truncating it into apparent completeness.
 
-Backend writes one `S0_PROVIDER_OCR_BATCH_MEASURED` per batch, then one `S0_PROVIDER_OCR_SCOPE_TERMINAL`. It validates the entire contract before writing and stops on persistence failure without emitting terminal proof. Failures never change processing or result-retrieval outcomes. Persistence remains gated by the exact Staging revision marker.
+Backend prepares one `S0_PROVIDER_OCR_BATCH_MEASURED` per batch and one `S0_PROVIDER_OCR_SCOPE_TERMINAL`, then commits the entire scope in one transaction. The asynchronous retrieval hook awaits a worker thread that owns session creation, validation, insertion, commit/rollback and closure. Database latency does not block the event loop or its lease heartbeats. A failed write rolls back both batches and terminal proof; it does not change the retrieved Provider result. Persistence remains gated by the exact Staging revision marker.
 
 The collector requires:
 
@@ -42,6 +42,8 @@ Backend's authoritative Staging composition applies the new overlay after S0.3.3
 
 The companion `CarsonHHS2023/paddle-vl-api` change adds a separate overlay and standard-library sampler module. Only the isolated S0 Staging app imports it. Production `modal_app.py` and its deploy workflow remain unchanged. Preview deploys use the exact same-repository PR head, verify that head before deployment, and serialize access to the shared S0 Staging app.
 
-Contract tests cover multi-shard and out-of-order evidence, persistence failure, missing/duplicate terminal and batch events, invalid duration/coverage, oversized durable payloads, missing GPU, bounded sampling, privacy projection, UTF-8 raw-size semantics, artifact offload, and idempotent composition. No expensive benchmark is required for these tests.
+Contract tests cover multi-shard and out-of-order evidence, single-transaction publication at the batch bound, rollback after flushed inserts, event-loop responsiveness during a blocked commit, missing/duplicate terminal and batch events, invalid duration/coverage, oversized durable payloads, missing GPU, bounded sampling, privacy projection, UTF-8 raw-size semantics, artifact offload, and idempotent composition. No expensive benchmark is required for these tests.
+
+Review fixes also limit each Provider process to one outstanding NVML probe, including initialization and shutdown. If a native call remains stuck after the bounded join, later batches report `sampler_busy` without launching another thread. The slot is released only when the old probe exits, so sampling can resume after recovery. OCR proceeds in both cases, and the unavailable reason survives the Provider and Backend allowlists. Tests exercise blocked initialization, read and close paths, repeated OCR calls, recovery, and thread-start failure.
 
 Runtime acceptance remains pending on an exact Backend Staging revision paired with the isolated Provider revision. After the implementation is reviewed and deployed, collect a newly completed small run and inspect the three required metrics plus the complete per-batch/shard breakdown. Do not reuse pre-instrumentation runs. Keep private run identifiers and fixture identity in private evidence, and decide on a medium rerun only after small acceptance.

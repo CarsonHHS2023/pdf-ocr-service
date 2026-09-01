@@ -17,10 +17,13 @@ def _patch(path, replacements):
 
 
 def main():
+    orchestration_path = Path("app/processing/orchestration.py")
+    if "record_provider_compute_from_result(request, result)" in orchestration_path.read_text(encoding="utf-8"):
+        raise RuntimeError("Legacy synchronous S0.3.4 hook found; recompose from a pristine checkout")
     anchor = '            try:\n                from app.s0_provider_source_download_observability import ('
-    _patch(Path("app/processing/orchestration.py"), [(anchor,
-        '            try:\n                from app.s0_provider_compute_observability import record_provider_compute_from_result\n'
-        '                record_provider_compute_from_result(request, result)\n'
+    _patch(orchestration_path, [(anchor,
+        '            try:\n                from app.s0_provider_compute_observability import record_provider_compute_from_result_async\n'
+        '                await record_provider_compute_from_result_async(request, result)\n'
         '            except Exception:\n                # Observability must never change result retrieval.\n                pass\n' + anchor)])
     import_anchor = 'from app.s0_provider_source_download_observability import ('
     event_anchor = '        _S0_PROVIDER_DOWNLOAD_EVENT,\n'

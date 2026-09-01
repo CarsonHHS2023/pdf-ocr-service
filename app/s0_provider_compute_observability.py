@@ -5,6 +5,7 @@ Provider wall time, aggregate result size, or source bytes.
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 
@@ -17,7 +18,7 @@ GPU_SCOPE = "nvml_device_utilization_samples_v1"
 RAW_SCOPE = "sanitized_raw_page_list_json_utf8_v1"
 MAX_BATCHES = 128
 _SCOPE_RE = re.compile(r"^provider_[0-9a-f]{16}$")
-_GPU_REASONS = {"sampler_unavailable", "sampler_timeout", "nvml_unavailable", "sample_limit", "insufficient_samples"}
+_GPU_REASONS = {"sampler_unavailable", "sampler_timeout", "sampler_busy", "nvml_unavailable", "sample_limit", "insufficient_samples"}
 
 
 def _integer(value, minimum=0, maximum=2**63 - 1):
@@ -73,14 +74,14 @@ def _contract(value):
             "batch_count": count, "raw_result_scope": RAW_SCOPE, "raw_result_json_bytes": size, "batches": rows}
 
 
-def record_provider_compute_from_result(request, result):
-    """Persist allowlisted batches followed by terminal proof, never partial proof."""
+def record_provider_compute_from_result(request, result, *, session_factory=None):
+    """Commit one bounded scope atomically; create/use/close its session here."""
     if not _enabled():
         return False
     try:
         scope = provider_scope_id(request.provider_job_id)
         run_id, doc_id = request.processing_attempt_id, request.document_id
-        if scope is None or not run_id or not doc_id:
+        if scope is None or any(not isinstance(v, str) or not 1 <= len(v.strip()) <= 255 for v in (run_id, doc_id)):
             return False
         docs = result.raw_provider_payload.get("documents")
         if not isinstance(docs, list):
@@ -91,15 +92,43 @@ def record_provider_compute_from_result(request, result):
         value = _contract(matching[0].get("ocr_compute"))
         if value is None or matching[0].get("pages_completed") != value["page_count"]:
             return False
-        from app.processing.processing_events import record_processing_event
+        from app.database import SessionLocal
+        from app.models import Document, encode_json_text
+        from app.processing.processing_event_model import ProcessingEvent
+        from app.processing.processing_events import (
+            PROCESSING_EVENT_SCHEMA_VERSION,
+            sanitize_processing_event_payload,
+            staging_processing_events_enabled,
+        )
+        if not staging_processing_events_enabled():
+            return False
         common = {"succeeded": True, "measurement_scope": DOCUMENT_SCOPE, "provider_scope_id": scope}
-        for batch in value["batches"]:
-            if not record_processing_event(processing_run_id=run_id, document_id=doc_id,
-                    event_name=BATCH_EVENT, severity="info", payload={**common, **batch}):
-                return False
-        return bool(record_processing_event(processing_run_id=run_id, document_id=doc_id,
-            event_name=TERMINAL_EVENT, severity="info", payload={**common,
-                **{k: value[k] for k in ("page_count", "batch_count", "raw_result_scope", "raw_result_json_bytes")}}))
+        events = [(BATCH_EVENT, {**common, **batch}) for batch in value["batches"]]
+        events.append((TERMINAL_EVENT, {**common,
+            **{k: value[k] for k in ("page_count", "batch_count", "raw_result_scope", "raw_result_json_bytes")}}))
+        rows = [ProcessingEvent(
+            processing_run_id=run_id.strip(), document_id=doc_id.strip(),
+            schema_version=PROCESSING_EVENT_SCHEMA_VERSION, event_name=name, severity="info",
+            payload_json=encode_json_text(sanitize_processing_event_payload(payload)),
+        ) for name, payload in events]
+        # The transaction publishes all batches and terminal proof together.
+        # Session creation and all database work occur in the caller's worker thread.
+        with (session_factory or SessionLocal)() as db:
+            with db.begin():
+                if db.get(Document, doc_id.strip()) is None:
+                    return False
+                db.add_all(rows)
+        return True
+    except Exception:
+        return False
+
+
+async def record_provider_compute_from_result_async(request, result):
+    """Await durable publication without running synchronous SQL on the event loop."""
+    if not _enabled():
+        return False
+    try:
+        return await asyncio.to_thread(record_provider_compute_from_result, request, result)
     except Exception:
         return False
 

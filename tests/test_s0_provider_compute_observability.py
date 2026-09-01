@@ -95,53 +95,158 @@ def _request_result():
     return request, result
 
 
-def test_producer_persists_bounded_allowlist_then_terminal(monkeypatch):
+@pytest.fixture
+def writer_db(monkeypatch):
     from app.processing import processing_events
+    db = _session(); _seed_base(db)
+    monkeypatch.setattr(compute, "_enabled", lambda: True)
+    monkeypatch.setattr(processing_events, "staging_processing_events_enabled", lambda: True)
+    yield db
+    db.close()
+
+
+def _persisted_compute(db):
+    from app.processing.processing_event_model import ProcessingEvent
+    return db.query(ProcessingEvent).filter(ProcessingEvent.event_name.in_((compute.BATCH_EVENT, compute.TERMINAL_EVENT))).all()
+
+
+def test_producer_persists_bounded_allowlist_then_terminal(writer_db):
+    from sqlalchemy.orm import sessionmaker
     request, result = _request_result()
     value = result.raw_provider_payload["documents"][0]["ocr_compute"]
     value.update(filename="synthetic-private.pdf", url="https://private.invalid", token="secret")
     value["batches"][0]["gpu"]["path"] = "/private/synthetic"
-    rows = []
-    monkeypatch.setattr(compute, "_enabled", lambda: True)
-    monkeypatch.setattr(processing_events, "record_processing_event", lambda **kw: rows.append(kw) or True)
-    assert compute.record_provider_compute_from_result(request, result)
-    assert [r["event_name"] for r in rows] == [compute.BATCH_EVENT, compute.BATCH_EVENT, compute.TERMINAL_EVENT]
-    payloads = json.dumps([r["payload"] for r in rows])
+    assert compute.record_provider_compute_from_result(request, result, session_factory=sessionmaker(bind=writer_db.get_bind()))
+    rows = _persisted_compute(writer_db)
+    assert sorted(r.event_name for r in rows) == [compute.BATCH_EVENT, compute.BATCH_EVENT, compute.TERMINAL_EVENT]
+    payloads = json.dumps([json.loads(r.payload_json) for r in rows])
     assert not any(s in payloads for s in ("synthetic", "private", "filename", "url", "token", "path"))
-    assert all(len(json.dumps(r["payload"]).encode()) < 8192 for r in rows)
-    assert all(r["processing_run_id"] == RUN_ID and r["document_id"] == DOCUMENT_ID for r in rows)
+    assert all(len(r.payload_json.encode()) < 8192 for r in rows)
+    assert all(r.processing_run_id == RUN_ID and r.document_id == DOCUMENT_ID for r in rows)
 
 
-def test_producer_never_emits_terminal_after_persistence_failure(monkeypatch):
-    from app.processing import processing_events
-    request, result = _request_result(); rows = []
-    monkeypatch.setattr(compute, "_enabled", lambda: True)
-    monkeypatch.setattr(processing_events, "record_processing_event", lambda **kw: rows.append(kw) and False)
-    assert not compute.record_provider_compute_from_result(request, result)
-    assert len(rows) == 1 and rows[0]["event_name"] == compute.BATCH_EVENT
-    monkeypatch.setattr(compute, "_enabled", lambda: False)
-    assert not compute.record_provider_compute_from_result(request, result)
-    assert len(rows) == 1
-
-
-def test_real_durable_serializer_preserves_nested_gpu_and_scope_terminal(monkeypatch):
-    from app.processing import processing_events
-    from app.processing.processing_event_model import ProcessingEvent
+@pytest.mark.parametrize("batch_count", [2, compute.MAX_BATCHES])
+def test_one_transaction_preserves_all_batches_gpu_and_terminal(writer_db, batch_count):
+    from sqlalchemy import event
     from sqlalchemy.orm import sessionmaker
-    db = _session(); _seed_base(db)
-    record = processing_events.record_processing_event
-    monkeypatch.setattr(compute, "_enabled", lambda: True)
-    monkeypatch.setattr(processing_events, "staging_processing_events_enabled", lambda: True)
-    monkeypatch.setattr(processing_events, "record_processing_event",
-                        lambda **kwargs: record(**kwargs, session_factory=sessionmaker(bind=db.get_bind())))
+    factory = sessionmaker(bind=writer_db.get_bind())
+    commits = []
+    event.listen(factory.class_, "after_commit", lambda session: commits.append(True))
     request, result = _request_result()
-    assert compute.record_provider_compute_from_result(request, result)
-    persisted = db.query(ProcessingEvent).filter(ProcessingEvent.event_name.in_((compute.BATCH_EVENT, compute.TERMINAL_EVENT))).all()
+    result.raw_provider_payload["documents"][0].update(pages_completed=batch_count, ocr_compute=_contract(batch_count))
+    assert compute.record_provider_compute_from_result(request, result, session_factory=factory)
+    assert commits == [True]
+    persisted = _persisted_compute(writer_db)
+    assert len(persisted) == batch_count + 1
     decoded = [SimpleNamespace(event_name=e.event_name, payload=json.loads(e.payload_json)) for e in persisted]
-    measured = _measure(decoded, scopes=(compute.provider_scope_id(request.provider_job_id),))
+    measured = _measure(decoded, pages=batch_count, scopes=(compute.provider_scope_id(request.provider_job_id),))
     assert measured["status"] == measured["gpu_status"] == "observed"
-    assert measured["gpu"]["sample_count"] == 8 and measured["raw_bytes"] == 1000
-    db.close()
+    assert measured["gpu"]["sample_count"] == batch_count * 4 and measured["raw_bytes"] == 1000
+
+
+def test_failed_commit_rolls_back_batches_and_terminal(writer_db):
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+    factory = sessionmaker(bind=writer_db.get_bind())
+    flushed = []
+    def fail_commit(session):
+        session.flush()
+        flushed.append(len(_persisted_compute(session)))
+        raise RuntimeError("synthetic commit failure")
+    event.listen(factory.class_, "before_commit", fail_commit)
+    request, result = _request_result()
+    assert not compute.record_provider_compute_from_result(request, result, session_factory=factory)
+    assert flushed == [3]
+    assert _persisted_compute(writer_db) == []
+
+
+def test_staging_gates_skip_database_and_thread_dispatch(monkeypatch):
+    import asyncio
+    from app.processing import processing_events
+    def unexpected(*args, **kwargs):
+        raise AssertionError("disabled telemetry touched the database or executor")
+    request, result = _request_result()
+    monkeypatch.setattr(compute, "_enabled", lambda: False)
+    monkeypatch.setattr(compute.asyncio, "to_thread", unexpected)
+    assert not asyncio.run(compute.record_provider_compute_from_result_async(request, result))
+    assert not compute.record_provider_compute_from_result(request, result, session_factory=unexpected)
+    monkeypatch.setattr(compute, "_enabled", lambda: True)
+    monkeypatch.setattr(processing_events, "staging_processing_events_enabled", lambda: False)
+    assert not compute.record_provider_compute_from_result(request, result, session_factory=unexpected)
+
+
+@pytest.mark.parametrize("commit_fails", [False, True])
+def test_retrieval_keeps_event_loop_live_during_database_commit(monkeypatch, tmp_path, commit_fails):
+    import asyncio
+    import threading
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+    from app import database
+    from app.models import Base
+    from app.processing import processing_events
+    from app.processing.models import ProviderResult, ProviderLifecycleStatus
+    from app.processing.orchestration import ProcessingOrchestrator, PollingPolicy
+    from app import s0_provider_source_download_observability as download
+    from tests.test_processing_orchestration import FakeProvider, req, status
+    engine = create_engine("sqlite:///" + str(tmp_path / "events.sqlite"))
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)() as seed:
+        _seed_base(seed)
+    factory = sessionmaker(bind=engine)
+    entered, release = threading.Event(), threading.Event()
+    commit_threads = []
+    def blocked_commit(session):
+        commit_threads.append(threading.get_ident()); entered.set()
+        if not release.wait(timeout=2) or commit_fails:
+            raise RuntimeError("synthetic commit failure")
+    event.listen(factory.class_, "before_commit", blocked_commit)
+    monkeypatch.setattr(database, "SessionLocal", factory)
+    monkeypatch.setattr(compute, "_enabled", lambda: True)
+    monkeypatch.setattr(download, "_enabled", lambda: False)
+    monkeypatch.setattr(processing_events, "staging_processing_events_enabled", lambda: True)
+    request = req(document_id=DOCUMENT_ID, processing_attempt_id=RUN_ID)
+    document = {"document_id": DOCUMENT_ID, "status": "completed", "pages_completed": 2, "ocr_compute": _contract()}
+    result = ProviderResult("job-1", "req-1", ProviderLifecycleStatus.PROVIDER_COMPLETED, "full", None, [document], {"documents": [document]})
+    provider = FakeProvider(); provider.results = [result]
+    async def exercise():
+        orchestrator = ProcessingOrchestrator(provider=provider, storage=None)
+        task = asyncio.create_task(orchestrator._retrieve_result(request, PollingPolicy(), orchestrator.monotonic(), 1, status(ProviderLifecycleStatus.PROVIDER_COMPLETED), 0))
+        try:
+            async def wait_until_blocked():
+                while not entered.is_set():
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(wait_until_blocked(), timeout=1)
+            assert commit_threads[0] != threading.get_ident()
+            await asyncio.sleep(0.01)  # Other event-loop work runs while SQL is blocked.
+            assert not task.done()
+        finally:
+            release.set()
+            outcome = await task
+        assert outcome[0] is result
+    try:
+        asyncio.run(exercise())
+        with sessionmaker(bind=engine)() as reader:
+            assert len(_persisted_compute(reader)) == (0 if commit_fails else 3)
+    finally:
+        release.set(); engine.dispose()
+
+
+def test_sampler_busy_reason_survives_collector_projection():
+    rows = _events()
+    rows[0].payload["gpu"] = {"measurement_scope": compute.GPU_SCOPE, "status": "not_available", "reason": "sampler_busy"}
+    measured = _measure(rows)
+    assert measured["status"] == "observed" and measured["gpu_status"] == "not_available"
+    assert measured["breakdown"]["shards"][0]["batches"][0]["gpu"]["reason"] == "sampler_busy"
+
+
+def test_overlay_rejects_legacy_hook_instead_of_recording_twice(monkeypatch, tmp_path):
+    from scripts.apply_s0_provider_compute_observability import main
+    path = tmp_path / "app/processing/orchestration.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("record_provider_compute_from_result(request, result)\n")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RuntimeError, match="Legacy synchronous"):
+        main()
 
 
 def test_actual_bounded_collector_maps_new_metrics_and_rejects_oversized_event():
