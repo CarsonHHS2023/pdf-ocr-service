@@ -88,6 +88,8 @@ jobs:
           grep -q 'validate_provider_runtime_configuration(settings)' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase1_shared_analysis' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase0_observability' app/processing/pdf_ingestion.py
+          grep -q 'await record_provider_compute_from_result_async(request, result)' app/processing/orchestration.py
+          grep -q '_measure_provider_compute(' app/processing/s0_baseline.py
           grep -q 'recover_stale_s0_pdf_processing_runs' app/main.py
           grep -q 'resumable_upload.router' app/main.py
           grep -q 'direct_upload.router' app/main.py
@@ -150,6 +152,8 @@ jobs:
           python -m pytest -q \
             tests/test_pdf_provider_sharding.py \
             tests/test_pdf_provider_sharding_compat.py \
+            tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_provider_compute_observability.py \
             tests/test_s0_pdf_resource_heartbeat.py \
             tests/test_s0_presentation_memory_bounds.py \
             tests/test_s0_bounded_v4_output.py \
@@ -215,6 +219,8 @@ jobs:
             /tmp/atlas-staging-verified/app/processing/ingestion_dispatch.py \
             /tmp/atlas-staging-verified/app/processing/ingestion_dispatch_model.py \
             /tmp/atlas-staging-verified/app/processing/orchestration.py \
+            /tmp/atlas-staging-verified/app/s0_provider_compute_observability.py \
+            /tmp/atlas-staging-verified/app/processing/s0_baseline.py \
             /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
             /tmp/atlas-staging-verified/app/processing/pdf_provider_sharding.py \
             /tmp/atlas-staging-verified/app/processing/pdf_provider_sharding_compat.py \
@@ -234,7 +240,9 @@ jobs:
                   'last_provider_progress',
                   'last_successful_poll_elapsed_seconds',
                   '_provider_client_error_with_snapshot',
+                  'await record_provider_compute_from_result_async(request, result)',
               ),
+              'app/processing/s0_baseline.py': ('_measure_provider_compute(',),
               'app/processing/pdf_ingestion.py': (
                   'provider_delivery_descriptor(geometry_input)',
                   'source_transport_url_factory=provider_source_url_factory',

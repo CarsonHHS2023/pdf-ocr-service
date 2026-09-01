@@ -116,6 +116,8 @@ The collector must not collapse these values into one metric unless the contract
 
 ### S0.3.4 OCR / shard / GPU measurements
 
+**2026-09-01 implementation update:** [Compute observability contract](../reviews/s0-3-4-compute-observability-contract-2026-09-01.md) defines the Staging-only producer, durable batch/scope events, and collector mapping. Implementation is under review; new fixture acceptance remains pending. S0 remains In Progress.
+
 Add the smallest durable measurements that allow later compute phases to compare actual OCR/GPU behavior:
 
 - OCR page/batch or shard duration;
