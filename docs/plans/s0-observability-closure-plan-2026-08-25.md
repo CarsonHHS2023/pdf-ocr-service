@@ -43,7 +43,9 @@ These signals justify targeted observability work before any expensive large-fix
 
 **2026-09-01 S0.3.3 evidence update:** [Small and medium transport/download acceptance](../reviews/s0-3-3-transport-download-acceptance-2026-09-01.md) passed on exact Staging revision `37a3c41fc6f968ef442a723aaccdec2f90af3ce3`. Both required transport/download metrics are `observed`: small exercises one Backend fallback download; medium exercises two presigned shards, including a validated Backend source-body byte count of zero. At that checkpoint, S0.3.4 was the next planned work item.
 
-**2026-09-02 current evidence update:** [S0.3.4 small and medium compute acceptance](../reviews/s0-3-4-compute-acceptance-2026-09-02.md) passed on exact Backend Staging revision `c5817070b85e6778db3dbdf558cd8fd756ffb904`, paired with isolated Provider deployment `edcdfc6bdfd691facf152ac577e41e520fdec4c9`. OCR duration, raw shard bytes and GPU sampling proxy are `observed`; S0.3.3 transport/download metrics remain `observed`. Medium covers two sequential shards and all seven Provider-selected pages plus four local-result pages. Section 6 now reflects both current collector snapshots, including seven remaining `not_instrumented` required metrics. The next engineering item is S0.3.5. S0 remains In Progress; S1/S2 are not started.
+**2026-09-02 compute checkpoint:** [S0.3.4 small and medium compute acceptance](../reviews/s0-3-4-compute-acceptance-2026-09-02.md) passed on exact Backend Staging revision `c5817070b85e6778db3dbdf558cd8fd756ffb904`, paired with isolated Provider deployment `edcdfc6bdfd691facf152ac577e41e520fdec4c9`. OCR duration, raw shard bytes and GPU sampling proxy are `observed`; S0.3.3 transport/download metrics remain `observed`. Medium covers two sequential shards and all seven Provider-selected pages plus four local-result pages. Those historical snapshots had seven `not_instrumented` required metrics; S0.3.5 was next at that checkpoint.
+
+**2026-09-02 Reader follow-up:** [Scoped S0.3.5 Reader acceptance](https://github.com/CarsonHHS2023/speed-reading-trainer/blob/a9d470c3609a94be45c525b47038d570c1855b01/docs/s0-reader-open-observability.md) records `reader_open_latency_seconds` and `reader_bounded_query_count` as `observed` using Backend `96801ce840b5dc5d1855e101dbd55df7a592afd8` and frontend `af087d078bd03182bc53610e045778a9d733eda5`. The PDF medium adds first-open/reopen evidence and an existing TXT adds nonzero-window reopen evidence. The medium collector now leaves **five** required metrics `not_instrumented`; Section 6 distinguishes this later Reader evidence from earlier ingestion measurements. The next engineering item is **S0.3.6 failure/retry attempt observability**. S0 and M5 remain In Progress; S1/S2 are not started.
 
 ## 3. Scope rule
 
@@ -131,7 +133,13 @@ Do not promote logical Provider integration wall time to OCR batch duration.
 
 ### S0.3.5 Reader-open and bounded query measurements
 
-**Next engineering item; not yet implemented or accepted by this update.** First inventory the exact bounded first-open and reopen paths across Backend and Reader, then define their measurement boundaries before adding instrumentation. Preserve current loading behavior; do not introduce full-document fetches to obtain a metric.
+**Scoped Staging acceptance: PASS (2026-09-02).** See the [exact revisions, measured values and limits](https://github.com/CarsonHHS2023/speed-reading-trainer/blob/a9d470c3609a94be45c525b47038d570c1855b01/docs/s0-reader-open-observability.md). This replaces the earlier "not yet implemented" execution status, not the measurement requirements below. No Reader behavior was changed to create benchmark data.
+
+The existing 11-page PDF medium provided three first opens (mean 5.610667 seconds) and one reopen (5.2728 seconds); its 89 stored nodes fit in the first 150-node window. An existing TXT with 1,013 stored v2 nodes provided one reopen at start 300 / limit 150 (7.1425 seconds). Every measured open had three data requests and 57 measured SQL statement attempts; both required Reader metrics are `observed` in each collection. Sixteen PDF Reader events and four TXT Reader events passed scope/ordinal, terminal, revision, boundedness and privacy checks.
+
+These observations do not establish one-page small-fixture acceptance, adjacent two-window loading, TXT ingestion timing, browser-paint readiness, binary-asset completion or pixel-exact restoration. The current containing-window resume policy predates this instrumentation; its behavior is not silently redefined by the acceptance. The baseline collector was run locally against read-only durable exports using the exact Backend checkout plus CI overlays, not inside HF or from a downloaded byte-verified artifact. Earlier processing metrics retain their earlier ingestion provenance.
+
+The frontend documentation-only descendant `a9d470c3609a94be45c525b47038d570c1855b01` passed 496 local tests, syntax checks, exact-head Client CI and Preview verification. It is not the observed frontend runtime revision. Do not reopen accepted runs merely to refresh a documentation SHA: mixed Reader revisions invalidate complete collector admission. Frontend #86 remains unmerged; this update authorizes no merge or Production deployment.
 
 Measure the Reader path without changing Reader behavior:
 
@@ -141,9 +149,11 @@ Measure the Reader path without changing Reader behavior:
 
 The measurement must remain valid for both first open and reopen semantics or explicitly declare which case it represents.
 
-Keep server request duration, client-visible usable-content latency and actual database query count distinct. Correlate a bounded open operation using privacy-safe identity; do not label an arbitrary endpoint duration or query count as the complete Reader open. Validate with an already processed small document after exact-head CI and Staging deployment; a new PDF upload is not intrinsically required for Reader acceptance.
+Keep server request duration, client-reported core semantic-open latency and actual database query count distinct. Correlate a bounded open operation using privacy-safe identity; do not label an arbitrary endpoint duration or query count as the complete Reader open. The original small-fixture validation target remains a coverage limit, not an implicit waiver or instruction to upload again. The completed PDF-medium and TXT-reopen observations must not be relabeled as small acceptance.
 
 ### S0.3.6 Failure and retry attempt counters
+
+**Next engineering item; not yet implemented or accepted.** Current retry diagnostics are not a durable attempt counter. Define operation/attempt scope and terminal coverage before adding Staging-only producer events and collector mapping; retain existing retry policy and processing semantics.
 
 Normalize explicit counters rather than inferring retries from diagnostic signals.
 
@@ -153,6 +163,14 @@ Required semantics:
 - retry attempt count;
 - retryable classification remains a separate diagnostic attribute;
 - one logical retry must not be double-counted across Provider and backend events.
+
+The current orchestration path requires particular care:
+
+- Successful status polls and `RESULT_NOT_READY` waits are normal availability checks, not failed processing attempts or evidence that a retry executed.
+- `PDF_PROVIDER_POLL_RETRY` is a stderr diagnostic emitted before the retry sleep. A deadline or cancellation may prevent the next request; a retry-attempt counter must increment at the actual retry dispatch, not when the retry is planned.
+- Source-route fallback is distinct from replaying a processing attempt. Backend request retries, Provider execution failures, shard attempts and a whole logical run must retain separate scopes; do not sum them as interchangeable failures.
+- A zero count needs explicit complete terminal coverage. Absence of errors, a successful run status, or `retryable=false` alone does not prove observed zero attempts.
+- Begin with local fake-provider/fault-injection contract tests for success, retryable failure then actual retry, cancellation/deadline before dispatch, non-retryable failure, duplicate/missing terminal evidence and per-shard attribution. No real Provider job, failure injection into Staging, new upload or benchmark is authorized by this planning update.
 
 ### S0.3.7 Collector mapping and privacy hardening
 
@@ -199,14 +217,14 @@ The 528-page fixture requires explicit approval at execution time and must not b
 | canonicalization duration | observed for accepted PDF small/medium | retain current contract |
 | visual asset generation duration | `not_instrumented` | instrument only when current path can measure it without semantic change |
 | object-store reads/writes by stage | observed for measured processing stages in current snapshots | retain S0.3.2 scope; Reader binary proxy is separate and not covered here |
-| Reader-open latency | `not_instrumented` | S0.3.5 — next engineering item |
-| Reader bounded query count | `not_instrumented` | S0.3.5 — next engineering item |
+| Reader-open latency | `observed` for PDF-medium first-open/reopen and TXT nonzero reopen | S0.3.5 scoped acceptance PASS; retain exact Reader revision and coverage limits |
+| Reader bounded query count | `observed`; 57 SQL statement attempts per measured open | S0.3.5 scoped acceptance PASS; not HTTP request count or a row/byte bound |
 | upload-to-Reader-ready latency | `not_instrumented` | compose only after upload and Reader-ready boundaries are explicit |
 | failure/retry counts | `not_instrumented` | S0.3.6 |
 | TXT representative baseline | open | acceptance sequence after timing contract exists |
 | large PDF representative baseline | deferred | run only after instrumentation makes it useful |
 
-The seven `not_instrumented` rows are measured collector gaps, not accepted waivers. Current PDF evidence also does not close TXT timing, Reader binary access coverage, or the final S0 review.
+The **five** remaining `not_instrumented` rows are `backend_upload_peak_memory_mb`, `preprocessing_cpu_seconds`, `visual_asset_generation_seconds`, `upload_to_reader_ready_seconds`, and `failure_retry_counts`. These are actual remaining collector gaps, not accepted waivers. The two Reader metrics were added by later Reader observations; this matrix does not claim that one ingestion run on one revision freshly measured all rows. Current evidence also does not close one-page Reader acceptance, TXT ingestion timing, Reader binary access coverage, or the final S0 review. The historical S0.3.4 report's seven-gap list remains correct for its earlier checkpoint.
 
 ## 7. Exit gate for this closure plan
 
