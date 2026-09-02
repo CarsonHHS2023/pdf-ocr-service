@@ -157,6 +157,7 @@ jobs:
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_reader_open_observability.py \
+            tests/test_s0_failure_retry_observability.py \
             tests/test_s0_pdf_resource_heartbeat.py \
             tests/test_s0_presentation_memory_bounds.py \
             tests/test_s0_bounded_v4_output.py \
@@ -225,6 +226,8 @@ jobs:
             /tmp/atlas-staging-verified/app/s0_provider_compute_observability.py \
             /tmp/atlas-staging-verified/app/s0_reader_open_observability.py \
             /tmp/atlas-staging-verified/app/s0_reader_open_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_failure_retry_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_failure_retry_observability.py \
             /tmp/atlas-staging-verified/app/processing/s0_baseline.py \
             /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
             /tmp/atlas-staging-verified/app/processing/pdf_provider_sharding.py \
@@ -246,11 +249,18 @@ jobs:
                   'last_successful_poll_elapsed_seconds',
                   '_provider_client_error_with_snapshot',
                   'await record_provider_compute_from_result_async(request, result)',
+                  'await observe_orchestration(self._run_once_without_s036, request, policy)',
+                  'await observe_provider_call("submit", self.provider.submit_job,',
+                  'await observe_provider_call("status", self.provider.get_job_status,',
+                  'await observe_provider_call("result", self.provider.get_job_result,',
+                  'await observe_provider_call("artifact", self.provider.get_job_artifact,',
               ),
-              'app/processing/s0_baseline.py': ('_measure_provider_compute(', '_measure_reader_open('),
+              'app/processing/s0_baseline.py': ('_measure_provider_compute(', '_measure_reader_open(', 'measure_failure_retry('),
               'app/main.py': ('install_s0_reader_open(app)',),
               'app/routers/reader_v2.py': ('return observe_reader_view(',),
               'app/processing/pdf_ingestion.py': (
+                  'install_pdf_observability()',
+                  'note_pdf_terminal(document_id, status)',
                   'provider_delivery_descriptor(geometry_input)',
                   'source_transport_url_factory=provider_source_url_factory',
                   'ShardingAwareEndToEndProcessingIntegrationService(',
