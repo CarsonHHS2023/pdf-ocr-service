@@ -107,6 +107,10 @@ size. Download duration is not Provider integration time or end-to-end latency.
 
 ## 5. Coverage limits and next decision
 
+**Later same-day follow-up:** [Medium acceptance](s0-3-6-failure-retry-medium-acceptance-2026-09-02.md)
+subsequently passed with two sequential Provider scopes. The small-only limits
+and proposed next run below describe this earlier checkpoint, not current work.
+
 This result accepts only the fresh **small, single-scope success path** for
 S0.3.6. It does not claim runtime multi-scope/sharding acceptance, observed nonzero
 retries, crash recovery, real fault injection or Provider-internal retry coverage.
