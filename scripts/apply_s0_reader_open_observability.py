@@ -33,7 +33,7 @@ def main():
 '''
     snapshot_anchor = '    auxiliary.append(MetricReading(\n        key="provider_compute_breakdown",'
     _patch(Path('app/processing/s0_baseline.py'), [
-        (import_anchor, 'from app.s0_reader_open_observability import (\n'
+        (import_anchor, 'from app.s0_reader_open_metrics import (\n'
          '    REQUEST_EVENT as _S0_READER_REQUEST_EVENT, TERMINAL_EVENT as _S0_READER_TERMINAL_EVENT,\n'
          '    measure_reader_open as _measure_reader_open,\n)\n' + import_anchor),
         (event_anchor, '        _S0_READER_REQUEST_EVENT,\n        _S0_READER_TERMINAL_EVENT,\n' + event_anchor),

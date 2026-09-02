@@ -224,6 +224,7 @@ jobs:
             /tmp/atlas-staging-verified/app/processing/orchestration.py \
             /tmp/atlas-staging-verified/app/s0_provider_compute_observability.py \
             /tmp/atlas-staging-verified/app/s0_reader_open_observability.py \
+            /tmp/atlas-staging-verified/app/s0_reader_open_metrics.py \
             /tmp/atlas-staging-verified/app/processing/s0_baseline.py \
             /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
             /tmp/atlas-staging-verified/app/processing/pdf_provider_sharding.py \

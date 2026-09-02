@@ -10,6 +10,7 @@ on:
       - 'app/s0_object_store_io_observability.py'
       - 'app/s0_provider_source_download_observability.py'
       - 'app/s0_reader_open_observability.py'
+      - 'app/s0_reader_open_metrics.py'
       - 'app/s0_provider_compute_observability.py'
       - 'app/s0_provider_staging_routing.py'
       - 'app/s0_transport_download_observability.py'
@@ -76,7 +77,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic
+        run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic fastapi==0.115.0 httpx==0.24.1
 
       - name: Apply canonical upload collector mapping
         run: |
@@ -109,6 +110,7 @@ jobs:
             app/s0_object_store_io_observability.py \
             app/s0_provider_source_download_observability.py \
             app/s0_reader_open_observability.py \
+            app/s0_reader_open_metrics.py \
             app/s0_provider_compute_observability.py \
             app/s0_provider_staging_routing.py \
             app/s0_transport_download_observability.py \

@@ -244,3 +244,19 @@ def test_overlay_is_idempotent_and_install_staging_only(monkeypatch,tmp_path):
     monkeypatch.setattr(reader,'_REVISION_FILE',tmp_path/'absent')
     app=FastAPI();reader.install(app)
     assert not app.user_middleware
+
+
+def test_offline_collector_does_not_require_http_framework():
+    import subprocess
+    import sys
+    subprocess.run([sys.executable, '-c', '''
+import builtins
+original = builtins.__import__
+def guarded(name, *args, **kwargs):
+    if name.split('.')[0] in {'fastapi', 'starlette'}:
+        raise ImportError('HTTP framework unavailable in offline collector')
+    return original(name, *args, **kwargs)
+builtins.__import__ = guarded
+from app.processing.s0_baseline import collect_s0_run_snapshot
+from scripts.report_s0_baseline import main
+'''], check=True, cwd=Path(__file__).resolve().parents[1])
