@@ -9,6 +9,8 @@ on:
       - 'app/models.py'
       - 'app/s0_object_store_io_observability.py'
       - 'app/s0_provider_source_download_observability.py'
+      - 'app/s0_reader_open_observability.py'
+      - 'app/s0_reader_open_metrics.py'
       - 'app/s0_provider_compute_observability.py'
       - 'app/s0_provider_staging_routing.py'
       - 'app/s0_transport_download_observability.py'
@@ -27,6 +29,7 @@ on:
       - 'scripts/apply_s0_object_store_io_observability.py'
       - 'scripts/apply_s0_provider_source_download_observability.py'
       - 'scripts/apply_s0_provider_compute_observability.py'
+      - 'scripts/apply_s0_reader_open_observability.py'
       - 'scripts/apply_s0_provider_staging_routing.py'
       - 'scripts/apply_s0_transport_download_observability.py'
       - 'scripts/apply_s0_transport_terminal_collector.py'
@@ -43,6 +46,7 @@ on:
       - 'tests/test_s0_phase2_stage_observability.py'
       - 'tests/test_s0_phase2_baseline_mapping.py'
       - 'tests/test_s0_provider_source_download_observability.py'
+      - 'tests/test_s0_reader_open_observability.py'
       - 'tests/test_s0_provider_compute_observability.py'
       - 'tests/test_s0_provider_staging_routing.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
@@ -73,7 +77,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic
+        run: python -m pip install --disable-pip-version-check -q pytest sqlalchemy alembic fastapi==0.115.0 httpx==0.24.1
 
       - name: Apply canonical upload collector mapping
         run: |
@@ -92,10 +96,12 @@ jobs:
           python scripts/apply_s0_transport_download_observability.py
           python scripts/apply_s0_provider_source_download_observability.py
           python scripts/apply_s0_provider_compute_observability.py
+          python scripts/apply_s0_reader_open_observability.py
           python scripts/apply_s0_provider_staging_routing.py
           python scripts/apply_s0_transport_download_observability.py
           python scripts/apply_s0_provider_source_download_observability.py
           python scripts/apply_s0_provider_compute_observability.py
+          python scripts/apply_s0_reader_open_observability.py
           python scripts/apply_s0_provider_staging_routing.py
 
       - name: Static syntax check
@@ -103,6 +109,8 @@ jobs:
           python -m py_compile \
             app/s0_object_store_io_observability.py \
             app/s0_provider_source_download_observability.py \
+            app/s0_reader_open_observability.py \
+            app/s0_reader_open_metrics.py \
             app/s0_provider_compute_observability.py \
             app/s0_provider_staging_routing.py \
             app/s0_transport_download_observability.py \
@@ -119,6 +127,7 @@ jobs:
             scripts/apply_s0_object_store_io_observability.py \
             scripts/apply_s0_provider_source_download_observability.py \
             scripts/apply_s0_provider_compute_observability.py \
+            scripts/apply_s0_reader_open_observability.py \
             scripts/apply_s0_provider_staging_routing.py \
             scripts/apply_s0_transport_download_observability.py \
             scripts/apply_s0_transport_terminal_collector.py \
@@ -135,6 +144,7 @@ jobs:
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_reader_open_observability.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
@@ -156,6 +166,7 @@ jobs:
             tests/test_s0_phase2_stage_observability.py \
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
+            tests/test_s0_reader_open_observability.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
