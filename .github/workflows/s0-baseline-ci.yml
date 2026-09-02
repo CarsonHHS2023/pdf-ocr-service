@@ -11,6 +11,8 @@ on:
       - 'app/s0_provider_source_download_observability.py'
       - 'app/s0_reader_open_observability.py'
       - 'app/s0_reader_open_metrics.py'
+      - 'app/s0_failure_retry_metrics.py'
+      - 'app/s0_failure_retry_observability.py'
       - 'app/s0_provider_compute_observability.py'
       - 'app/s0_provider_staging_routing.py'
       - 'app/s0_transport_download_observability.py'
@@ -30,6 +32,9 @@ on:
       - 'scripts/apply_s0_provider_source_download_observability.py'
       - 'scripts/apply_s0_provider_compute_observability.py'
       - 'scripts/apply_s0_reader_open_observability.py'
+      - 'scripts/apply_s0_failure_retry_observability.py'
+      - 'scripts/provider-shard-resilience.patch'
+      - 'scripts/apply_provider_result_diagnostics.py'
       - 'scripts/apply_s0_provider_staging_routing.py'
       - 'scripts/apply_s0_transport_download_observability.py'
       - 'scripts/apply_s0_transport_terminal_collector.py'
@@ -47,6 +52,7 @@ on:
       - 'tests/test_s0_phase2_baseline_mapping.py'
       - 'tests/test_s0_provider_source_download_observability.py'
       - 'tests/test_s0_reader_open_observability.py'
+      - 'tests/test_s0_failure_retry_observability.py'
       - 'tests/test_s0_provider_compute_observability.py'
       - 'tests/test_s0_provider_staging_routing.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
@@ -91,17 +97,24 @@ jobs:
           python scripts/apply_s0_object_store_io_observability.py
           python scripts/apply_s0_transport_terminal_collector.py
 
-      - name: Apply S0.3.3 transport, Provider download, and Staging routing
+      - name: Apply S0 transport, compute, Reader and failure/retry contracts
         run: |
           python scripts/apply_s0_transport_download_observability.py
           python scripts/apply_s0_provider_source_download_observability.py
           python scripts/apply_s0_provider_compute_observability.py
           python scripts/apply_s0_reader_open_observability.py
+          # Reuse the existing Staging polling policy, without unrelated sharding
+          # composition. Raw Production orchestration does not include retries.
+          python -c "from scripts.apply_provider_result_diagnostics import _patch_orchestration_stages; _patch_orchestration_stages()"
+          git apply --check --include=app/processing/orchestration.py scripts/provider-shard-resilience.patch
+          git apply --include=app/processing/orchestration.py scripts/provider-shard-resilience.patch
+          python scripts/apply_s0_failure_retry_observability.py
           python scripts/apply_s0_provider_staging_routing.py
           python scripts/apply_s0_transport_download_observability.py
           python scripts/apply_s0_provider_source_download_observability.py
           python scripts/apply_s0_provider_compute_observability.py
           python scripts/apply_s0_reader_open_observability.py
+          python scripts/apply_s0_failure_retry_observability.py
           python scripts/apply_s0_provider_staging_routing.py
 
       - name: Static syntax check
@@ -111,6 +124,8 @@ jobs:
             app/s0_provider_source_download_observability.py \
             app/s0_reader_open_observability.py \
             app/s0_reader_open_metrics.py \
+            app/s0_failure_retry_metrics.py \
+            app/s0_failure_retry_observability.py \
             app/s0_provider_compute_observability.py \
             app/s0_provider_staging_routing.py \
             app/s0_transport_download_observability.py \
@@ -128,6 +143,7 @@ jobs:
             scripts/apply_s0_provider_source_download_observability.py \
             scripts/apply_s0_provider_compute_observability.py \
             scripts/apply_s0_reader_open_observability.py \
+            scripts/apply_s0_failure_retry_observability.py \
             scripts/apply_s0_provider_staging_routing.py \
             scripts/apply_s0_transport_download_observability.py \
             scripts/apply_s0_transport_terminal_collector.py \
@@ -145,6 +161,7 @@ jobs:
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_reader_open_observability.py \
+            tests/test_s0_failure_retry_observability.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
@@ -167,6 +184,7 @@ jobs:
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_reader_open_observability.py \
+            tests/test_s0_failure_retry_observability.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \

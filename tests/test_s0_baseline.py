@@ -8,11 +8,16 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Document, ProcessingRun, SourceFile, encode_json_text
 from app.processing.processing_event_model import ProcessingEvent
+from app.processing import s0_baseline as baseline_module
 from app.processing.s0_baseline import (
     MAX_EVENTS_HARD_LIMIT,
     collect_s0_run_snapshot,
     render_s0_markdown,
 )
+
+
+def _missing_failure_status():
+    return "not_available" if hasattr(baseline_module, "measure_failure_retry") else "not_instrumented"
 
 
 def _session():
@@ -126,7 +131,7 @@ def test_collect_s0_snapshot_uses_only_durable_authoritative_fields() -> None:
     assert _metric(snapshot, "max_observed_peak_rss_mb").status == "observed"
 
     required_failure_retry = _metric(snapshot, "failure_retry_counts")
-    assert required_failure_retry.status == "not_instrumented"
+    assert required_failure_retry.status == _missing_failure_status()
     assert required_failure_retry.value is None
 
     error_signals = _metric(snapshot, "durable_error_event_count")
@@ -151,7 +156,7 @@ def test_missing_s0_metrics_are_explicit_not_inferred() -> None:
     assert _metric(snapshot, "backend_to_modal_transport_bytes").status == "not_available"
     assert _metric(snapshot, "reader_open_latency_seconds").status == "not_instrumented"
     assert _metric(snapshot, "upload_to_reader_ready_seconds").status == "not_instrumented"
-    assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
+    assert _metric(snapshot, "failure_retry_counts").status == _missing_failure_status()
 
 
 def test_run_without_retained_events_does_not_claim_zero_event_signals() -> None:
@@ -160,7 +165,7 @@ def test_run_without_retained_events_does_not_claim_zero_event_signals() -> None
 
     snapshot = collect_s0_run_snapshot(db, processing_run_id=run_id)
 
-    assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
+    assert _metric(snapshot, "failure_retry_counts").status == _missing_failure_status()
     assert _metric(snapshot, "durable_event_count").value == 0
     assert _metric(snapshot, "durable_error_event_count").status == "not_available"
     assert _metric(snapshot, "durable_error_event_count").value is None
@@ -202,7 +207,7 @@ def test_event_window_is_bounded_and_marks_event_aggregates_partial() -> None:
 
     assert snapshot.event_window_truncated is True
     assert _metric(snapshot, "durable_event_count").value == 2
-    assert _metric(snapshot, "failure_retry_counts").status == "not_instrumented"
+    assert _metric(snapshot, "failure_retry_counts").status == _missing_failure_status()
 
     error_signals = _metric(snapshot, "durable_error_event_count")
     assert error_signals.status == "partial"

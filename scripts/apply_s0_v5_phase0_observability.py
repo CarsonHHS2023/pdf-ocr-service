@@ -144,6 +144,7 @@ def main() -> None:
             main as apply_s0_transport_download_observability,
         )
         from scripts.apply_s0_reader_open_observability import main as apply_s0_reader_open_observability
+        from scripts.apply_s0_failure_retry_observability import main as apply_s0_failure_retry_observability
         from scripts.apply_s0_provider_compute_observability import (
             main as apply_s0_provider_compute_observability,
         )
@@ -207,6 +208,7 @@ def main() -> None:
             main as apply_s0_transport_download_observability,
         )
         from apply_s0_reader_open_observability import main as apply_s0_reader_open_observability
+        from apply_s0_failure_retry_observability import main as apply_s0_failure_retry_observability
         from apply_s0_provider_compute_observability import (
             main as apply_s0_provider_compute_observability,
         )
@@ -276,6 +278,7 @@ def main() -> None:
     if _final_staging_composition_installed():
         patch_durable_processing_events()
         _make_shard_document_correlation_optional()
+        apply_s0_failure_retry_observability()
         print("staging provider composition already installed: no changes")
         return
 
@@ -291,6 +294,7 @@ def main() -> None:
     apply_staging_classification_summary_highres_fix()
     patch_durable_processing_events()
     _make_shard_document_correlation_optional()
+    apply_s0_failure_retry_observability()
 
 
 if __name__ == "__main__":
