@@ -403,7 +403,9 @@ Product milestone status and scalability-phase status must be reported separatel
 
 ## 16. Recommended next implementation slice
 
-After this documentation reconciliation, the next engineering work should begin with **S0 + the smallest non-invasive parts of S1**:
+**Current sequencing update — 2026-09-02:** The active [S0 closure plan](s0-observability-closure-plan-2026-08-25.md) restricts current work to S0 instrumentation. [S0.3.4 small/medium acceptance](../reviews/s0-3-4-compute-acceptance-2026-09-02.md) is complete for its representative Staging paths; S0.3.5 Reader-open/query observability is next. S0 remains In Progress, and S1/S2 are not started. This current sequencing replaces the immediate S0-plus-S1 recommendation below, while retaining the later architecture phases and their scope.
+
+The original 2026-08-15 recommendation, retained as historical planning context, was **S0 + the smallest non-invasive parts of S1**:
 
 1. baseline current network/memory/latency;
 2. formalize `ArtifactDescriptor`/ObjectStore capabilities in tests;
