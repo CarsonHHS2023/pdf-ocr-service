@@ -31,6 +31,7 @@ Atlas also maintains a horizontal storage/processing scalability track, separate
 - [S0 Observability Closure Plan — 2026-08-25](../plans/s0-observability-closure-plan-2026-08-25.md)
 - [S0 Phase 2 Baseline Reconciliation — 2026-08-25](../reviews/s0-phase2-baseline-reconciliation-2026-08-25.md)
 - [S0.3.4 Compute Acceptance — 2026-09-02](../reviews/s0-3-4-compute-acceptance-2026-09-02.md)
+- [S0.3.6 Failure/Retry Small Acceptance — 2026-09-02](../reviews/s0-3-6-failure-retry-small-acceptance-2026-09-02.md)
 
 The implementation phases are S0–S9. This work may support M5, M6, M7, and the external-pilot/commercial gate. It does **not** redefine M6 Smart Reading Intelligence as an infrastructure milestone.
 
@@ -40,7 +41,10 @@ The implementation phases are S0–S9. This work may support M5, M6, M7, and the
 - **S0 status:** **In Progress**.
 - The original Phase 2 small/medium baseline remains historical evidence on revision `6fe56d35bfb39cf1e1016beb2694464fb1fc2e4f`; S0.3.3 transport/download acceptance subsequently passed on `37a3c41fc6f968ef442a723aaccdec2f90af3ce3`.
 - New `pdf-small-v1` and `pdf-medium-v1` S0.3.4 acceptance passed on exact Backend/runtime revision `c5817070b85e6778db3dbdf558cd8fd756ffb904`, paired with isolated Provider deployment `edcdfc6bdfd691facf152ac577e41e520fdec4c9`. OCR duration, raw shard bytes and GPU sampling proxy are observed, including two sequential medium shards. See the report for collector provenance and coverage limits.
-- Next: **S0.3.5 Reader-open and bounded query observability**. Seven required metrics remain `not_instrumented` in both current snapshots; the [closure matrix](../plans/s0-observability-closure-plan-2026-08-25.md#6-s0-closure-matrix) tracks their exact scope.
+- Scoped S0.3.5 Reader first-open/reopen and nonzero-window reopen acceptance subsequently passed; the [closure plan](../plans/s0-observability-closure-plan-2026-08-25.md#s035-reader-open-and-bounded-query-measurements) retains its separate Backend/frontend revisions and coverage limits.
+- S0.3.6 **small single-scope success-path PASS** on `7435aa3fa7ba0766d8cc2584bcacfd735c5ce74c`: 14 successful Provider method calls, explicit zero failures/retries and complete durable closure. This is not runtime multi-scope or real nonzero-retry acceptance.
+- **Four** required metrics remain `not_instrumented` in the fresh small collector: upload peak memory, stage-owned preprocessing CPU, visual asset generation duration and upload-to-Reader-ready latency. Historical seven/five-gap checkpoints remain historical, not current status.
+- Next: decide separately authorized S0.3.6 medium multi-scope evidence, then define the upload-memory boundary and remaining instrumentation in [the current action order](../plans/s0-observability-closure-plan-2026-08-25.md#61-next-decisions-and-remaining-instrumentation). No additional run or implementation is authorized by this index.
 - TXT representative timing and the large PDF baseline remain open.
 - The 528-page fixture is deferred until the missing instrumentation can produce materially useful closure evidence and execution is explicitly approved.
 - **S1/S2 are not started by the current S0 closure plan.**

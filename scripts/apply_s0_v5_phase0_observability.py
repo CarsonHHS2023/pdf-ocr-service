@@ -143,6 +143,8 @@ def main() -> None:
         from scripts.apply_s0_transport_download_observability import (
             main as apply_s0_transport_download_observability,
         )
+        from scripts.apply_s0_reader_open_observability import main as apply_s0_reader_open_observability
+        from scripts.apply_s0_failure_retry_observability import main as apply_s0_failure_retry_observability
         from scripts.apply_s0_provider_compute_observability import (
             main as apply_s0_provider_compute_observability,
         )
@@ -205,6 +207,8 @@ def main() -> None:
         from apply_s0_transport_download_observability import (
             main as apply_s0_transport_download_observability,
         )
+        from apply_s0_reader_open_observability import main as apply_s0_reader_open_observability
+        from apply_s0_failure_retry_observability import main as apply_s0_failure_retry_observability
         from apply_s0_provider_compute_observability import (
             main as apply_s0_provider_compute_observability,
         )
@@ -264,6 +268,7 @@ def main() -> None:
     apply_s0_provider_source_download_observability()
     # S0.3.4 closes compute evidence against the S0.3.3 Provider scopes.
     apply_s0_provider_compute_observability()
+    apply_s0_reader_open_observability()
     apply_s0_provider_staging_routing()
 
     # Durable telemetry is deliberately finalized after the historical Provider
@@ -273,6 +278,7 @@ def main() -> None:
     if _final_staging_composition_installed():
         patch_durable_processing_events()
         _make_shard_document_correlation_optional()
+        apply_s0_failure_retry_observability()
         print("staging provider composition already installed: no changes")
         return
 
@@ -288,6 +294,7 @@ def main() -> None:
     apply_staging_classification_summary_highres_fix()
     patch_durable_processing_events()
     _make_shard_document_correlation_optional()
+    apply_s0_failure_retry_observability()
 
 
 if __name__ == "__main__":
