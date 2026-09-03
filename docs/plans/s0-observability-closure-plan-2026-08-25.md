@@ -78,6 +78,14 @@ Not allowed in this slice:
 
 ### S0.3.1 Upload boundary measurements
 
+**2026-09-03 design proposal:** the [upload-memory boundary and admission contract](../testing/s0-upload-memory-observability-v1.md)
+records the composed canonical acceptance window, component/allocator coverage
+limits, concurrency rules and future producer/collector gates. It is proposed,
+not implemented or accepted as a waiver. The current probes cannot attribute a
+complete upload peak; `backend_upload_peak_memory_mb` remains `not_instrumented`.
+Next is review and an explicit measurement-method/limitation decision, not another
+PDF run or automatic promotion of read-buffer/RSS evidence.
+
 Add explicit upload-specific metrics that do not reuse generic process RSS or ProcessingRun lifecycle timestamps:
 
 - upload wall duration;
@@ -233,7 +241,7 @@ The **four** remaining `not_instrumented` rows in both fresh S0.3.6 small and me
 ### 6.1 Next decisions and remaining instrumentation
 
 1. **S0.3.6 representative success-path target satisfied:** fresh small and 11-page medium evidence now prove single-scope and sequential two-scope counters on the same pinned revision, with contiguous ordinals, one complete manifest and no cross-layer failure summation. Retain the evidence; do not request another PDF run for this target or inject real failures to manufacture retries.
-2. **Next instrumentation design:** finish the S0.3.1 upload-owned memory boundary. Define whether an attributable upload peak can be measured safely under concurrency; largest read-buffer bytes or process-lifetime RSS cannot fill `backend_upload_peak_memory_mb`. An unmeasurable boundary needs an explicit reviewed limitation, not automatic promotion to observed.
+2. **S0.3.1 design review next:** review the [proposed upload-memory boundary](../testing/s0-upload-memory-observability-v1.md#7-verification-gates-and-next-decision). The inspected current probes do not establish a complete attributable peak. Select a useful bounded component with a residual gap, prove a complete method, or explicitly approve a limitation/scope revision before implementation. Largest read-buffer bytes and process-lifetime RSS cannot fill `backend_upload_peak_memory_mb`; this proposal grants no waiver and changes none of the four required gaps.
 3. **Preprocessing CPU attribution:** define a stage-owned CPU measurement that does not count overlapping process-wide work or require moving compute. Current process CPU deltas remain auxiliary.
 4. **Visual asset generation timing:** identify the actual generation operation(s), preserve processing behavior, and add bounded durable terminal coverage before collector mapping. Canonicalization duration is not a substitute.
 5. **Upload-to-Reader-ready boundary:** define the readiness endpoint and same-run correlation before composing latency. ProcessingRun completion, core semantic-open time and binary/paint readiness are independent; do not sum unrelated or overlapping durations.
