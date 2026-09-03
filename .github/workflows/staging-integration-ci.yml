@@ -159,6 +159,7 @@ jobs:
             tests/test_s0_reader_open_observability.py \
             tests/test_s0_failure_retry_observability.py \
             tests/test_s0_preprocessing_cpu_observability.py \
+            tests/test_s0_preprocessing_cpu_publication.py \
             tests/test_s0_preprocessing_cpu_composed.py \
             tests/test_s0_pdf_resource_heartbeat.py \
             tests/test_s0_presentation_memory_bounds.py \

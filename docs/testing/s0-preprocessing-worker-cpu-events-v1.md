@@ -44,10 +44,12 @@ together form the manifest. An ordinal is a **logical slot**, not commit-time or
 wall-clock order; terminals are written in a later batch.
 
 Implementation refinement: reserve **one additional invalidation event**, ordinal
-18, for a post-closure protocol violation. The absolute per-root ceiling is 19
+18, for a post-closure protocol violation or publication acknowledgement loss.
+The absolute per-root ceiling is 19
 events, while any invalidation prevents observation. This provides a bounded
 way to reject an earlier complete snapshot if a closed root is unexpectedly
-reused; repeated violations do not emit unbounded events.
+reused, or a final publisher loses its cancellation acknowledgement. Repeated
+violations/cancellations share that same slot, not separate extra events.
 
 Every payload has exactly these six common fields, plus the fields in the next
 table (unknown/missing fields are rejected):
@@ -71,7 +73,7 @@ hashing; hashing arbitrary caller text does not make it a valid source identity.
 | `S0_PREPROCESS_CPU_SCOPE_REGISTERED` | `ordinal`, `scope_index`, `scope_id` | `2*i-1` |
 | `S0_PREPROCESS_CPU_SCOPE_TERMINAL` | Registration fields plus `operation_outcome`, `clock_status`, `cpu_delta_ns`, `clock_resolution_ns`, `reason` | `2*i` |
 | `S0_PREPROCESS_CPU_RUN_TERMINAL` | `ordinal`, `scope_count`, `complete`, `logical_outcome`, `issue` | `2*N+1` |
-| `S0_PREPROCESS_CPU_RUN_INVALIDATED` | `ordinal`, `issue=protocol_violation` | 18, optional and always invalidating |
+| `S0_PREPROCESS_CPU_RUN_INVALIDATED` | `ordinal`, `issue=protocol_violation` or `persistence_loss` | 18, optional and always invalidating |
 
 `i` is an integer 1..8; `N` is an integer 0..8. Booleans are never integers for
 validation. `scope_id` is `pcpu_` plus 32 lowercase hex digits; it is unique per
@@ -206,12 +208,31 @@ capture **and the existing Phase 2 measurement**, outside the metadata lock.
 The root readiness flag is scope settlement, not merely availability of a clock
 sample, so a racing dispatch seal cannot publish in the middle of Phase 2.
 If the event-loop side claims the snapshot,
-use the existing thread-offload publication pattern with explicit completion
-ownership and retained task references. `shield` does not suppress cancellation
-of its caller; see [Python task cancellation](https://docs.python.org/3.11/library/asyncio-task.html#asyncio.shield).
+use thread-offload publication with explicit completion ownership. A running
+synchronous publisher retains the root and drains pending invalidation before
+returning, even if its original waiter and loop are gone. Cancellation also
+submits a synchronous invalidation owner directly to the existing default
+executor, covering the race where the original publisher already returned.
+The executor retains that callable and root until execution; no detached coroutine
+or loop-dependent done callback owns the write. Both paths atomically claim the
+same invalidation slot, outside database work. Cancellation does not wait for SQL.
+`shield` alone would not suppress cancellation of its caller; see
+[Python task cancellation](https://docs.python.org/3.11/library/asyncio-task.html#asyncio.shield).
 The exact scheduling/cleanup integration must be tested before shipping; the
-local model proves only the claim gate. Process loss or publisher loss leaves
-evidence incomplete. No observer retry daemon or unbounded task queue is proposed.
+local model proves only the claim gate. The implementation regressions additionally
+exercise cancellation before the final write, inside its transaction, after
+commit and after synchronous publication returns, plus loop shutdown and an
+executor that refuses follow-up submission. No observer retry daemon or new pool
+is introduced; a failed invalidation gets no recursive retry or batch replay.
+
+Invalidation is append-only and can commit before or after the final batch; the
+collector rejects it in either order. This is eventual invalidation, not a
+linearizable cancellation/SQL transaction: a read before invalidation commits
+can still see the earlier complete snapshot. If the invalidation itself cannot
+be persisted (database/process/publisher loss), rejection of an already-committed
+snapshot is **not guaranteed**. Do not describe a failed write as durable closure,
+or claim exactly-once delivery. Acceptance evidence must be collected after the
+publishers settle and inspect the complete bounded event set.
 
 Document deletion can cascade events and invalidate late source/document checks.
 Do not resurrect records or block deletion for telemetry; missing retained

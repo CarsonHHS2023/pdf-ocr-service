@@ -71,7 +71,8 @@ def valid_payload(name, p):
     if name == START:
         return p["ordinal"] == 0
     if name == INVALID:
-        return p["ordinal"] == 18 and p["issue"] == "protocol_violation"
+        return (p["ordinal"] == 18 and isinstance(p["issue"], str)
+                and p["issue"] in {"protocol_violation", "persistence_loss"})
     if name == END:
         return (integer(p["scope_count"], 0, MAX_SCOPES)
                 and p["ordinal"] == 2 * p["scope_count"] + 1

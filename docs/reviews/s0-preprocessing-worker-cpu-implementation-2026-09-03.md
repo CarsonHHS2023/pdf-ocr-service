@@ -29,7 +29,8 @@ CPU, process-wide CPU or nested classification timing is silently added to it.
 
 Normal per-root bound: eight requests / eighteen events. A single exceptional
 `RUN_INVALIDATED` slot makes the absolute bound nineteen and causes rejection
-of a previously closed root if it is unexpectedly reused. Processing itself is
+of a previously closed root if it is unexpectedly reused or a final publication
+acknowledgement is lost to cancellation. Processing itself is
 not rejected or retried for telemetry overflow/failure. Source-read, admission,
 submission and pre-entry cancellation do not fabricate a zero CPU interval.
 
@@ -94,6 +95,51 @@ At work start, PR #43 was Draft/open/unmerged at
 do not reuse that design-only head's CI. Final implementation head, five CI
 results, artifact verification and PR deploy-skipped evidence are recorded on
 [PR #43](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/43).
+
+### Exact-head review follow-up: final publication cancellation
+
+Review at `f920a59ed86196a277a9a50783d05c6427cc5317` reproduced a P2 using the
+actual writer and collector: cancellation while a final write was in progress
+set only the in-memory `persistence_loss`, while the frozen complete snapshot
+could still commit and be admitted as observed.
+
+The follow-up reuses the single invalidation slot with `issue=persistence_loss`.
+The synchronous publisher drains pending invalidation before returning, and the
+cancellation handler submits a synchronous owner to the existing executor for
+the already-returned-writer race. The metadata lock gives them one shared claim;
+there is no second final-batch attempt, overwrite, schema change, new thread pool
+or processing retry. Running publication does not need a live event loop to
+finish. The original delegate error remains authoritative.
+
+`tests/test_s0_preprocessing_cpu_publication.py` uses real Sessions, transactions
+and the collector against a temporary SQLite file with independent connections.
+It tests before-write, in-transaction, post-commit and post-writer-return
+cancellation, successful controls, repeated cancellation, loop shutdown with
+follow-up submission refused, original exception preservation, racing invalidation
+claims and bounded invalidation-write failure. Both focused S0 and full Staging
+CI execute this file. These are synthetic/local checks, not new PDF acceptance.
+
+The append-only invalidation is eventual: before it commits, a concurrent read
+can still see the old complete snapshot. If invalidation itself is lost, the
+already-committed snapshot cannot be guaranteed to become unavailable. The test
+and event contract state this limitation explicitly; no retry/availability claim
+is fabricated.
+
+Follow-up local validation (CPython 3.11.15; these suites overlap):
+
+| Check | Result |
+|---|---|
+| Raw CPU and new publication contracts | 69 passed, 4 composed-only skips |
+| Full-composition CPU/publication + Phase 2 + S0.3.6 + deployment contracts | 155 passed, 1 PostgreSQL-gated skip |
+| Actual focused S0 Baseline command | 356 passed |
+| Staging production-equivalent command | 433 passed, 1 skipped |
+| Staging Provider/sharding/S0 command | 288 passed, 2 skipped |
+| Original P2 reproduction plus non-cancelled control | 2 passed |
+| New 13-case publication suite, five consecutive repetitions | 13 passed in each repetition |
+
+Local skips are not PostgreSQL execution evidence. Exact-head CI, including the
+disposable PostgreSQL service, artifact verification and deploy-skipped result,
+is checked separately and recorded on PR #43.
 
 Next gate is exact-head code review before any merge or rollout. No PR merge,
 deployment, new PDF upload, benchmark, native thread-setting change, compute

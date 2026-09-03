@@ -62,6 +62,7 @@ class Root:
     claimed: bool = False
     invalidation_claimed: bool = False
     invalidation_pending: bool = False
+    invalidation_issue: str = "protocol_violation"
     issue: str = "none"
     outcome: str = "unknown"
 
@@ -74,17 +75,22 @@ class Root:
         if self.issue == "none":
             self.issue = reason
 
+    def _invalidate(self, reason):
+        if self.claimed and not self.invalidation_pending:
+            self.invalidation_pending = True
+            self.invalidation_issue = reason
+
     def problem(self, reason):
         with self.lock:
             self._issue(reason)
-            if self.claimed and reason == "protocol_violation":
-                self.invalidation_pending = True
+            if reason in {"protocol_violation", "persistence_loss"}:
+                self._invalidate(reason)
 
     def register(self):
         with self.lock:
             if self.closed:
                 self._issue("protocol_violation")
-                self.invalidation_pending = self.claimed
+                self._invalidate("protocol_violation")
                 return None
             if len(self.scopes) >= contract.MAX_SCOPES:
                 self._issue("scope_overflow")
@@ -98,7 +104,7 @@ class Root:
             if scope.terminal is not None:
                 if scope.terminal != values:
                     self._issue("protocol_violation")
-                    self.invalidation_pending = self.claimed
+                    self._invalidate("protocol_violation")
                 return
             scope.terminal = dict(values)
 
@@ -108,11 +114,22 @@ class Root:
             if self.outcome == "unknown":
                 self._issue("logical_terminal_unknown")
 
+    def _claim_invalidation(self):
+        if self.invalidation_pending and not self.invalidation_claimed:
+            self.invalidation_claimed = True
+            return [(contract.INVALID, {**self.common(), "ordinal": 18,
+                                        "issue": self.invalidation_issue})]
+        return []
+
+    def claim_invalidation(self):
+        with self.lock:
+            return self._claim_invalidation()
+
     def claim(self):
         with self.lock:
-            if self.invalidation_pending and not self.invalidation_claimed:
-                self.invalidation_claimed = True
-                return [(contract.INVALID, {**self.common(), "ordinal": 18, "issue": "protocol_violation"})]
+            invalidation = self._claim_invalidation()
+            if invalidation:
+                return invalidation
             if self.claimed or not self.closed or any(s.terminal is None for s in self.scopes):
                 return []
             self.claimed = True
@@ -166,9 +183,19 @@ def _persist(root, records, *, session_factory=None):
         return False
 
 
+def _publish_invalidation(root):
+    # One shared slot, one attempt; no recursive publication or batch replay.
+    records = root.claim_invalidation()
+    if records and not _safe(_persist, root, records):
+        root.problem("persistence_loss")
+
+
 def _publish(root, records):
     if records and not _safe(_persist, root, records):
         root.problem("persistence_loss")
+    # A cancelled waiter cannot stop an already-running writer. That writer
+    # retains completion ownership and drains invalidation even after loop.close().
+    _publish_invalidation(root)
 
 
 async def _publish_async(root, records):
@@ -178,6 +205,16 @@ async def _publish_async(root, records):
         await asyncio.to_thread(_publish, root, records)
     except asyncio.CancelledError:
         root.problem("persistence_loss")
+        # The writer may already have returned before cancellation is delivered.
+        # Submit a synchronous owner now (not an unowned coroutine/done callback).
+        # The executor retains the call/root until it runs; no live event loop is
+        # needed by the writer. Races with the original writer share one claim.
+        try:
+            asyncio.get_running_loop().run_in_executor(None, _publish_invalidation, root)
+        except Exception:
+            # If shutdown refuses submission, an in-flight writer still drains
+            # the pending slot. Publisher/process loss remains an explicit limit.
+            pass
         raise
     except Exception:
         root.problem("persistence_loss")
@@ -206,6 +243,7 @@ def measure_preprocessing_delegate(delegate, *args, **kwargs):
     with scope.root.lock:
         if scope.entered:
             scope.root._issue("protocol_violation")
+            scope.root._invalidate("protocol_violation")
             enabled = False
         else:
             scope.entered = True

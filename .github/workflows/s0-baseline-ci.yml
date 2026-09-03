@@ -57,6 +57,7 @@ on:
       - 'tests/test_s0_reader_open_observability.py'
       - 'tests/test_s0_failure_retry_observability.py'
       - 'tests/test_s0_preprocessing_cpu_observability.py'
+      - 'tests/test_s0_preprocessing_cpu_publication.py'
       - 'tests/test_s0_provider_compute_observability.py'
       - 'tests/test_s0_provider_staging_routing.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
@@ -175,6 +176,7 @@ jobs:
             tests/test_s0_reader_open_observability.py \
             tests/test_s0_failure_retry_observability.py \
             tests/test_s0_preprocessing_cpu_observability.py \
+            tests/test_s0_preprocessing_cpu_publication.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
@@ -199,6 +201,7 @@ jobs:
             tests/test_s0_reader_open_observability.py \
             tests/test_s0_failure_retry_observability.py \
             tests/test_s0_preprocessing_cpu_observability.py \
+            tests/test_s0_preprocessing_cpu_publication.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
