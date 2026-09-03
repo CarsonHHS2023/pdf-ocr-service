@@ -86,6 +86,13 @@ complete upload peak; `backend_upload_peak_memory_mb` remains `not_instrumented`
 Next is review and an explicit measurement-method/limitation decision, not another
 PDF run or automatic promotion of read-buffer/RSS evidence.
 
+**Local feasibility follow-up:** [15 synthetic probes on each of CPython 3.11/3.12](../reviews/s0-3-1-upload-memory-feasibility-2026-09-03.md)
+pass as counterexample/positive-control tests. They reject reconstructing a full
+peak from current counters or plain-bytes weak-release callbacks, not the fixture
+or collector. No producer is implemented and no gap is waived. Review that result
+before choosing further attribution work or retaining this open gap while
+designing another S0 metric; no automatic phase advance is authorized.
+
 Add explicit upload-specific metrics that do not reuse generic process RSS or ProcessingRun lifecycle timestamps:
 
 - upload wall duration;

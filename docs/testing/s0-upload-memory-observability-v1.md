@@ -18,6 +18,14 @@ Production changes, or S1/S2 work. S0 and M5 remain **In Progress**.
 
 ## 1. Decision and present limitation
 
+**Local feasibility follow-up (2026-09-03):** [15 synthetic probes on each of
+CPython 3.11 and 3.12](../reviews/s0-3-1-upload-memory-feasibility-2026-09-03.md)
+now demonstrate identical read counters for different live-buffer schedules,
+missing plain-bytes weak-release hooks, and explicit context/worker limitations.
+These are counterexamples and narrow positive controls, not a full producer,
+durable acceptance or an approved waiver. Current read/receive counters and a
+weak-reference-only release scheme are not eligible full-memory methods.
+
 Keep `backend_upload_peak_memory_mb = not_instrumented`, with no value, in the
 current collector. Its existing unit is **MiB**, despite the historical `_mb`
 suffix; any eventual byte conversion must use `2**20` and retain byte evidence.
@@ -240,7 +248,9 @@ is published. This contract does not claim an audit or repair of older stderr lo
 
 ## 7. Verification gates and next decision
 
-These are required **future tests**, not tests executed for a producer in this PR.
+These are required **future producer tests**, not a completed producer suite in
+this PR. The [local feasibility checkpoint](../reviews/s0-3-1-upload-memory-feasibility-2026-09-03.md)
+covers narrower counterexamples; it does not satisfy all gates below.
 
 | Test case | Required result |
 | --- | --- |
