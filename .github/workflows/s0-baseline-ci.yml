@@ -13,6 +13,8 @@ on:
       - 'app/s0_reader_open_metrics.py'
       - 'app/s0_failure_retry_metrics.py'
       - 'app/s0_failure_retry_observability.py'
+      - 'app/s0_preprocessing_cpu_metrics.py'
+      - 'app/s0_preprocessing_cpu_observability.py'
       - 'app/s0_provider_compute_observability.py'
       - 'app/s0_provider_staging_routing.py'
       - 'app/s0_transport_download_observability.py'
@@ -33,6 +35,7 @@ on:
       - 'scripts/apply_s0_provider_compute_observability.py'
       - 'scripts/apply_s0_reader_open_observability.py'
       - 'scripts/apply_s0_failure_retry_observability.py'
+      - 'scripts/apply_s0_preprocessing_cpu_observability.py'
       - 'scripts/provider-shard-resilience.patch'
       - 'scripts/apply_provider_result_diagnostics.py'
       - 'scripts/apply_s0_provider_staging_routing.py'
@@ -53,6 +56,8 @@ on:
       - 'tests/test_s0_provider_source_download_observability.py'
       - 'tests/test_s0_reader_open_observability.py'
       - 'tests/test_s0_failure_retry_observability.py'
+      - 'tests/test_s0_preprocessing_cpu_observability.py'
+      - 'tests/test_s0_preprocessing_cpu_publication.py'
       - 'tests/test_s0_provider_compute_observability.py'
       - 'tests/test_s0_provider_staging_routing.py'
       - 'tests/test_s0_transport_atomic_ordinal.py'
@@ -117,6 +122,11 @@ jobs:
           python scripts/apply_s0_failure_retry_observability.py
           python scripts/apply_s0_provider_staging_routing.py
 
+      - name: Apply worker-thread CPU auxiliary contract twice
+        run: |
+          python scripts/apply_s0_preprocessing_cpu_observability.py
+          python scripts/apply_s0_preprocessing_cpu_observability.py
+
       - name: Static syntax check
         run: |
           python -m py_compile \
@@ -126,6 +136,8 @@ jobs:
             app/s0_reader_open_metrics.py \
             app/s0_failure_retry_metrics.py \
             app/s0_failure_retry_observability.py \
+            app/s0_preprocessing_cpu_metrics.py \
+            app/s0_preprocessing_cpu_observability.py \
             app/s0_provider_compute_observability.py \
             app/s0_provider_staging_routing.py \
             app/s0_transport_download_observability.py \
@@ -144,6 +156,7 @@ jobs:
             scripts/apply_s0_provider_compute_observability.py \
             scripts/apply_s0_reader_open_observability.py \
             scripts/apply_s0_failure_retry_observability.py \
+            scripts/apply_s0_preprocessing_cpu_observability.py \
             scripts/apply_s0_provider_staging_routing.py \
             scripts/apply_s0_transport_download_observability.py \
             scripts/apply_s0_transport_terminal_collector.py \
@@ -162,6 +175,8 @@ jobs:
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_reader_open_observability.py \
             tests/test_s0_failure_retry_observability.py \
+            tests/test_s0_preprocessing_cpu_observability.py \
+            tests/test_s0_preprocessing_cpu_publication.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
@@ -185,6 +200,8 @@ jobs:
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_reader_open_observability.py \
             tests/test_s0_failure_retry_observability.py \
+            tests/test_s0_preprocessing_cpu_observability.py \
+            tests/test_s0_preprocessing_cpu_publication.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_provider_staging_routing.py \
             tests/test_s0_transport_atomic_ordinal.py \
