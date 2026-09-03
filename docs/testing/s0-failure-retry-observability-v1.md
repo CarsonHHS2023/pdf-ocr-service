@@ -1,8 +1,13 @@
 # S0.3.6 backend-owned failure/retry observability
 
-Status: implementation candidate; **Staging acceptance pending**. S0/M5 remain
-In Progress. This change neither closes S0 nor authorizes deployment, Production
-changes, real fault injection, or large-fixture runs.
+Status: implemented via PR #41; **small single-scope and medium sequential
+multi-scope success-path Staging acceptance PASS (2026-09-02)** on
+`7435aa3fa7ba0766d8cc2584bcacfd735c5ce74c`. See the
+[small checkpoint](../reviews/s0-3-6-failure-retry-small-acceptance-2026-09-02.md) and
+[medium follow-up and limits](../reviews/s0-3-6-failure-retry-medium-acceptance-2026-09-02.md).
+Concurrent runtime scopes and real nonzero failure/retry observations are not claimed.
+S0/M5 remain In Progress. This record neither closes S0 nor authorizes deployment,
+Production changes, real fault injection, or additional fixture runs.
 
 ## Scope and independent meanings
 
@@ -99,8 +104,11 @@ and two fake descriptors missing `document_id`. The same failures were reproduce
 on the unchanged Staging baseline. This candidate does not alter that suite or
 claim that the entire repository test suite passes.
 
-After review and separately authorized Staging promotion, pin the exact deployed
-revision and collect a fresh small run. A normal success should show explicit
-zero failures/retries with complete closure; it does not replace the synthetic
-failure-path tests. Do not reuse historical fixtures as new-revision acceptance,
-or mark S0.3.6 accepted based only on local tests.
+The fresh small and medium runs after separately authorized Staging promotion
+showed explicit zero failures/retries with complete durable closure, including
+two sequential Provider scopes for medium. They do not replace synthetic
+failure-path tests or establish real nonzero-retry/concurrent-scope acceptance.
+No further PDF run is requested for the accepted success-path target. Any
+separately scoped acceptance must pin the exact deployed revision and use a fresh run;
+historical executions must not be relabeled as new-revision evidence. Local
+tests alone do not establish Staging acceptance.

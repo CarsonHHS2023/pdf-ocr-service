@@ -30,16 +30,22 @@ Atlas also maintains a horizontal storage/processing scalability track, separate
 - [Scalable Processing Migration Plan](../plans/scalable-processing-migration-plan.md)
 - [S0 Observability Closure Plan — 2026-08-25](../plans/s0-observability-closure-plan-2026-08-25.md)
 - [S0 Phase 2 Baseline Reconciliation — 2026-08-25](../reviews/s0-phase2-baseline-reconciliation-2026-08-25.md)
+- [S0.3.4 Compute Acceptance — 2026-09-02](../reviews/s0-3-4-compute-acceptance-2026-09-02.md)
+- [S0.3.6 Failure/Retry Small Acceptance — 2026-09-02](../reviews/s0-3-6-failure-retry-small-acceptance-2026-09-02.md)
+- [S0.3.6 Failure/Retry Medium Acceptance — 2026-09-02](../reviews/s0-3-6-failure-retry-medium-acceptance-2026-09-02.md)
 
 The implementation phases are S0–S9. This work may support M5, M6, M7, and the external-pilot/commercial gate. It does **not** redefine M6 Smart Reading Intelligence as an infrastructure milestone.
 
-### Current scalability status — 2026-08-25
+### Current scalability status — 2026-09-02
 
 - **Current scalability phase:** S0 — Baseline and observability.
 - **S0 status:** **In Progress**.
-- Formal exact-identity Staging baselines for `pdf-small-v1` and `pdf-medium-v1` are accepted on backend/runtime revision `6fe56d35bfb39cf1e1016beb2694464fb1fc2e4f`.
-- The medium acceptance exercised selective routing and the sequential two-shard Provider transport path.
-- The next scalability work is instrumentation-only S0 closure work for upload, network/object-store, Modal/Provider/GPU, failure/retry, and Reader metrics.
+- The original Phase 2 small/medium baseline remains historical evidence on revision `6fe56d35bfb39cf1e1016beb2694464fb1fc2e4f`; S0.3.3 transport/download acceptance subsequently passed on `37a3c41fc6f968ef442a723aaccdec2f90af3ce3`.
+- New `pdf-small-v1` and `pdf-medium-v1` S0.3.4 acceptance passed on exact Backend/runtime revision `c5817070b85e6778db3dbdf558cd8fd756ffb904`, paired with isolated Provider deployment `edcdfc6bdfd691facf152ac577e41e520fdec4c9`. OCR duration, raw shard bytes and GPU sampling proxy are observed, including two sequential medium shards. See the report for collector provenance and coverage limits.
+- Scoped S0.3.5 Reader first-open/reopen and nonzero-window reopen acceptance subsequently passed; the [closure plan](../plans/s0-observability-closure-plan-2026-08-25.md#s035-reader-open-and-bounded-query-measurements) retains its separate Backend/frontend revisions and coverage limits.
+- S0.3.6 **small single-scope and medium sequential two-scope success-path PASS** on `7435aa3fa7ba0766d8cc2584bcacfd735c5ce74c`: 14 and 24 successful Provider method calls respectively, explicit zero failures/retries and complete durable closure. Real nonzero retries and concurrent runtime execution are not claimed.
+- **Four** required metrics remain `not_instrumented` in both fresh collectors: upload peak memory, stage-owned preprocessing CPU, visual asset generation duration and upload-to-Reader-ready latency. Historical seven/five-gap checkpoints remain historical, not current status.
+- Next: define the S0.3.1 upload-owned memory boundary and remaining instrumentation in [the current action order](../plans/s0-observability-closure-plan-2026-08-25.md#61-next-decisions-and-remaining-instrumentation). No further PDF run is requested for the accepted S0.3.6 success-path target; this index starts no implementation.
 - TXT representative timing and the large PDF baseline remain open.
 - The 528-page fixture is deferred until the missing instrumentation can produce materially useful closure evidence and execution is explicitly approved.
 - **S1/S2 are not started by the current S0 closure plan.**
@@ -82,5 +88,5 @@ M1, M2, and M3 preserve their official historical titles and statuses. Former M4
 - The roadmap governs current sequencing and high-level scope boundaries.
 - The 2026-08-15 M5 reconciliation is a point-in-time progress review; it does not erase historical plan/PR evidence.
 - The S0–S9 scalability plan is horizontal implementation guidance and does not independently change M5/M6/M7 status.
-- The 2026-08-25 S0 reconciliation and closure plan are the current execution/evidence overlay for S0; they do not authorize S1/S2 or change product milestone status.
+- The maintained S0 closure plan and its dated acceptance reports are the current execution/evidence overlay for S0; they do not authorize S1/S2 or change product milestone status.
 - Product milestone status does not itself authorize Production changes, Reader cutover, destructive migration/backfill, external pilot, or commercial release.

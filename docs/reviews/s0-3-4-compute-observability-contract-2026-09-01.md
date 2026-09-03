@@ -1,6 +1,8 @@
 # S0.3.4 compute observability contract
 
-Status: implementation under review; Staging fixture acceptance pending. S0 remains In Progress. S1/S2 are not started.
+Status at the original 2026-09-01 review: implementation under review; Staging fixture acceptance pending.
+
+**2026-09-02 acceptance addendum:** [New small and medium runs passed](s0-3-4-compute-acceptance-2026-09-02.md) on exact Backend Staging revision `c5817070b85e6778db3dbdf558cd8fd756ffb904` paired with isolated Provider deployment `edcdfc6bdfd691facf152ac577e41e520fdec4c9`. The report records producer/persistence/collector evidence, the exact-source collector reconstruction limitation and runtime coverage limits. The contract below is unchanged. S0 remains In Progress; S1/S2 are not started.
 
 This extends the accepted S0.3.3 producer → durable event → collector path. It does not reinterpret earlier fixture runs as having compute evidence.
 
@@ -46,4 +48,4 @@ Contract tests cover multi-shard and out-of-order evidence, single-transaction p
 
 Review fixes also limit each Provider process to one outstanding NVML probe, including initialization and shutdown. If a native call remains stuck after the bounded join, later batches report `sampler_busy` without launching another thread. The slot is released only when the old probe exits, so sampling can resume after recovery. OCR proceeds in both cases, and the unavailable reason survives the Provider and Backend allowlists. Tests exercise blocked initialization, read and close paths, repeated OCR calls, recovery, and thread-start failure.
 
-Runtime acceptance remains pending on an exact Backend Staging revision paired with the isolated Provider revision. After the implementation is reviewed and deployed, collect a newly completed small run and inspect the three required metrics plus the complete per-batch/shard breakdown. Do not reuse pre-instrumentation runs. Keep private run identifiers and fixture identity in private evidence, and decide on a medium rerun only after small acceptance.
+At the original review, runtime acceptance remained pending on an exact Backend Staging revision paired with the isolated Provider revision. Its acceptance sequence required a newly completed small run first, followed by a decision on medium; the dated addendum above records completion of that sequence. Future revalidation must continue to inspect the three required metrics and complete per-batch/shard breakdown, avoid reusing pre-instrumentation runs, and retain private run identifiers and fixture identity only in private evidence.
