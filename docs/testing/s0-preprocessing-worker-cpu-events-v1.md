@@ -1,8 +1,9 @@
 # S0 worker-thread CPU — proposed event and persistence protocol v1
 
-Status: **implementation design only**, 2026-09-03. Supplements the
-[CPU attribution boundary](s0-preprocessing-cpu-attribution-v1.md); it does not
-implement a producer or collector and does not close `preprocessing_cpu_seconds`.
+Status: **Staging-only implementation candidate in Draft PR #43**, 2026-09-03.
+See the [implementation evidence and limits](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md).
+Supplements the [CPU attribution boundary](s0-preprocessing-cpu-attribution-v1.md);
+it is not deployed/accepted and does not close `preprocessing_cpu_seconds`.
 The proposed auxiliary name is `preprocessing_worker_thread_cpu_seconds`.
 
 ## 1. Source review findings resolved by this design
@@ -36,11 +37,17 @@ new processing, retry or concurrency limit. On the ninth request, set sticky
 no CPU measurement claim for the omitted request. Never clip a count into a
 complete manifest. A closed overflow report has `complete=false`.
 
-At most **18 events**: one run start, up to eight registrations, up to eight
+Normally at most **18 events**: one run start, up to eight registrations, up to eight
 scope terminals and one run terminal. No arrays or nested objects are needed.
 The root terminal's count, all registered scope IDs and matching terminal rows
 together form the manifest. An ordinal is a **logical slot**, not commit-time or
 wall-clock order; terminals are written in a later batch.
+
+Implementation refinement: reserve **one additional invalidation event**, ordinal
+18, for a post-closure protocol violation. The absolute per-root ceiling is 19
+events, while any invalidation prevents observation. This provides a bounded
+way to reject an earlier complete snapshot if a closed root is unexpectedly
+reused; repeated violations do not emit unbounded events.
 
 Every payload has exactly these six common fields, plus the fields in the next
 table (unknown/missing fields are rejected):
@@ -64,6 +71,7 @@ hashing; hashing arbitrary caller text does not make it a valid source identity.
 | `S0_PREPROCESS_CPU_SCOPE_REGISTERED` | `ordinal`, `scope_index`, `scope_id` | `2*i-1` |
 | `S0_PREPROCESS_CPU_SCOPE_TERMINAL` | Registration fields plus `operation_outcome`, `clock_status`, `cpu_delta_ns`, `clock_resolution_ns`, `reason` | `2*i` |
 | `S0_PREPROCESS_CPU_RUN_TERMINAL` | `ordinal`, `scope_count`, `complete`, `logical_outcome`, `issue` | `2*N+1` |
+| `S0_PREPROCESS_CPU_RUN_INVALIDATED` | `ordinal`, `issue=protocol_violation` | 18, optional and always invalidating |
 
 `i` is an integer 1..8; `N` is an integer 0..8. Booleans are never integers for
 validation. `scope_id` is `pcpu_` plus 32 lowercase hex digits; it is unique per
@@ -169,8 +177,10 @@ of the untracked requests. No automatic timeout creates a zero/complete terminal
 
 The implementation must prove no registration is possible after seal at the
 actual call graph. Post-seal registration is a protocol defect, not an accepted
-extra operation: do not ignore it while trusting an earlier complete terminal.
-This is an installer/lifecycle test gate, not a behavior enforced by this document.
+extra operation: before terminal claim it makes the root incomplete; afterwards
+it claims the single invalidation event. The original work still runs, but the
+collector must not trust the earlier complete terminal. An observer write loss
+still cannot be repaired into a guaranteed complete history by this mechanism.
 
 ## 4. Dedicated bounded writer, not one-row generic publication
 
@@ -218,7 +228,8 @@ Preserve SQL-side payload byte guards; never materialize an oversized raw Text
 value to perform the check. Do not select the newest apparently valid root and
 discard conflicting evidence.
 
-An observed auxiliary requires a completed real ProcessingRun, completed logical
+An observed auxiliary requires a real ProcessingRun with canonical status
+`succeeded`, a `completed` logical
 outcome, `complete=true`, at least one scope, and every registered scope completed
 with a valid measured clock. Sum disjoint per-invocation integer deltas, reject
 total overflow above `2**53-1`, then divide by 1e9 for seconds. Zero is admissible
@@ -232,12 +243,14 @@ protocol evidence is `not_available`, not zero or an observed partial sum. The
 required full-stage `preprocessing_cpu_seconds` remains `not_instrumented` in all
 cases under this worker-only protocol. Existing required metrics are unchanged.
 
-Next implementation slice, if approved: strict dependency-light auxiliary
-validator and composed worker/root hooks, dedicated writer and named CI tests.
-Required tests include all lifecycle interleavings, source-read failure before
+The candidate now includes the strict dependency-light auxiliary validator,
+composed worker/root hooks, dedicated writer and named CI tests. CPU JSON decoding
+also rejects duplicate keys and non-finite constants, without changing decoding
+for existing event families. Regression gates include lifecycle interleavings, source-read failure before
 entry, publication after existing Phase 2 capture on success/error, cancellation
 during publication, post-seal impossibility, same-ID duplicate
 rollback, final-batch atomicity, source/run mismatch, document deletion, sanitizer
 rejection, evidence-window truncation and no new processing/cleanup behavior.
-Use only local/fake inputs and disposable test databases first. Runtime rollout,
+Local/fake inputs and disposable test databases are used first. See the evidence
+report for executed versus pending checks. Exact-head review, runtime rollout,
 merge, new PDF runs and Staging acceptance require their own later gates.

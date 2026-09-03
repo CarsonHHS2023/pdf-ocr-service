@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Design and local synthetic feasibility only; not runtime acceptance |
+| Status | Staging-only implementation candidate in Draft PR #43; not deployed/accepted |
 | Date | 2026-09-03 |
 | Inspected Backend Staging source | `300b1d4e83a44aa6723a6143a9d82176e800d50b` |
 | Parent | [S0 closure plan](../plans/s0-observability-closure-plan-2026-08-25.md) |
@@ -19,7 +19,10 @@ not make the process or native libraries single-threaded.
 
 Keep required `preprocessing_cpu_seconds = not_instrumented`. Do not rename the
 current process-wide delta or the proposed worker component to fill it. This
-proposal adds no producer, event, collector mapping, accepted limitation or waiver.
+initial proposal granted no accepted limitation or waiver. The
+[implementation follow-up](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md)
+now adds Staging-only worker-component producer/persistence/auxiliary mapping;
+it does not promote the required complete-stage metric.
 S0 and M5 remain In Progress; S1/S2 are not started.
 
 The separate upload-memory proposal remains open in
@@ -30,7 +33,7 @@ waives `backend_upload_peak_memory_mb`.
 
 No changes to executor concurrency, native threading configuration, processing
 behavior, retry policy, compute placement, storage, Production or dependencies
-are authorized here. No PDF upload or benchmark is needed for this design.
+are included. No PDF upload or benchmark was needed for this implementation slice.
 
 ## 2. Distinct measurements
 
@@ -38,7 +41,7 @@ are authorized here. No PDF upload or benchmark is needed for this design.
 |---|---|---|
 | `preprocessing_wall_seconds` | Existing synchronous delegate wall duration, including waits inside it | Existing metric; unchanged |
 | `preprocessing_process_cpu_delta_seconds` | Process CPU during that interval, including unrelated overlapping work | Existing auxiliary; unchanged |
-| `preprocessing_worker_thread_cpu_seconds` | Proposed current-worker CPU interval, excluding other threads/processes | Auxiliary candidate only; not implemented |
+| `preprocessing_worker_thread_cpu_seconds` | Current-worker CPU interval, excluding other threads/processes | Implemented auxiliary candidate; not deployed/accepted |
 | `preprocessing_cpu_seconds` | Attributable CPU for the complete agreed preprocessing operation | Required gap remains `not_instrumented` |
 | Classification CPU | Nested classification operation | Component of preprocessing, never added to its parent as independent work |
 
@@ -123,15 +126,16 @@ Worker completion after logical run cancellation must not rewrite the run's
 terminal status. A future persistence design must support that ordering or mark
 coverage incomplete, without silently dropping late worker evidence.
 
-## 5. Proposed admission gates, not a released schema
+## 5. Admission gates, not deployed acceptance
 
 The [event/persistence protocol follow-up](s0-preprocessing-worker-cpu-events-v1.md)
-now fixes the v1 field shapes, eight-request/eighteen-event cap, null-clock
+fixes the v1 field shapes, eight-request/eighteen-normal-event cap, null-clock
 pre-entry evidence, exact sanitizer checks and cancellation-safe finalization
 gate. It refines registration versus actual stage entry. The requirements below
-remain applicable; this is still a design, not a released producer or schema.
+remain applicable. The implementation adds one bounded post-closure invalidation
+event (nineteen absolute maximum) and remains an undeployed candidate.
 
-Before implementing even the auxiliary component:
+The auxiliary implementation must maintain these requirements:
 
 - Use allowlisted method/scope identifiers, e.g.
   `sync_preprocessing_worker_thread_cpu_v1` / `worker_thread_only`. Require valid
@@ -150,7 +154,7 @@ Before implementing even the auxiliary component:
   need actual durable transaction tests, not only in-memory callbacks.
 - Cap each serialized event at 8,192 UTF-8 bytes and bound run-level scope count
   before producer admission. The follow-up proposes eight registered requests,
-  at most eighteen events and sticky incomplete overflow; never silently truncate a
+  at most eighteen normal events, one exceptional invalidation and sticky incomplete overflow; never silently truncate a
   manifest. Overflow, malformed payloads or missing closure block aggregation.
 - Preserve processing return values and original exceptions if the observer
   fails. Fail-open runtime behavior does not mean fail-open collector admission.
@@ -171,9 +175,9 @@ process solely to obtain a number would change this baseline and is out of scope
 
 Recommended: retain the required gap and review the explicitly named
 worker-thread auxiliary component and its [bounded protocol](s0-preprocessing-worker-cpu-events-v1.md).
-Field shapes and the lifecycle/publication contract are now proposed; actual
-composed producer, atomic writer and strict auxiliary collector tests remain the
-implementation gate. Any future
+Field shapes, composed producer, atomic writer and strict auxiliary collector
+are now present in the candidate; see the [implementation evidence](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md)
+before exact-head review and any rollout. Any future
 claim of complete `preprocessing_cpu_seconds` needs new coverage evidence or an
 explicitly approved scope revision; neither is granted by this proposal.
 
