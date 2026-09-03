@@ -91,3 +91,71 @@ No PDFs, source contents or private fixture identifiers were added. No workflow,
 runtime, dependency, database, Production or PR #42 change is included. There
 was no merge, deployment or 100/528-page benchmark. All four required gaps remain;
 S0/M5 are In Progress and S1/S2 are not started.
+
+## Protocol-design follow-up, 2026-09-03
+
+The [bounded event/persistence proposal](../testing/s0-preprocessing-worker-cpu-events-v1.md)
+resolves four design risks before implementation: sanitizer truncation and
+permissive privacy keys, missing schema-level scope uniqueness, pre-delegate
+source/admission failure, and cancellation before worker completion. It proposes
+eight registered requests / eighteen events, flat exact-field payloads, distinct
+null-clock non-entry terminals, deterministic row IDs and one atomic final batch.
+Registration records intent; only entry into the original timed delegate can
+produce a clock interval. The full-stage CPU requirement is unchanged.
+
+The follow-up self-review also separated clock capture from scope settlement:
+new publication must wait until the existing Phase 2 wall/process measurement
+has finished, otherwise its SQL overhead could contaminate those legacy values.
+This ordering is an explicit future composed-runtime test, not something the
+synthetic gate model alone proves.
+
+At follow-up start, PR #43 was still Draft/open/unmerged at
+`519f7068d8a00ee1b2d85e72d94a74f8b3bbde0d`; all four applicable CI runs on that
+head were successful. Staging and main remained at the exact SHAs above. Those
+are the pre-follow-up CI results, not evidence for later protocol changes.
+
+An additional **13 protocol controls** passed on each of CPython 3.11.15 and
+3.12.13. The original 13 clock/cancellation controls were also rerun successfully
+on both versions: **26 local checks per interpreter** in total.
+
+```sh
+python3.11 scripts/probes/s0_preprocessing_cpu_protocol_probe.py
+python3.12 scripts/probes/s0_preprocessing_cpu_protocol_probe.py
+```
+
+Protocol probe SHA-256:
+`df78de88a142608e3ca16369c18339c4a0b01941a97ce56bbfce40039339e45f`.
+
+| Additional controls | Count | Evidence limit |
+|---|---:|---|
+| Flat bounded payloads, null-clock variants, truncation, permissive keys, UTF-8 budget, deterministic keys, integer/aggregate bounds | 7 | Payload/model controls, not a complete production validator |
+| Cancelled-root/worker ordering, reversed order, racing closure, sticky publication loss, overflow, no-entry/post-seal guard | 6 | Synthetic locked state model, not actual application callbacks or SQL |
+
+The probe AST-selects only the existing pure sanitizer functions/constants from
+`app/processing/processing_events.py` and JSON encoder from `app/models.py`.
+It executes those original definitions with standard-library dependencies, not
+a handwritten substitute sanitizer, while avoiding application/ORM imports and
+database initialization. This is isolated source-function validation, not full
+module/runtime composition. The largest generated maximum-numeric sample was
+**578 UTF-8 bytes**; this is not a claimed maximum for all future event variants.
+All generated shape controls survived the sanitizer unchanged. Negative controls
+confirmed both truncation and the need for a separate exact privacy allowlist.
+
+| Additional inspected source | SHA-256 |
+|---|---|
+| `app/processing/processing_events.py` | `cc1c7e203326d8bf45bc9e73c1fd23e79c28649477c9b6d2894e11ac531be15b` |
+| `app/processing/processing_event_model.py` | `089a150eb0e886beac04a52c8a9a3d8dac816c704a9746a6fa4689f58ae5c0f1` |
+| `app/s0_failure_retry_observability.py` | `efed5acb2fbcae2547c653af2f1b789f08c423c5c37800a53108688c3e9c94ed` |
+
+The model proves only the metadata claim condition under its tested interleavings.
+It does not prove actual future callback ownership, SQL atomicity, rollback,
+same-ID conflict behavior, clock/identity installation, collector admission or
+post-seal impossibility in the runtime. Its post-seal exception is a model guard,
+not permission to throw from an observability hook in production. Those remain
+explicit implementation regression gates in the protocol.
+
+The follow-up adds no database connection, migration, producer, runtime import,
+collector mapping, workflow change or native processing. Both standalone probe
+scripts remain local-only, not named CI test entries. The final exact-head CI and
+artifact/deploy status are recorded on PR #43 separately. No live acceptance or
+new fixture run is claimed; all four required gaps remain open.

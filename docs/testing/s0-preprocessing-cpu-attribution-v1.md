@@ -125,6 +125,12 @@ coverage incomplete, without silently dropping late worker evidence.
 
 ## 5. Proposed admission gates, not a released schema
 
+The [event/persistence protocol follow-up](s0-preprocessing-worker-cpu-events-v1.md)
+now fixes the v1 field shapes, eight-request/eighteen-event cap, null-clock
+pre-entry evidence, exact sanitizer checks and cancellation-safe finalization
+gate. It refines registration versus actual stage entry. The requirements below
+remain applicable; this is still a design, not a released producer or schema.
+
 Before implementing even the auxiliary component:
 
 - Use allowlisted method/scope identifiers, e.g.
@@ -143,8 +149,8 @@ Before implementing even the auxiliary component:
   manifest. Uniqueness, duplicate rejection and late/cancelled terminal handling
   need actual durable transaction tests, not only in-memory callbacks.
 - Cap each serialized event at 8,192 UTF-8 bytes and bound run-level scope count
-  before producer admission. Resolve the numerical scope cap and overflow
-  representation in the reviewed event schema; never silently truncate a
+  before producer admission. The follow-up proposes eight registered requests,
+  at most eighteen events and sticky incomplete overflow; never silently truncate a
   manifest. Overflow, malformed payloads or missing closure block aggregation.
 - Preserve processing return values and original exceptions if the observer
   fails. Fail-open runtime behavior does not mean fail-open collector admission.
@@ -163,10 +169,11 @@ process solely to obtain a number would change this baseline and is out of scope
 
 ## 6. Review decision and next gate
 
-Recommended: retain the required gap and review whether the explicitly named
-worker-thread auxiliary component is useful enough to implement. If selected,
-first finalize its bounded schema and lifecycle/persistence design, then test the
-actual composed producer and strict auxiliary collector admission. Any future
+Recommended: retain the required gap and review the explicitly named
+worker-thread auxiliary component and its [bounded protocol](s0-preprocessing-worker-cpu-events-v1.md).
+Field shapes and the lifecycle/publication contract are now proposed; actual
+composed producer, atomic writer and strict auxiliary collector tests remain the
+implementation gate. Any future
 claim of complete `preprocessing_cpu_seconds` needs new coverage evidence or an
 explicitly approved scope revision; neither is granted by this proposal.
 
