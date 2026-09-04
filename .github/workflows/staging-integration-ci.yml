@@ -75,6 +75,7 @@ jobs:
           python scripts/apply_s0_pdf_resource_heartbeat.py
           python scripts/apply_provider_runtime_preflight.py
           python scripts/apply_s0_v5_phase0_observability.py
+          python scripts/apply_s0_visual_asset_generation_observability.py
 
       - name: Static and workflow checks
         run: |
@@ -88,6 +89,8 @@ jobs:
           grep -q 'validate_provider_runtime_configuration(settings)' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase1_shared_analysis' app/processing/pdf_ingestion.py
           grep -q 'install_s0_v5_phase0_observability' app/processing/pdf_ingestion.py
+          grep -q 'install_visual_asset_generation_observability' app/processing/pdf_ingestion.py
+          grep -q '_measure_visual_asset_generation' app/processing/s0_baseline.py
           grep -q 'await record_provider_compute_from_result_async(request, result)' app/processing/orchestration.py
           grep -q '_measure_provider_compute(' app/processing/s0_baseline.py
           grep -q '_measure_reader_open(' app/processing/s0_baseline.py
@@ -161,6 +164,8 @@ jobs:
             tests/test_s0_preprocessing_cpu_observability.py \
             tests/test_s0_preprocessing_cpu_publication.py \
             tests/test_s0_preprocessing_cpu_composed.py \
+            tests/test_s0_visual_asset_generation_observability.py \
+            tests/test_s0_visual_asset_generation_composed.py \
             tests/test_s0_pdf_resource_heartbeat.py \
             tests/test_s0_presentation_memory_bounds.py \
             tests/test_s0_bounded_v4_output.py \
@@ -233,6 +238,8 @@ jobs:
             /tmp/atlas-staging-verified/app/s0_failure_retry_observability.py \
             /tmp/atlas-staging-verified/app/s0_preprocessing_cpu_metrics.py \
             /tmp/atlas-staging-verified/app/s0_preprocessing_cpu_observability.py \
+            /tmp/atlas-staging-verified/app/s0_visual_asset_generation_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_visual_asset_generation_observability.py \
             /tmp/atlas-staging-verified/app/processing/s0_phase2_stage_observability.py \
             /tmp/atlas-staging-verified/app/processing/s0_baseline.py \
             /tmp/atlas-staging-verified/app/processing/pdf_ingestion.py \
@@ -261,13 +268,21 @@ jobs:
                   'await observe_provider_call("result", self.provider.get_job_result,',
                   'await observe_provider_call("artifact", self.provider.get_job_artifact,',
               ),
-              'app/processing/s0_baseline.py': ('_measure_provider_compute(', '_measure_reader_open(', 'measure_failure_retry(', 'measure_preprocessing_worker_cpu('),
+              'app/processing/s0_baseline.py': (
+                  '_measure_provider_compute(',
+                  '_measure_reader_open(',
+                  'measure_failure_retry(',
+                  'measure_preprocessing_worker_cpu(',
+                  '_measure_visual_asset_generation(',
+                  'processing_events.S0_VISUAL_ASSET_GENERATION_*',
+              ),
               'app/processing/s0_phase2_stage_observability.py': ('measure_preprocessing_delegate(delegate, *args, **kwargs)',),
               'app/main.py': ('install_s0_reader_open(app)',),
               'app/routers/reader_v2.py': ('return observe_reader_view(',),
               'app/processing/pdf_ingestion.py': (
                   'install_pdf_observability()',
                   'install_preprocessing_cpu_observability()',
+                  'install_visual_asset_generation_observability()',
                   'cpu_scope=current_preprocessing_scope()',
                   'note_preprocessing_future(concurrent_future)',
                   'note_pdf_terminal(document_id, status)',
