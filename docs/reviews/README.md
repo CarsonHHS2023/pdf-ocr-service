@@ -29,6 +29,7 @@ This is the current M5 status-evidence overlay. It does not erase the accepted M
 | Document | Evidence Date | Scope | Decision / limitation |
 |---|---|---|---|
 | [S0 Phase 2 Baseline Reconciliation — 2026-08-25](s0-phase2-baseline-reconciliation-2026-08-25.md) | 2026-08-25 | Exact-revision Staging PDF small/medium baseline acceptance, Phase 2 durable-measurement integrity, sharded Provider-route evidence, remaining S0 metric gaps | PDF small + medium baseline accepted; **S0 remains In Progress**; next slice is observability-only; S1/S2 and the 528-page rerun are not authorized by the review. |
+| [S0 Worker-CPU Small Acceptance — 2026-09-04](s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md) | 2026-09-04 | Exact-revision Staging worker-thread CPU auxiliary, durable event integrity and strict collector replay | Auxiliary accepted; required full-stage `preprocessing_cpu_seconds` remains `not_instrumented`; **S0 remains In Progress**. |
 
 The earlier [S0 Baseline Report — 2026-08-23](s0-baseline-2026-08-23.md) remains a historical point-in-time record of the pre-rerun instrumentation state. The 2026-08-25 reconciliation is the current S0 evidence overlay.
 

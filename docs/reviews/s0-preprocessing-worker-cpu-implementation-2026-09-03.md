@@ -1,6 +1,8 @@
-# S0 worker-thread CPU implementation candidate — 2026-09-03
+# S0 worker-thread CPU implementation — 2026-09-03
 
-Status: **implemented in Draft PR #43, not deployed or accepted**. This extends
+Status: **implemented by PR #43 and accepted as a Staging auxiliary on
+`ee2f48d83972bfd978060b40b3729b4b6b8405d4`**. See the
+[one-page acceptance evidence](s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md). This extends
 the [attribution boundary](../testing/s0-preprocessing-cpu-attribution-v1.md) and
 [bounded event protocol](../testing/s0-preprocessing-worker-cpu-events-v1.md).
 The historical [feasibility report](s0-preprocessing-cpu-feasibility-2026-09-03.md)
@@ -141,7 +143,8 @@ Local skips are not PostgreSQL execution evidence. Exact-head CI, including the
 disposable PostgreSQL service, artifact verification and deploy-skipped result,
 is checked separately and recorded on PR #43.
 
-Next gate is exact-head code review before any merge or rollout. No PR merge,
-deployment, new PDF upload, benchmark, native thread-setting change, compute
-movement, retry-policy change or Production modification is included. Staging
-acceptance has not happened. S0/M5 remain In Progress; S1/S2 are not started.
+PR #43 subsequently passed exact-head review, merged into Staging and produced the
+[separate acceptance record](s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md).
+That acceptance did not change native thread settings, compute placement, retry
+policy or Production. Required full-stage CPU remains open; S0/M5 remain In
+Progress and S1/S2 are not started.

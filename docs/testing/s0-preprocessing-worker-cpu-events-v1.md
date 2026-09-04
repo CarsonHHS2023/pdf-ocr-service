@@ -1,9 +1,11 @@
 # S0 worker-thread CPU — proposed event and persistence protocol v1
 
-Status: **Staging-only implementation candidate in Draft PR #43**, 2026-09-03.
+Status: **Staging auxiliary accepted on 2026-09-04; required full-stage CPU remains open**.
 See the [implementation evidence and limits](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md).
 Supplements the [CPU attribution boundary](s0-preprocessing-cpu-attribution-v1.md);
-it is not deployed/accepted and does not close `preprocessing_cpu_seconds`.
+it is accepted as a Staging auxiliary on exact revision
+`ee2f48d83972bfd978060b40b3729b4b6b8405d4`; it does not close
+`preprocessing_cpu_seconds`. See the [one-page acceptance evidence](../reviews/s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md).
 The proposed auxiliary name is `preprocessing_worker_thread_cpu_seconds`.
 
 ## 1. Source review findings resolved by this design
@@ -264,7 +266,7 @@ protocol evidence is `not_available`, not zero or an observed partial sum. The
 required full-stage `preprocessing_cpu_seconds` remains `not_instrumented` in all
 cases under this worker-only protocol. Existing required metrics are unchanged.
 
-The candidate now includes the strict dependency-light auxiliary validator,
+The accepted auxiliary implementation includes the strict dependency-light validator,
 composed worker/root hooks, dedicated writer and named CI tests. CPU JSON decoding
 also rejects duplicate keys and non-finite constants, without changing decoding
 for existing event families. Regression gates include lifecycle interleavings, source-read failure before
