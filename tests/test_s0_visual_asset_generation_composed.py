@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import s0_visual_asset_generation_metrics as metrics
 from app import s0_visual_asset_generation_observability as observer
 from app.models import Base
-from app.processing import pdf_canonicalization, pdf_ingestion, s0_baseline
+from app.processing import s0_baseline
 from tests.test_s0_provider_source_download_observability import (
     DOCUMENT_ID,
     RUN_ID,
@@ -43,6 +44,10 @@ def _root(*, generated_assets=1, generated_renditions=1):
 
 
 def test_final_runtime_wrappers_are_installed_last_and_idempotently():
+    pytest.importorskip("PIL")
+    pytest.importorskip("fitz")
+    from app.processing import pdf_canonicalization, pdf_ingestion
+
     canonicalize = pdf_canonicalization.PdfCanonicalizationService.canonicalize
     enrich = pdf_canonicalization.enrich_candidate_with_pdf_visual_assets
     assert getattr(canonicalize, "_s0_visual_asset_generation_installed", False)
@@ -124,6 +129,7 @@ def test_not_required_and_oversized_payload_never_map_as_observed(
 
 
 def test_overlay_is_idempotent_on_composed_runtime():
+    from scripts.apply_s0_preprocessing_cpu_observability import main as previous
     from scripts.apply_s0_visual_asset_generation_observability import main
 
     paths = (
@@ -131,6 +137,8 @@ def test_overlay_is_idempotent_on_composed_runtime():
         Path("app/processing/s0_baseline.py"),
     )
     before = {path: path.read_bytes() for path in paths}
+    previous()
     main()
+    previous()
     main()
     assert before == {path: path.read_bytes() for path in paths}

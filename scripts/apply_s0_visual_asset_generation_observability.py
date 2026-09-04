@@ -35,9 +35,13 @@ def main() -> None:
         [(cpu_install, visual_install)],
     )
 
-    import_anchor = "from __future__ import annotations\n"
+    worker_import = (
+        "from app.s0_preprocessing_cpu_metrics import (\n"
+        "    EVENT_NAMES as _WORKER_CPU_EVENTS, measure_preprocessing_worker_cpu, source_scope_id as _worker_cpu_source_scope,\n"
+        ")\n"
+    )
     import_block = (
-        import_anchor
+        worker_import
         + "\nfrom app.s0_visual_asset_generation_metrics import (\n"
         "    EVENT_NAMES as _VISUAL_ASSET_GENERATION_EVENTS,\n"
         "    decode_visual_asset_generation_payload,\n"
@@ -59,16 +63,10 @@ def main() -> None:
         "            payload, decode_valid = _decode_event_payload(row.payload_json)\n"
     )
     decode_block = (
-        '        if row.event_name.startswith("S0_VISUAL_ASSET_GENERATION_"):\n'
+        decode_anchor
+        + '        if row.event_name.startswith("S0_VISUAL_ASSET_GENERATION_"):\n'
         "            payload, decode_valid = "
         "decode_visual_asset_generation_payload(row.payload_json)\n"
-        '        elif row.event_name.startswith("S0_PREPROCESS_CPU_"):\n'
-        "            from app.s0_preprocessing_cpu_metrics import "
-        "decode_worker_cpu_payload\n"
-        "            payload, decode_valid = "
-        "decode_worker_cpu_payload(row.payload_json)\n"
-        "        else:\n"
-        "            payload, decode_valid = _decode_event_payload(row.payload_json)\n"
     )
     mapping_anchor = "    failure_retry = measure_failure_retry(\n"
     mapping_block = (
@@ -88,9 +86,23 @@ def main() -> None:
         "    )\n\n"
         + mapping_anchor
     )
-    auxiliary_anchor = "    auxiliary: list[MetricReading] = [\n"
+    worker_auxiliary = (
+        "    auxiliary: list[MetricReading] = [\n"
+        "        MetricReading(\n"
+        "            key=\"preprocessing_worker_thread_cpu_seconds\",\n"
+        "            label=\"Preprocessing worker-thread CPU (excludes helpers)\", unit=\"seconds\",\n"
+        "            status=worker_cpu[\"status\"], value=worker_cpu[\"value\"],\n"
+        "            source=\"processing_events.S0_PREPROCESS_CPU_*\", note=worker_cpu[\"note\"],\n"
+        "        ),\n"
+        "        MetricReading(\n"
+        "            key=\"preprocessing_worker_thread_cpu_breakdown\",\n"
+        "            label=\"Worker-thread CPU scope evidence\", unit=None,\n"
+        "            status=worker_cpu[\"status\"], value=worker_cpu[\"breakdown\"],\n"
+        "            source=\"processing_events.S0_PREPROCESS_CPU_*\", note=worker_cpu[\"note\"],\n"
+        "        ),\n"
+    )
     auxiliary_block = (
-        auxiliary_anchor
+        worker_auxiliary
         + "        MetricReading(\n"
         "            key=\"visual_asset_generation_breakdown\",\n"
         "            label=\"Visual asset generation evidence\",\n"
@@ -104,11 +116,11 @@ def main() -> None:
     _patch(
         Path("app/processing/s0_baseline.py"),
         [
-            (import_anchor, import_block),
+            (worker_import, import_block),
             (safe_event_anchor, safe_event_block),
             (decode_anchor, decode_block),
             (mapping_anchor, mapping_block),
-            (auxiliary_anchor, auxiliary_block),
+            (worker_auxiliary, auxiliary_block),
         ],
     )
 
