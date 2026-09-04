@@ -51,6 +51,8 @@ These signals justify targeted observability work before any expensive large-fix
 
 **2026-09-02 failure/retry medium follow-up:** [Fresh 11-page medium acceptance](../reviews/s0-3-6-failure-retry-medium-acceptance-2026-09-02.md) passed on the same exact revision with two sequential Provider scopes for 3 + 4 pages and four local-result pages. The collector observes 24 successful method-call entries (2 submit, 20 normal status polls, 2 result), zero failures/retries/cancellations, contiguous ordinals and one complete two-scope manifest. Both scope terminals and the run terminal share one database transaction. All 50 durable events passed the boundedness/identity/privacy audit. The same four required gaps remain; Section 6.1 now prioritizes upload-owned memory scope design. Real nonzero retries and concurrent runtime execution are not claimed. S0 and M5 remain In Progress; S1/S2 are not started.
 
+**2026-09-04 worker-CPU auxiliary checkpoint:** [A fresh one-page Staging run](../reviews/s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md) passed on exact revision `ee2f48d83972bfd978060b40b3729b4b6b8405d4`. The strict collector observes `preprocessing_worker_thread_cpu_seconds = 21.996906251` with one complete worker scope and exact ordinals 0-3. This is explicitly worker-thread-only evidence; required full-stage `preprocessing_cpu_seconds` remains `not_instrumented`, the four required gaps remain open, and S0/M5 remain In Progress.
+
 ## 3. Scope rule
 
 Every PR under this closure plan must be instrumentation-only unless this plan is explicitly revised.
@@ -227,7 +229,7 @@ The 528-page fixture requires explicit approval at execution time and must not b
 | upload duration | observed in current small/medium snapshots | retain S0.3.1 upload-operation boundary |
 | backend source/object-store bytes | observed for measured Backend logical I/O in current snapshots | retain S0.3.2 logical-I/O scope; not total network traffic |
 | preprocessing wall time | observed for accepted PDF small/medium | retain current contract |
-| preprocessing CPU time | `not_instrumented` as stage-owned metric; process-wide delta is auxiliary | dedicated stage-attribution instrumentation before S0.3.7 mapping |
+| preprocessing CPU time | required full-stage metric remains `not_instrumented`; worker-thread auxiliary is `observed` on the 2026-09-04 one-page checkpoint | native/helper coverage or an approved scope decision is still required |
 | Backend -> compute transport bytes | observed for small fallback and medium presigned shards (2026-09-01) | S0.3.3 representative acceptance PASS; keep ASGI body semantics |
 | compute/Modal download time | observed for small and both medium shards (2026-09-01) | S0.3.3 representative acceptance PASS; sum download operations only |
 | OCR page/batch duration | observed for small and both medium shards | S0.3.4 representative acceptance PASS; predict-operation sum |
@@ -249,7 +251,7 @@ The **four** remaining `not_instrumented` rows in both fresh S0.3.6 small and me
 
 1. **S0.3.6 representative success-path target satisfied:** fresh small and 11-page medium evidence now prove single-scope and sequential two-scope counters on the same pinned revision, with contiguous ordinals, one complete manifest and no cross-layer failure summation. Retain the evidence; do not request another PDF run for this target or inject real failures to manufacture retries.
 2. **S0.3.1 design review next:** review the [proposed upload-memory boundary](../testing/s0-upload-memory-observability-v1.md#7-verification-gates-and-next-decision). The inspected current probes do not establish a complete attributable peak. Select a useful bounded component with a residual gap, prove a complete method, or explicitly approve a limitation/scope revision before implementation. Largest read-buffer bytes and process-lifetime RSS cannot fill `backend_upload_peak_memory_mb`; this proposal grants no waiver and changes none of the four required gaps.
-3. **Preprocessing CPU attribution:** define a stage-owned CPU measurement that does not count overlapping process-wide work or require moving compute. Current process CPU deltas remain auxiliary.
+3. **Preprocessing CPU auxiliary accepted; required gap retained:** the [worker-thread-only implementation](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md) and [small Staging acceptance](../reviews/s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md) now provide a strict auxiliary measurement. Native helper/child-process coverage is not proven, process-wide deltas stay separate, and required `preprocessing_cpu_seconds` remains `not_instrumented`.
 4. **Visual asset generation timing:** identify the actual generation operation(s), preserve processing behavior, and add bounded durable terminal coverage before collector mapping. Canonicalization duration is not a substitute.
 5. **Upload-to-Reader-ready boundary:** define the readiness endpoint and same-run correlation before composing latency. ProcessingRun completion, core semantic-open time and binary/paint readiness are independent; do not sum unrelated or overlapping durations.
 

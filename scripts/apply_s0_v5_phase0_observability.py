@@ -145,6 +145,7 @@ def main() -> None:
         )
         from scripts.apply_s0_reader_open_observability import main as apply_s0_reader_open_observability
         from scripts.apply_s0_failure_retry_observability import main as apply_s0_failure_retry_observability
+        from scripts.apply_s0_preprocessing_cpu_observability import main as apply_s0_preprocessing_cpu_observability
         from scripts.apply_s0_provider_compute_observability import (
             main as apply_s0_provider_compute_observability,
         )
@@ -209,6 +210,7 @@ def main() -> None:
         )
         from apply_s0_reader_open_observability import main as apply_s0_reader_open_observability
         from apply_s0_failure_retry_observability import main as apply_s0_failure_retry_observability
+        from apply_s0_preprocessing_cpu_observability import main as apply_s0_preprocessing_cpu_observability
         from apply_s0_provider_compute_observability import (
             main as apply_s0_provider_compute_observability,
         )
@@ -279,6 +281,7 @@ def main() -> None:
         patch_durable_processing_events()
         _make_shard_document_correlation_optional()
         apply_s0_failure_retry_observability()
+        apply_s0_preprocessing_cpu_observability()
         print("staging provider composition already installed: no changes")
         return
 
@@ -295,6 +298,7 @@ def main() -> None:
     patch_durable_processing_events()
     _make_shard_document_correlation_optional()
     apply_s0_failure_retry_observability()
+    apply_s0_preprocessing_cpu_observability()
 
 
 if __name__ == "__main__":
