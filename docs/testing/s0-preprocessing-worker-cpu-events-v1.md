@@ -266,7 +266,7 @@ protocol evidence is `not_available`, not zero or an observed partial sum. The
 required full-stage `preprocessing_cpu_seconds` remains `not_instrumented` in all
 cases under this worker-only protocol. Existing required metrics are unchanged.
 
-The candidate now includes the strict dependency-light auxiliary validator,
+The accepted auxiliary implementation includes the strict dependency-light validator,
 composed worker/root hooks, dedicated writer and named CI tests. CPU JSON decoding
 also rejects duplicate keys and non-finite constants, without changing decoding
 for existing event families. Regression gates include lifecycle interleavings, source-read failure before

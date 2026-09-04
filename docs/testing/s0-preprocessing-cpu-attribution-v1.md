@@ -42,7 +42,7 @@ are included. No PDF upload or benchmark was needed for this implementation slic
 |---|---|---|
 | `preprocessing_wall_seconds` | Existing synchronous delegate wall duration, including waits inside it | Existing metric; unchanged |
 | `preprocessing_process_cpu_delta_seconds` | Process CPU during that interval, including unrelated overlapping work | Existing auxiliary; unchanged |
-| `preprocessing_worker_thread_cpu_seconds` | Current-worker CPU interval, excluding other threads/processes | Implemented auxiliary candidate; not deployed/accepted |
+| `preprocessing_worker_thread_cpu_seconds` | Current-worker CPU interval, excluding other threads/processes | Staging auxiliary accepted on `ee2f48d83972bfd978060b40b3729b4b6b8405d4` |
 | `preprocessing_cpu_seconds` | Attributable CPU for the complete agreed preprocessing operation | Required gap remains `not_instrumented` |
 | Classification CPU | Nested classification operation | Component of preprocessing, never added to its parent as independent work |
 
@@ -127,14 +127,16 @@ Worker completion after logical run cancellation must not rewrite the run's
 terminal status. A future persistence design must support that ordering or mark
 coverage incomplete, without silently dropping late worker evidence.
 
-## 5. Admission gates, not deployed acceptance
+## 5. Admission gates and accepted auxiliary scope
 
 The [event/persistence protocol follow-up](s0-preprocessing-worker-cpu-events-v1.md)
 fixes the v1 field shapes, eight-request/eighteen-normal-event cap, null-clock
 pre-entry evidence, exact sanitizer checks and cancellation-safe finalization
 gate. It refines registration versus actual stage entry. The requirements below
 remain applicable. The implementation adds one bounded post-closure invalidation
-event (nineteen absolute maximum) and remains an undeployed candidate.
+event (nineteen absolute maximum). These gates remain normative after the
+worker-thread auxiliary acceptance; that acceptance does not extend coverage to
+complete stage CPU.
 
 The auxiliary implementation must maintain these requirements:
 
@@ -177,8 +179,10 @@ process solely to obtain a number would change this baseline and is out of scope
 Recommended: retain the required gap and review the explicitly named
 worker-thread auxiliary component and its [bounded protocol](s0-preprocessing-worker-cpu-events-v1.md).
 Field shapes, composed producer, atomic writer and strict auxiliary collector
-are now present in the candidate; see the [implementation evidence](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md)
-before exact-head review and any rollout. Any future
+are now present in the accepted auxiliary implementation; see the
+[implementation evidence](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md)
+and [Staging acceptance](../reviews/s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md).
+Any future
 claim of complete `preprocessing_cpu_seconds` needs new coverage evidence or an
 explicitly approved scope revision; neither is granted by this proposal.
 
