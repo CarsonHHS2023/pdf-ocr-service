@@ -90,8 +90,13 @@ For representative small/medium/large PDF and TXT fixtures, capture:
 The [S0.3.1 upload-memory proposal](../testing/s0-upload-memory-observability-v1.md)
 defines the canonical acceptance window and future attribution/admission gates.
 It does not promote a component or process-wide measurement to upload peak memory;
-review and an explicit method/limitation decision precede implementation. All four
-current required gaps remain open; no S0 closure or S1/S2 start follows from this design.
+review and an explicit method/limitation decision precede implementation. The
+[2026-09-09 visual-generation acceptance](../reviews/s0-visual-asset-generation-small-acceptance-2026-09-09.md)
+independently reduces the latest collector's required gaps to three: upload peak
+memory, complete preprocessing CPU and upload-to-Reader-ready latency. The
+[Reader-ready proposal](../testing/s0-upload-to-reader-ready-observability-v1.md)
+is the next boundary review; it installs no producer and waives no gap. S0 remains
+In Progress, and S1/S2 are not started.
 
 ### Deliverables
 
