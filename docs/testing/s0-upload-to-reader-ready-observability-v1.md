@@ -7,7 +7,7 @@
 | Lifecycle Status | Active |
 | Version | 1 |
 | Date | 2026-09-09 |
-| Scope | Canonical single-file upload and its existing automatic first Reader open in one Staging Preview page |
+| Scope | Canonical single-file PDF upload and its existing automatic first Reader open in one Staging Preview page |
 | Backend source / runtime inspected | `a640cf07c0b3db8e0cade4950e4cc74af2ac0cfc` |
 | Frontend source inspected | `a9d470c3609a94be45c525b47038d570c1855b01`, open frontend PR #86 |
 | Current required metric | `upload_to_reader_ready_seconds = not_instrumented` |
@@ -30,7 +30,9 @@ endpoint. No existing Reader acceptance is relabeled.
 Single-file upload already opens its result automatically. Add observation and
 identity proof to that path; do not change auto-open behavior, polling frequency,
 selection, preloading, rendering or compute placement. This proposal installs no
-runtime code and does not yet fix the wire schema.
+runtime code. The companion [proposed wire contract](../contracts/s0-upload-reader-observation-v1.md)
+now fixes headers, payloads, atomic admission and collector association; both
+documents remain Proposed pending scope acceptance.
 
 ## 2. Inspected source and usable boundaries
 
@@ -131,9 +133,9 @@ Validate immutable association when accepting the new evidence; require the
 complete durable join during final collection. Do not require network arrival
 order or add repeated terminal POSTs/polls solely to wait for telemetry.
 
-The subsequent wire-contract patch must fix exact event names/field allowlists,
-headers, endpoint and duplicate/invalidation handling before runtime code.
-Required limits: two normal root records (acceptance ordinal `0`, terminal
+The [wire contract](../contracts/s0-upload-reader-observation-v1.md#4-durable-event-schema-and-atomic-admission)
+fixes event names/field allowlists, headers, endpoint and duplicate/invalidation
+handling for review before runtime code. Required limits: two normal root records (acceptance ordinal `0`, terminal
 ordinal `1`) plus at most one exceptional invalidation record per run; each at
 most 8192 UTF-8 bytes; terminal request body at most 2048 bytes. Enforce caps and
 conflicting-root handling atomically. A count-then-insert race or unconditional
@@ -164,8 +166,9 @@ separate scopes.
 
 ## 6. Next gate and verification
 
-Review the proposed semantic-ready scope, then prepare the companion
-Backend/Preview wire contract and implementation. Keep frontend #86 unmerged:
+Review the proposed semantic-ready scope together with the companion
+[Backend/Preview protocol](../contracts/s0-upload-reader-observation-v1.md), then
+prepare implementation against the accepted boundary. Keep frontend #86 unmerged:
 its base is main and a merge would publish the Production Pages root. The
 companion Preview must retain Staging-only backend/auth configuration and pin
 both deployed revisions.
