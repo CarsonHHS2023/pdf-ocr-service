@@ -11,6 +11,11 @@ on:
       - 'app/s0_provider_source_download_observability.py'
       - 'app/s0_reader_open_observability.py'
       - 'app/s0_reader_open_metrics.py'
+      - 'app/s0_upload_reader_metrics.py'
+      - 'app/s0_upload_reader_persistence.py'
+      - 'app/s0_upload_reader_observability.py'
+      - 'scripts/apply_s0_upload_reader_observability.py'
+      - 'tests/test_s0_upload_reader_observability.py'
       - 'app/s0_failure_retry_metrics.py'
       - 'app/s0_failure_retry_observability.py'
       - 'app/s0_preprocessing_cpu_metrics.py'
@@ -136,6 +141,8 @@ jobs:
         run: |
           python scripts/apply_s0_visual_asset_generation_observability.py
           python scripts/apply_s0_visual_asset_generation_observability.py
+          python scripts/apply_s0_upload_reader_observability.py
+          python scripts/apply_s0_upload_reader_observability.py
 
       - name: Static syntax check
         run: |
@@ -187,6 +194,7 @@ jobs:
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_reader_open_observability.py \
+            tests/test_s0_upload_reader_observability.py \
             tests/test_s0_failure_retry_observability.py \
             tests/test_s0_preprocessing_cpu_observability.py \
             tests/test_s0_preprocessing_cpu_publication.py \
@@ -214,6 +222,7 @@ jobs:
             tests/test_s0_phase2_baseline_mapping.py \
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_reader_open_observability.py \
+            tests/test_s0_upload_reader_observability.py \
             tests/test_s0_failure_retry_observability.py \
             tests/test_s0_preprocessing_cpu_observability.py \
             tests/test_s0_preprocessing_cpu_publication.py \

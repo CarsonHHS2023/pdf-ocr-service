@@ -166,6 +166,11 @@ separate scopes.
 
 ## 6. Next gate and verification
 
+**2026-09-10 implementation follow-up:** the [candidate implementation](s0-upload-reader-implementation-2026-09-10.md)
+now applies this semantic-ready boundary to the Backend and companion Preview.
+Runtime acceptance and required-metric closure remain pending; the deployed
+baseline is not changed by candidate tests.
+
 Review the proposed semantic-ready scope together with the companion
 [Backend/Preview protocol](../contracts/s0-upload-reader-observation-v1.md), then
 prepare implementation against the accepted boundary. Keep frontend #86 unmerged:
