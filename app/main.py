@@ -205,20 +205,23 @@ def _log_stale_recovery_report(prefix: str, report) -> None:
 
 
 async def _stale_processing_run_recovery_loop() -> None:
-    """Low-rate lease sweep that closes the just-restarted freshness window."""
+    """Run stale-run recovery immediately in the background, then at low rate."""
     while True:
-        await asyncio.sleep(S0_STALE_RECOVERY_SWEEP_SECONDS)
         try:
             report = await asyncio.to_thread(recover_stale_s0_pdf_processing_runs)
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The synchronous recovery already fails open per row/discovery.  This
+            # The synchronous recovery already fails open per row/discovery. This
             # boundary also protects the long-lived sweep from an unexpected bug.
             logger.exception("S0 stale ProcessingRun recovery sweep failed open")
-            continue
-        if report.recovered or report.errors:
-            _log_stale_recovery_report("S0 stale ProcessingRun recovery sweep", report)
+        else:
+            if report.recovered or report.errors:
+                _log_stale_recovery_report("S0 stale ProcessingRun recovery sweep", report)
+
+        # Always rate-limit the loop, including after an unexpected exception, so
+        # a database/provider fault cannot turn recovery into a hot retry loop.
+        await asyncio.sleep(S0_STALE_RECOVERY_SWEEP_SECONDS)
 
 
 @app.get("/")
@@ -251,21 +254,19 @@ async def startup_event():
         cutover_status.rollback_preserved,
     )
 
+    # Database schema readiness remains a hard startup requirement. Best-effort
+    # stale-worker recovery is deliberately kept out of the HF readiness-critical
+    # path and starts in the background immediately after this coroutine returns.
     init_db()
     configure_application_logging()
     install_refinement_provider_stderr_handler()
 
-    # The PDF worker currently runs in-process.  If its container disappeared,
-    # durable ProcessingRun state can outlive the worker.  Recover only attempts
-    # whose S0 heartbeat lease has been stale for the conservative recovery
-    # window; the recovery itself fails open so startup availability is preserved.
-    recovery_report = recover_stale_s0_pdf_processing_runs()
-    _log_stale_recovery_report("S0 stale ProcessingRun startup recovery", recovery_report)
-
-    # A restart can occur seconds after the previous heartbeat.  The immediate
-    # scan must preserve that fresh row, so keep one low-rate sweeper alive to
-    # converge it after the five-minute lease expires. Healthy workers continue
-    # writing 60-second heartbeats and remain safely outside the stale window.
+    # A restart can occur seconds after the previous heartbeat. The background
+    # task performs one immediate sweep, preserving fresh rows via the existing
+    # five-minute heartbeat lease, then repeats at the low-rate interval. Healthy
+    # workers continue writing 60-second heartbeats and remain outside the stale
+    # window. Recovery policy, row locks and terminal state transitions are
+    # unchanged; only scheduling moves out of the synchronous startup path.
     if (
         _stale_processing_run_recovery_task is None
         or _stale_processing_run_recovery_task.done()
