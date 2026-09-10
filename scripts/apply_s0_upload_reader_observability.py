@@ -11,18 +11,21 @@ def main():
     _patch(Path("app/main.py"), [(anchor, anchor +
         "from app.s0_upload_reader_observability import install as install_s0_upload_reader\n"
         "install_s0_upload_reader(app)\n")])
-    import_anchor = "from app.s0_visual_asset_generation_metrics import (\n"
-    decode_anchor = '        if row.event_name.startswith("S0_VISUAL_ASSET_GENERATION_"):\n'
+    # Insert outside every predecessor's complete installed block. Their
+    # idempotence checks intentionally fail if a later overlay splits a block.
+    import_anchor = "from dataclasses import asdict, dataclass\n"
+    decode_anchor = ('        if row.event_name.startswith("S0_VISUAL_ASSET_GENERATION_"):\n'
+        '            payload, decode_valid = decode_visual_asset_generation_payload(row.payload_json)\n')
     mapping_anchor = "    visual_asset_generation = _measure_visual_asset_generation(\n"
-    aux_anchor = '    auxiliary.append(MetricReading(\n        key="reader_open_breakdown",'
+    aux_anchor = '    auxiliary.append(MetricReading(\n        key="failure_retry_breakdown",'
     _patch(Path("app/processing/s0_baseline.py"), [
         (import_anchor, "from app.s0_upload_reader_metrics import (\n"
             "    EVENT_NAMES as _UPLOAD_READER_EVENTS, decode_payload as _decode_upload_reader,\n"
             "    measure_upload_reader as _measure_upload_reader, source_scope_id as _upload_reader_source_scope,\n"
             ")\n" + import_anchor),
         ("        *_VISUAL_ASSET_GENERATION_EVENTS,\n", "        *_UPLOAD_READER_EVENTS,\n        *_VISUAL_ASSET_GENERATION_EVENTS,\n"),
-        (decode_anchor, '        if row.event_name.startswith(("S0_UPLOAD_READER_", "S0_READER_OPEN_")):\n'
-            '            payload, decode_valid = _decode_upload_reader(row.payload_json)\n' + decode_anchor),
+        (decode_anchor, decode_anchor + '        if row.event_name.startswith(("S0_UPLOAD_READER_", "S0_READER_OPEN_")):\n'
+            '            payload, decode_valid = _decode_upload_reader(row.payload_json)\n'),
         (mapping_anchor, "    upload_reader = _measure_upload_reader(\n"
             "        decoded_events_tuple, expected_source_scope=_upload_reader_source_scope(run.source_file_id),\n"
             "        run_status=run.status, evidence_incomplete=payload_evidence_incomplete,\n"
