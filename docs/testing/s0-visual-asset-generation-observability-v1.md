@@ -7,10 +7,16 @@ This contract defines the S0 producer and collector boundary for
 not change PDF selection, rendering, OpenCV behavior, enhancement policy,
 storage placement, retries, failure handling or Reader output.
 
-Implementation and CI do not constitute Staging acceptance. Until a fresh
-eligible run is collected from an exact deployed revision, the required metric
-remains `not_instrumented` in the accepted S0 baseline. S0 and M5 remain In
-Progress; S1/S2 are not started.
+**2026-09-09: scoped small Staging acceptance PASS.** The [fresh one-page
+acceptance](../reviews/s0-visual-asset-generation-small-acceptance-2026-09-09.md)
+on exact Backend/runtime `a640cf07c0b3db8e0cade4950e4cc74af2ac0cfc` records
+`visual_asset_generation_seconds = observed`, value `0.253639226 s`, with two
+generated assets and two persisted renditions. The report retains the durable
+event audit, deployment/collector provenance and coverage limits.
+
+Implementation or CI alone still does not constitute Staging acceptance; the
+gates below apply to every future observation. S0 and M5 remain In Progress;
+S1/S2 are not started.
 
 ## Exact measured boundary
 

@@ -52,6 +52,7 @@ jobs:
           python scripts/apply_provider_runtime_preflight.py
           python scripts/apply_s0_v5_phase0_observability.py
           python scripts/apply_s0_visual_asset_generation_observability.py
+          python scripts/apply_s0_upload_reader_observability.py
 
       - name: Verify exact runtime markers
         run: |

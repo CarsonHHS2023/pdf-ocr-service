@@ -5,7 +5,7 @@
 | Document Type | Reference / Index |
 | Approval Status | Accepted |
 | Lifecycle Status | Active |
-| Date | 2026-08-15 |
+| Date | 2026-09-09 |
 | Authority Domain | Navigation and discovery only |
 | Applies To | `docs/contracts` and contract-like document discovery |
 | Related Governance | [Atlas Documentation Governance](../project/document-governance.md) |
@@ -21,6 +21,7 @@ Contracts define verifiable behavior, schemas, protocols, compatibility, and con
 | [Processing Attempt and Artifact Manifest Contract](processing-attempt-and-artifact-manifest-v1.md) | Accepted for phased implementation; runtime conformance not yet claimed | v1 | Durable processing identity, fingerprint/idempotency, artifact descriptors/manifests, Backend/Modal handoff, single-flight, retry/reconciliation | Current implementation-facing contract for scalability phases S1–S6. |
 | [Reader Content Stream Protocol v2](reader-content-stream-v2.md) | Not explicitly declared | v2 | Reader content stream markers and compatibility behavior | In-directory protocol contract. |
 | [Atlas Structured Processing Result Contract v1](structured-processing-result-v1.md) | Proposed provider-independent M3 contract | v1 | Structured Processing Result representation and validation expectations | Foundational processing-result contract. |
+| [S0 Upload-to-Reader Observation Protocol v1](s0-upload-reader-observation-v1.md) | Proposed; scope acceptance and runtime implementation pending | v1 | Staging single-PDF upload acknowledgement, semantic-ready terminal, bounded durable events and exact Reader-open join | Keeps `upload_to_reader_ready_seconds` uninstrumented; no readiness scope waiver or runtime acceptance. |
 
 ## Contract-like documents outside this directory
 

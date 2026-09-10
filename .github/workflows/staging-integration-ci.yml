@@ -76,6 +76,7 @@ jobs:
           python scripts/apply_provider_runtime_preflight.py
           python scripts/apply_s0_v5_phase0_observability.py
           python scripts/apply_s0_visual_asset_generation_observability.py
+          python scripts/apply_s0_upload_reader_observability.py
 
       - name: Static and workflow checks
         run: |
@@ -160,6 +161,7 @@ jobs:
             tests/test_s0_provider_source_download_observability.py \
             tests/test_s0_provider_compute_observability.py \
             tests/test_s0_reader_open_observability.py \
+            tests/test_s0_upload_reader_observability.py \
             tests/test_s0_failure_retry_observability.py \
             tests/test_s0_preprocessing_cpu_observability.py \
             tests/test_s0_preprocessing_cpu_publication.py \
@@ -234,6 +236,9 @@ jobs:
             /tmp/atlas-staging-verified/app/s0_provider_compute_observability.py \
             /tmp/atlas-staging-verified/app/s0_reader_open_observability.py \
             /tmp/atlas-staging-verified/app/s0_reader_open_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_upload_reader_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_upload_reader_persistence.py \
+            /tmp/atlas-staging-verified/app/s0_upload_reader_observability.py \
             /tmp/atlas-staging-verified/app/s0_failure_retry_metrics.py \
             /tmp/atlas-staging-verified/app/s0_failure_retry_observability.py \
             /tmp/atlas-staging-verified/app/s0_preprocessing_cpu_metrics.py \
@@ -277,7 +282,7 @@ jobs:
                   'processing_events.S0_VISUAL_ASSET_GENERATION_*',
               ),
               'app/processing/s0_phase2_stage_observability.py': ('measure_preprocessing_delegate(delegate, *args, **kwargs)',),
-              'app/main.py': ('install_s0_reader_open(app)',),
+              'app/main.py': ('install_s0_reader_open(app)', 'install_s0_upload_reader(app)'),
               'app/routers/reader_v2.py': ('return observe_reader_view(',),
               'app/processing/pdf_ingestion.py': (
                   'install_pdf_observability()',

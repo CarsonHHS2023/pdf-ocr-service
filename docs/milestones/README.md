@@ -34,6 +34,8 @@ Atlas also maintains a horizontal storage/processing scalability track, separate
 - [S0.3.6 Failure/Retry Small Acceptance — 2026-09-02](../reviews/s0-3-6-failure-retry-small-acceptance-2026-09-02.md)
 - [S0.3.6 Failure/Retry Medium Acceptance — 2026-09-02](../reviews/s0-3-6-failure-retry-medium-acceptance-2026-09-02.md)
 - [S0 Worker-CPU Small Acceptance — 2026-09-04](../reviews/s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md)
+- [S0 Visual Asset Generation Small Acceptance — 2026-09-09](../reviews/s0-visual-asset-generation-small-acceptance-2026-09-09.md)
+- [S0 Upload-to-Reader-ready Boundary Proposal v1](../testing/s0-upload-to-reader-ready-observability-v1.md)
 
 The implementation phases are S0–S9. This work may support M5, M6, M7, and the external-pilot/commercial gate. It does **not** redefine M6 Smart Reading Intelligence as an infrastructure milestone.
 
@@ -46,8 +48,9 @@ The implementation phases are S0–S9. This work may support M5, M6, M7, and the
 - Scoped S0.3.5 Reader first-open/reopen and nonzero-window reopen acceptance subsequently passed; the [closure plan](../plans/s0-observability-closure-plan-2026-08-25.md#s035-reader-open-and-bounded-query-measurements) retains its separate Backend/frontend revisions and coverage limits.
 - S0.3.6 **small single-scope and medium sequential two-scope success-path PASS** on `7435aa3fa7ba0766d8cc2584bcacfd735c5ce74c`: 14 and 24 successful Provider method calls respectively, explicit zero failures/retries and complete durable closure. Real nonzero retries and concurrent runtime execution are not claimed.
 - The worker-thread-only preprocessing CPU auxiliary passed a fresh one-page Staging acceptance on `ee2f48d83972bfd978060b40b3729b4b6b8405d4`; the required complete-stage CPU metric remains `not_instrumented`.
-- **Four** required metrics remain `not_instrumented` in both fresh collectors: upload peak memory, stage-owned preprocessing CPU, visual asset generation duration and upload-to-Reader-ready latency. Historical seven/five-gap checkpoints remain historical, not current status.
-- Next: define the S0.3.1 upload-owned memory boundary and remaining instrumentation in [the current action order](../plans/s0-observability-closure-plan-2026-08-25.md#61-next-decisions-and-remaining-instrumentation). No further PDF run is requested for the accepted S0.3.6 success-path target; this index starts no implementation.
+- Visual asset generation passed fresh one-page acceptance on `a640cf07c0b3db8e0cade4950e4cc74af2ac0cfc`: `0.253639226 s`, two generated assets/two persisted renditions and one complete two-event scope. This operation-scoped target needs no medium rerun.
+- **Three** required metrics remain `not_instrumented` in the 2026-09-09 collector: upload peak memory, complete stage-owned preprocessing CPU and upload-to-Reader-ready latency. Sixteen of 19 required rows are observed in that snapshot; historical seven/five/four-gap checkpoints keep their original provenance.
+- Next: review the [upload-to-Reader-ready boundary proposal](../testing/s0-upload-to-reader-ready-observability-v1.md) under [the current action order](../plans/s0-observability-closure-plan-2026-08-25.md#61-next-decisions-and-remaining-instrumentation). The upload-memory feasibility limit and full-stage CPU gap remain open. No further PDF run is requested for the accepted visual-generation or S0.3.6 success-path targets; this index starts no implementation.
 - TXT representative timing and the large PDF baseline remain open.
 - The 528-page fixture is deferred until the missing instrumentation can produce materially useful closure evidence and execution is explicitly approved.
 - **S1/S2 are not started by the current S0 closure plan.**

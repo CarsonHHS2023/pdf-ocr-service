@@ -87,7 +87,9 @@ def test_required_metric_maps_only_exact_durable_evidence(tmp_path, monkeypatch)
         assert breakdown.value["generated_rendition_count"] == 3
         assert required["backend_upload_peak_memory_mb"].status == "not_instrumented"
         assert required["preprocessing_cpu_seconds"].status == "not_instrumented"
-        assert required["upload_to_reader_ready_seconds"].status == "not_instrumented"
+        expected_upload_status = "not_available" if hasattr(s0_baseline, "_measure_upload_reader") else "not_instrumented"
+        assert required["upload_to_reader_ready_seconds"].status == expected_upload_status
+        assert required["upload_to_reader_ready_seconds"].value is None
         assert set(metrics.EVENT_NAMES).issubset(snapshot.observed_event_names)
     finally:
         engine.dispose()
