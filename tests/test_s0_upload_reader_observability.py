@@ -69,6 +69,20 @@ def test_exact_open_join_is_order_independent_and_never_uses_another_open():
     assert measure(rows(), evidence_incomplete=True)["value"] is None
 
 
+@pytest.mark.parametrize("upload_seconds, expected", [
+    (0.0, "not_available"),
+    (1.499999, "not_available"),
+    (1.5, "observed"),
+    (1.500001, "observed"),
+])
+def test_upload_duration_contains_its_exact_reader_open(upload_seconds, expected):
+    events = rows()  # The matching Reader interval is 1.5 seconds.
+    events[1].payload["duration_seconds"] = upload_seconds
+    result = measure(events)
+    assert result["status"] == expected
+    assert result["value"] == (upload_seconds if expected == "observed" else None)
+
+
 @pytest.mark.parametrize("change", [
     lambda r: r.append(copy.deepcopy(r[0])), lambda r: r[1].payload.update(ordinal=True),
     lambda r: r[1].payload.update(duration_seconds=True), lambda r: r[1].payload.update(duration_seconds=float("inf")),
@@ -171,6 +185,14 @@ def test_final_composed_collector_requires_matching_durable_reader_rows():
     result = _metric(collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
     assert result.status == "observed" and result.value == 120.25
     row = db.query(ProcessingEvent).filter_by(event_name=c.TERMINAL).one()
+    original_payload = row.payload_json
+    shorter = json.loads(original_payload)
+    shorter["duration_seconds"] = 1.0  # Matching Reader terminal reports 1.5.
+    row.payload_json = json.dumps(shorter)
+    db.commit()
+    result = _metric(collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
+    assert result.status == "not_available" and result.value is None
+    row.payload_json = original_payload
     row.payload_json = row.payload_json.replace('"duration_seconds": 120.25', '"duration_seconds":1,"duration_seconds":120.25')
     db.commit()
     result = _metric(collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
