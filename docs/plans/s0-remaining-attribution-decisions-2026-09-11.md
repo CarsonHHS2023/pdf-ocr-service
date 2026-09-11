@@ -39,18 +39,33 @@ Moving computation to isolated processes, changing native threading or serializi
 uploads could alter the baseline being measured. Such changes require a separate
 architecture/baseline decision; they are not silently included in S0 observability.
 
+## 2026-09-11 source-review follow-up
+
+The [scoped upload/Reader review](../reviews/s0-3-7-upload-reader-contract-review-2026-09-11.md)
+reproduced missing duration-containment validation. [PR #48](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/48)
+adds the collector guard and regression cases; its exact-head CI passed, but it
+is not deployed. The full S0.3.7 review remains open.
+
+The [TXT lifecycle inspection and plan](s0-txt-lifecycle-timing-plan-2026-09-11.md)
+is now source-pinned. Newly created TXT runs receive the same late timestamp for
+start and completion; PDF-only browser admission is a separate gap. Next is a
+versioned TXT worker wall-duration contract, followed by scoped instrumentation
+and composition tests before any fixture. This is an auxiliary containing
+interval, not full preprocessing CPU or upload-memory attribution.
+
 ## Next work that does not require redefining these metrics
 
 - Finish S0.3.7 review of the composed producer/persistence/collector contracts,
   including exact source identities, bounded payloads, privacy, late terminals,
   unknown/malformed events and duplicate/conflicting scopes. The new small
   acceptance proves its own path, not every negative or concurrent runtime case.
-- Inspect current TXT ingestion lifecycle/timing boundaries against the existing
-  meaningful-timestamp gate. Produce a source-pinned plan before asking for TXT
-  fixtures; PDF evidence does not substitute for TXT ingestion timing.
+- Implement the next review stage in the source-pinned TXT plan: fix the versioned
+  worker timing contract and its failure/publication boundaries before runtime
+  instrumentation or TXT fixtures. PDF evidence does not substitute for TXT timing.
 - Keep the cost/benefit decision for the large PDF explicitly deferred. Medium
   reruns are justified by new multi-page/sharding coverage, not by the number of
   rows left open in the collector.
 
 These are review tasks within S0. They do not claim all S0 exit gates are met and
 do not authorize Production changes, merges, deployment or fixture execution.
+
