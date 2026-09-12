@@ -59,12 +59,14 @@ Consequences:
 The [TXT registry](../testing/s0-benchmark-fixtures-v1.md) already marks historical
 timestamps unsuitable. Preserve those records; do not backfill guessed times.
 
-## 4. Proposed first implementation slice
+## 4. First implementation slice and contract progress
 
-Implement a **Staging-only TXT worker wall-duration observer**, under a new,
-explicitly TXT-specific auxiliary key such as
-`txt_ingestion_worker_wall_seconds`. The name and full wire fields must be fixed
-in a versioned contract before implementation. Do not map this containing
+The [v1 contract and pure validator](https://github.com/CarsonHHS2023/pdf-ocr-service/blob/56707e9c63c1c2374aff3dfc4d91c934ba9b3eea/docs/testing/s0-txt-worker-wall-observability-v1.md)
+are implemented in [PR #49](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/49).
+The fixed auxiliary key is `txt_ingestion_worker_wall_seconds`. Twenty-two local
+synthetic evidence tests pass; exact-head CI is tracked on that PR. No producer,
+persistence/relational adapter or baseline mapping is installed. The next slice
+is the **Staging-only TXT worker wall-duration observer**. Do not map this containing
 interval to PDF preprocessing or PDF canonicalization keys.
 
 Recommended boundary:
@@ -117,7 +119,7 @@ do not hold a transaction across analyzer network work.
 
 | Step | Concrete deliverable / gate |
 |---|---|
-| A | Versioned TXT observer contract covering sections 4–5; review before runtime edits |
+| A | Contract and pure evidence validator implemented in PR #49; 22 local tests pass; runtime obligations still require composed verification |
 | B | Minimal worker observer and collector auxiliary, feature-gated to Staging; preserve existing PDF paths |
 | C | Synthetic-clock tests for slow analysis/storage/commit, configuration/analysis/selection/commit failures, missing run, duplicate execution, cancellation, privacy and malformed/oversized evidence |
 | D | Verify actual durable-dispatch + worker + collector composition, observer off/on behavior, publication atomicity and bounded costs in CI |
