@@ -78,6 +78,9 @@ jobs:
           python scripts/apply_s0_visual_asset_generation_observability.py
           python scripts/apply_s0_upload_reader_observability.py
 
+      - name: Run TXT worker evidence contract tests
+        run: python -m unittest discover -s tests -p test_s0_txt_worker_metrics.py -v
+
       - name: Static and workflow checks
         run: |
           python -m compileall -q app alembic scripts
@@ -508,3 +511,4 @@ jobs:
             exit 1
           fi
           echo "HF Staging is running exact tested revision $GITHUB_SHA"
+

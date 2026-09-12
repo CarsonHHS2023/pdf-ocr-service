@@ -11,6 +11,9 @@ on:
       - 'app/s0_provider_source_download_observability.py'
       - 'app/s0_reader_open_observability.py'
       - 'app/s0_reader_open_metrics.py'
+      - 'app/s0_txt_worker_metrics.py'
+      - 'tests/test_s0_txt_worker_metrics.py'
+      - 'docs/testing/s0-txt-worker-wall-observability-v1.md'
       - 'app/s0_upload_reader_metrics.py'
       - 'app/s0_upload_reader_persistence.py'
       - 'app/s0_upload_reader_observability.py'
@@ -144,6 +147,9 @@ jobs:
           python scripts/apply_s0_upload_reader_observability.py
           python scripts/apply_s0_upload_reader_observability.py
 
+      - name: Run TXT worker evidence contract tests
+        run: python -m unittest discover -s tests -p test_s0_txt_worker_metrics.py -v
+
       - name: Static syntax check
         run: |
           python -m py_compile \
@@ -245,3 +251,4 @@ jobs:
           grep -q -- '--fixture-registry-version' docs/reviews/s0-baseline-2026-08-23.md
           grep -q 'Do not commit filenames, titles, text excerpts' docs/testing/s0-benchmark-fixtures-v1.md
           ! grep -q 'private.pdf' docs/reviews/s0-baseline-2026-08-23.md
+
