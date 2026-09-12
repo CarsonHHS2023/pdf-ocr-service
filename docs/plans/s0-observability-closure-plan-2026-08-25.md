@@ -21,6 +21,13 @@ This plan is an execution overlay for S0. It does not redefine the S0-S9 archite
 
 ## 2. Current accepted evidence
 
+**Latest reconciliation, 2026-09-11:** [Single-PDF upload to automatic initial
+Reader render](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md) passed
+with a complete 49-event snapshot and **17/19 required rows observed**. The only
+two unimplemented required metrics are upload-owned peak memory and complete
+preprocessing CPU. Section 6 is the current matrix; the dated checkpoints below
+retain their historical counts and sequencing. No existing metric has been waived.
+
 Accepted on exact Staging backend/runtime revision `6fe56d35bfb39cf1e1016beb2694464fb1fc2e4f`:
 
 - `pdf-small-v1`: formal one-page exact-identity baseline accepted;
@@ -162,6 +169,10 @@ The existing 11-page PDF medium provided three first opens (mean 5.610667 second
 
 These observations do not establish one-page small-fixture acceptance, adjacent two-window loading, TXT ingestion timing, browser-paint readiness, binary-asset completion or pixel-exact restoration. The current containing-window resume policy predates this instrumentation; its behavior is not silently redefined by the acceptance. The baseline collector was run locally against read-only durable exports using the exact Backend checkout plus CI overlays, not inside HF or from a downloaded byte-verified artifact. Earlier processing metrics retain their earlier ingestion provenance.
 
+The later [2026-09-11 small acceptance](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md)
+now adds the one-page automatic first-open path and its upload clock. It does not
+extend the historical reopen or TXT ingestion coverage described above.
+
 The frontend documentation-only descendant `a9d470c3609a94be45c525b47038d570c1855b01` passed 496 local tests, syntax checks, exact-head Client CI and Preview verification. It is not the observed frontend runtime revision. Do not reopen accepted runs merely to refresh a documentation SHA: mixed Reader revisions invalidate complete collector admission. Frontend #86 remains unmerged; this update authorizes no merge or Production deployment.
 
 Measure the Reader path without changing Reader behavior:
@@ -224,7 +235,7 @@ The 528-page fixture requires explicit approval at execution time and must not b
 
 ## 6. S0 closure matrix
 
-| S0 requirement | Current status after 2026-09-09 reconciliation | Closure action |
+| S0 requirement | Current status after 2026-09-11 reconciliation | Closure action |
 |---|---|---|
 | source byte size / page count | observed for accepted PDF small/medium | retain current contract |
 | backend upload peak memory | `not_instrumented`; upload-read component bytes remain auxiliary | S0.3.1 exact memory scope remains open |
@@ -242,20 +253,23 @@ The 528-page fixture requires explicit approval at execution time and must not b
 | object-store reads/writes by stage | observed for measured processing stages in current snapshots | retain S0.3.2 scope; Reader binary proxy is separate and not covered here |
 | Reader-open latency | `observed` for PDF-medium first-open/reopen and TXT nonzero reopen | S0.3.5 scoped acceptance PASS; retain exact Reader revision and coverage limits |
 | Reader bounded query count | `observed`; 57 SQL statement attempts per measured open | S0.3.5 scoped acceptance PASS; not HTTP request count or a row/byte bound |
-| upload-to-Reader-ready latency | `not_instrumented`; boundary proposal ready for review | approve the exact readiness scope and same-run clock/correlation contract before implementation |
+| upload-to-Reader-ready latency | `observed`, `170.5072 s` for the 2026-09-10 single-PDF automatic initial semantic render | [Small acceptance PASS](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md); excludes binary completion, asynchronous enhancements and paint |
 | failure/retry counts | `observed` for fresh small single-scope and medium sequential two-scope success paths; explicit zero failures/retries | S0.3.6 representative success-path PASS; no further PDF run requested for this target |
-| TXT representative baseline | open | acceptance sequence after timing contract exists |
+| TXT representative baseline | open; source inspection confirms equal late lifecycle timestamps | versioned worker timing contract and scoped instrumentation before acceptance |
 | large PDF representative baseline | deferred | run only after instrumentation makes it useful |
 
-The **three** remaining `not_instrumented` rows in the fresh 2026-09-09 collector are `backend_upload_peak_memory_mb`, `preprocessing_cpu_seconds`, and `upload_to_reader_ready_seconds`. These are actual collector gaps, not accepted waivers. Historical S0.3.4 seven-gap, S0.3.5 five-gap and S0.3.6 four-gap checkpoints remain valid for their original snapshots. The matrix combines explicitly scoped acceptance across revisions; it does not claim every representative case was freshly measured on one revision or every auxiliary metric is available. Although Reader metrics are also observed in the new snapshot, visual-generation acceptance did not perform a separate first-open/reopen Reader acceptance audit. One-page Reader acceptance, TXT ingestion timing, Reader binary access coverage and final S0 review remain open. Sequential S0.3.6 multi-scope runtime coverage is satisfied; real nonzero-retry and concurrent-runtime coverage are not claimed.
+The [2026-09-11 replay](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md) has **17/19 observed**, with **two** remaining `not_instrumented` rows: `backend_upload_peak_memory_mb` and `preprocessing_cpu_seconds`. These are unimplemented attribution methods, not accepted waivers. It uses Backend `f3b7af8122d5e5fe946614c6e1ddd0047877d504`, frontend `086cda854c24680ea4ce1c414844f10af2c14dcf` and run `pdf-ingest-16c3f2af977740adb0a608089b0b67aa`. The initial missing-upload-terminal attempt remains `not_available`; its root cause is unresolved and its evidence is not replaced by this successful run.
+
+Historical S0.3.4 seven-gap, S0.3.5 five-gap, S0.3.6 four-gap and visual-generation three-gap checkpoints remain valid for their original snapshots. The matrix combines explicitly scoped acceptance across revisions; it does not claim every representative case was freshly measured on one revision or every auxiliary metric is available. The new one-page automatic first-open path is now audited, but does not establish reopen, TXT ingestion timing, Reader binary completion, concurrent runtime coverage or final S0 closure. Sequential S0.3.6 multi-scope success-path coverage remains satisfied; real nonzero retries are not claimed.
 
 ### 6.1 Next decisions and remaining instrumentation
 
 1. **S0.3.6 representative success-path target satisfied:** fresh small and 11-page medium evidence now prove single-scope and sequential two-scope counters on the same pinned revision, with contiguous ordinals, one complete manifest and no cross-layer failure summation. Retain the evidence; do not request another PDF run for this target or inject real failures to manufacture retries.
-2. **S0.3.1 feasibility limit retained:** the [upload-memory proposal](../testing/s0-upload-memory-observability-v1.md#7-verification-gates-and-next-decision) and [local probes](../reviews/s0-3-1-upload-memory-feasibility-2026-09-03.md) do not establish a complete attributable peak. No full-memory producer or waiver is approved. Further attribution work needs a complete method or an explicit scope decision; largest read-buffer bytes and process-lifetime RSS cannot fill `backend_upload_peak_memory_mb`. Retain this gap while progressing the independent Reader-ready design.
+2. **S0.3.1 feasibility limit retained:** the [upload-memory proposal](../testing/s0-upload-memory-observability-v1.md#7-verification-gates-and-next-decision) and [local probes](../reviews/s0-3-1-upload-memory-feasibility-2026-09-03.md) do not establish a complete attributable peak. No full-memory producer or waiver is approved. Further attribution work needs a complete method or an explicit scope decision; largest read-buffer bytes and process-lifetime RSS cannot fill `backend_upload_peak_memory_mb`. Retain this gap under the [remaining attribution decision record](s0-remaining-attribution-decisions-2026-09-11.md).
 3. **Preprocessing CPU auxiliary accepted; required gap retained:** the [worker-thread-only implementation](../reviews/s0-preprocessing-worker-cpu-implementation-2026-09-03.md) and [small Staging acceptance](../reviews/s0-preprocessing-worker-cpu-small-acceptance-2026-09-04.md) now provide a strict auxiliary measurement. Native helper/child-process coverage is not proven, process-wide deltas stay separate, and required `preprocessing_cpu_seconds` remains `not_instrumented`.
 4. **Visual asset generation timing accepted:** the [v1 boundary](../testing/s0-visual-asset-generation-observability-v1.md) now has [fresh small acceptance](../reviews/s0-visual-asset-generation-small-acceptance-2026-09-09.md) on `a640cf07c0b3db8e0cade4950e4cc74af2ac0cfc`. The required metric is `observed` for one completed final composed PDF candidate-enrichment call, excluding source read, structure refinement, SPR persistence and candidate database commit. Preserve this run's identity; no medium rerun is needed for this operation-scoped target. Canonicalization duration remains a separate containing interval and is not additive.
-5. **Next: upload-to-Reader-ready scope decision and implementation.** The [source-pinned proposal](../testing/s0-upload-to-reader-ready-observability-v1.md) selects the existing single-PDF automatic-open flow, a single browser clock and an explicitly named core-semantic-render endpoint. Its [proposed wire contract](../contracts/s0-upload-reader-observation-v1.md) fixes upload acknowledgement, terminal fields, per-run atomic slots and the exact Reader-open join. Source review accounts for swallowed selection errors and out-of-order telemetry persistence without changing polling, selection or rendering behavior. The endpoint excludes browser paint and binary completion. Both documents remain Proposed; accept the scope before runtime implementation or required-metric mapping. `upload_to_reader_ready_seconds` remains `not_instrumented` and the three required gaps remain open.
+5. **Upload-to-initial-Reader-render accepted:** [Backend #46](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/46), the [wire contract](../contracts/s0-upload-reader-observation-v1.md) and companion [frontend #87](https://github.com/CarsonHHS2023/speed-reading-trainer/pull/87) have [small scoped acceptance](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md). The same-page interval is `170.5072 s`, separate from `4.6543 s` Reader first-open latency. Six strict upload/Reader events have complete source/candidate/revision association and contiguous ordinals. No repeated small or medium upload is required for this target; frontend #87 remains Preview-only and unmerged.
+6. **Next executable work:** the [scoped upload/Reader review](../reviews/s0-3-7-upload-reader-contract-review-2026-09-11.md) and [TXT source inspection](s0-txt-lifecycle-timing-plan-2026-09-11.md) are recorded. PR #48 fixes a reproduced duration-containment gap and has passed exact-head CI; it is not deployed. Continue the remaining S0.3.7 event-family review and define the versioned TXT worker timing contract before instrumentation or fixtures. The [attribution decision record](s0-remaining-attribution-decisions-2026-09-11.md) keeps full upload memory and preprocessing CPU unimplemented until a complete method or explicit scope decision exists. Neither more fixtures nor auxiliary-metric renaming resolves these gaps.
 
 S0.3.7 mapping/privacy hardening applies to each new contract; it cannot close missing producer measurements by renaming auxiliary metrics. These are sequencing decisions, not authorization to start implementation, upload fixtures, merge PRs or deploy. No S1/S2 work or 100-page/528-page benchmark is included.
 
@@ -271,3 +285,4 @@ This closure plan is complete when:
 6. a final S0 completion review explicitly changes the horizontal scalability status from In Progress.
 
 Until then, **S0 remains In Progress and S1/S2 are not started by this plan**.
+
