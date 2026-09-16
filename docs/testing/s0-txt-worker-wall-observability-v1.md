@@ -1,7 +1,7 @@
 # S0 TXT worker wall-duration evidence contract v1
 
-Status: **Contract and pure validator implemented; producer, persistence adapter,
-baseline integration and TXT runtime acceptance not implemented**.
+Status: **Validator, Staging worker hooks, bounded persistence and read-only
+baseline adapter implemented. Deployment and TXT runtime acceptance remain pending**.
 
 Product milestone: M5 support. Scalability phase: S0, In Progress.
 
@@ -13,14 +13,14 @@ The inspected execution source is Backend Staging
 explains why ProcessingRun lifecycle timestamps cannot measure TXT work:
 new runs receive the same late timestamp as both start and completion.
 
-This slice adds [a dependency-free validator](../../app/s0_txt_worker_metrics.py),
-[synthetic evidence tests](../../tests/test_s0_txt_worker_metrics.py) and an
-explicit test step in S0 Baseline and Staging Integration CI. Existing production
-code does not import the module. It performs no I/O and installs no hooks,
-clock, endpoint, retry, database write or collector mapping.
-
-The remaining sections specify the producer/adapter obligations for the next
-slice. Passing pure validation tests does not prove those obligations are met.
+This slice includes the [dependency-free validator](../../app/s0_txt_worker_metrics.py),
+[worker observer](../../app/s0_txt_worker_observability.py),
+[bounded persistence and relational adapter](../../app/s0_txt_worker_persistence.py),
+and an [idempotent Staging overlay](../../scripts/apply_s0_txt_worker_observability.py).
+Raw production worker/dispatch/collector files are not changed. Both CI workflows
+compose the overlay, then exercise the actual TXT worker and collector. The
+Staging integration workflow also tests PostgreSQL in disposable isolated schemas
+and verifies hook markers in the artifact that would later be deployed.
 
 ## 2. Metric and clock boundary
 
@@ -207,9 +207,10 @@ snapshot. It must prove all of these before calling `evaluate`:
 Load only this event family, using an escaped prefix predicate so underscores do
 not become SQL wildcards. Apply SQL-side UTF-8 byte bounds before materializing
 TEXT. Fetch cap-plus-one to detect truncation; never silently take two rows from
-an incomplete family. Future snapshot collection must use an explicit consistent
-transaction/export strategy; separate READ COMMITTED statements alone do not
-establish one snapshot.
+an incomplete family. The TXT adapter owns a fresh read-only transaction: PostgreSQL REPEATABLE READ
+or an explicit SQLite read transaction. This auxiliary projection is internally
+consistent; it does not claim to share the older baseline collector's snapshot.
+It never commits, flushes or rolls back the caller's session.
 
 `evaluate` accepts only a bounded list/tuple of projected family envelopes and a
 valid context. `evidence_incomplete` must be exactly false. It rejects invalid
@@ -218,7 +219,7 @@ invalidation, mixed identities/revisions, non-success outcomes and mismatched
 candidates. It admits only exactly one STARTED plus one completed TERMINAL.
 
 Returned `Reading` contains only `status`, `value` and a fixed reason string.
-It emits no raw identity. `observed` refers to this one proposed auxiliary metric;
+It emits no raw identity. `observed` refers to this one auxiliary metric;
 it is not S0 completion. No averaging, summation, latest-row choice or zero-fill
 is allowed for ambiguous evidence.
 
@@ -228,26 +229,38 @@ existing event table has no run foreign key. A later bounded dispatch-oriented
 failure report may inspect them; do not create a synthetic ProcessingRun to make
 the current collector accept failure evidence.
 
-## 8. Validation and next implementation gate
+## 8. Implementation and validation gate
 
-This slice runs 22 standard-library unit tests with synthetic envelopes and
-subcases. They cover byte bounds, duplicate JSON keys, ordinal/type validation,
-full identity and envelope checks, missing/duplicate/conflicting scopes,
-invalidation, failure/clock loss, source-size and durable-status gates, order
-independence and purity. They require no network, database, model or provider.
-Both named CI workflows explicitly run this file after their existing overlays.
+The pure validator tests include positive/negative exponent overflow and nested
+non-finite JSON values. Runtime tests use the real synchronous ingestion function,
+canonicalization service, retained synthetic source, v2 persistence and dispatch.
+They cover successful finalization, invalid clocks, actual worker interruption,
+waiter cancellation, duplicate workers, publication replay/conflict/loss, revision
+change, stale ownership, source/candidate mismatch, ambiguous dispatches, bounded
+SQL payload loading and read-only observer transactions. PostgreSQL uses the CI
+service with one disposable schema per case, including an MVCC snapshot test.
 
-The next implementation must add worker hooks, bounded atomic persistence and
-the consistent relational adapter together, then test their real composition:
-observer off/on, slow analyzer/storage/commit with synthetic clocks, source
-changes, missing run/candidate, repeated dispatch/worker ownership, transaction
-rollback and concurrent writers, cancellation and finalization races, revision
-changes, privacy and publication loss. PostgreSQL tests must use the existing
-disposable CI service and an isolated schema. Only after these pass should an
-exact tested Staging rollout and the smallest useful TXT fixture be considered.
+The adapter uses v2 candidate provenance (run/document/SPR), requires exactly one
+candidate and at least one source unit, and rejects any source unit not of kind
+`text_flow` or pointing at a different retained source. It does not infer the
+candidate from current Reader selection. It rejects unsupported database bindings
+and in-memory SQLite; these tests/runtimes report unavailable rather than reuse
+an application connection whose transaction semantics cannot be guaranteed.
 
-No TXT fixture, benchmark, merge or deployment is included here. Existing PDF
-metric mappings, OpenCV V4 settings, asynchronous OCR and the PDF-only frontend
-upload observer stay unchanged. Historical TXT timestamps are not corrected or
-backfilled by this slice. Full upload peak memory and full preprocessing CPU
+Observer connections use NullPool independently of the application pool.
+PostgreSQL Psycopg connections have a two-second connection timeout, a 500 ms
+statement timeout and a 150 ms lock timeout. File SQLite uses a 150 ms busy timeout.
+These are database/driver bounds, not a hard real-time deadline for DNS, OS or
+engine setup. Short writes lock the document before the exact dispatch; no observer
+transaction spans analyzer, storage or canonical commit work. Publication failures
+remain fail-open for ingestion and fail-closed for measurement. A failure to persist
+an invalidation cannot prove the absence of a second worker; this existing loss
+limitation is not presented as exactly-once execution.
+
+The next release gate is successful CI and artifact verification, followed by a
+separately authorized rollout of the exact tested Staging artifact and the smallest
+useful TXT fixture. No TXT fixture, benchmark, merge or deployment is included
+here. Existing PDF metric mappings, OpenCV V4 settings, asynchronous OCR and the
+PDF-only frontend upload observer stay unchanged. Historical TXT timestamps are
+not corrected or backfilled. Full upload peak memory and full preprocessing CPU
 remain unimplemented, and accepted S0 evidence remains 17/19, In Progress.

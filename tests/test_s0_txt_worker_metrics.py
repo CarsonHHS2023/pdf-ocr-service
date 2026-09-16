@@ -210,5 +210,13 @@ class TxtWorkerMetricsTests(unittest.TestCase):
         self.assertNotEqual(c.slot_id(context().run_id, 0), c.slot_id("txt-ingest-"+"2"*32, 0))
 
 
+class JsonOverflowTests(unittest.TestCase):
+    def test_nested_exponent_overflow_is_rejected(self):
+        for raw in ('{"x":1e309}', '{"x":-1e309}', '{"nested":[{"x":1e309}]}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(c.decode_payload(raw), ({}, False))
+        self.assertEqual(c.decode_payload('{"x":1e3}'), ({"x": 1000.0}, True))
+
+
 if __name__ == "__main__":
     unittest.main()

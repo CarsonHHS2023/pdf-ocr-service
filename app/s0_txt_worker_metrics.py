@@ -1,13 +1,13 @@
-"""Inactive, dependency-free v1 contract for future TXT worker timing evidence.
+"""Dependency-free v1 validator for TXT worker timing evidence.
 
-No producer, database access, clock sampling or baseline mapping is installed.
-The future adapter must supply a verified relational context and bounded rows.
+The staging adapter supplies a verified relational context and bounded rows.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import re
 import uuid
 
@@ -63,13 +63,20 @@ def decode_payload(raw):
     def reject_constant(_value):
         raise ValueError("nonfinite")
 
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("nonfinite")
+        return number
+
     try:
         if not isinstance(raw, (str, bytes)) or len(raw) > MAX_BYTES:
             return {}, False
         data = raw.encode("utf-8") if isinstance(raw, str) else raw
         if len(data) > MAX_BYTES:
             return {}, False
-        payload = json.loads(data.decode("utf-8"), object_pairs_hook=pairs, parse_constant=reject_constant)
+        payload = json.loads(data.decode("utf-8"), object_pairs_hook=pairs,
+            parse_constant=reject_constant, parse_float=finite_float)
         return (payload, True) if isinstance(payload, dict) else ({}, False)
     except (ValueError, TypeError, UnicodeError, RecursionError):
         return {}, False
@@ -114,7 +121,7 @@ def valid_payload(name, payload):
 class AdmissionContext:
     """Trusted, read-only relational projection; constructing it is not a DB join.
 
-    The future adapter must verify run/source/document/candidate/dispatch links
+    The adapter must verify run/source/document/candidate/dispatch links
     in one consistent snapshot before calling evaluate(). Never accept this
     context from browser input or infer it from the event payload alone.
     """

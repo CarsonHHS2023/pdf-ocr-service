@@ -78,8 +78,17 @@ jobs:
           python scripts/apply_s0_visual_asset_generation_observability.py
           python scripts/apply_s0_upload_reader_observability.py
 
-      - name: Run TXT worker evidence contract tests
-        run: python -m unittest discover -s tests -p test_s0_txt_worker_metrics.py -v
+      - name: Apply TXT worker observability twice
+        run: |
+          python scripts/apply_s0_txt_worker_observability.py
+          python scripts/apply_s0_txt_worker_observability.py
+
+      - name: Run TXT worker evidence and composed runtime tests
+        env:
+          S0_TXT_TEST_POSTGRESQL_URL: ${{ env.DATABASE_URL }}
+        run: |
+          python -m unittest discover -s tests -p test_s0_txt_worker_metrics.py -v
+          python -m pytest -q tests/test_s0_txt_worker_runtime.py tests/structured_content/test_txt_production_ingestion.py::test_production_runner_marks_document_completed_only_after_canonical_selection tests/structured_content/test_txt_ingestion_failure_diagnostics.py
 
       - name: Static and workflow checks
         run: |
@@ -240,6 +249,9 @@ jobs:
             /tmp/atlas-staging-verified/app/s0_reader_open_observability.py \
             /tmp/atlas-staging-verified/app/s0_reader_open_metrics.py \
             /tmp/atlas-staging-verified/app/s0_upload_reader_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_txt_worker_metrics.py \
+            /tmp/atlas-staging-verified/app/s0_txt_worker_observability.py \
+            /tmp/atlas-staging-verified/app/s0_txt_worker_persistence.py \
             /tmp/atlas-staging-verified/app/s0_upload_reader_persistence.py \
             /tmp/atlas-staging-verified/app/s0_upload_reader_observability.py \
             /tmp/atlas-staging-verified/app/s0_failure_retry_metrics.py \
@@ -325,6 +337,14 @@ jobs:
                   'tested staging artifact is missing provider delivery contract markers:\n'
                   + '\n'.join(missing)
               )
+          txt_markers = {
+              'app/processing/ingestion_dispatch.py': ['_invoke_txt_worker,', 'claim=claim,'],
+              'app/processing/txt/ingestion.py': ['observation = admit(', 'begin(observation)', 'finish(observation, outcome)'],
+              'app/processing/s0_baseline.py': ['_collect_txt_worker(session.get_bind()', 'txt_ingestion_worker_wall_seconds'],
+          }
+          for relative, markers in txt_markers.items():
+              source = (Path('/tmp/atlas-staging-verified') / relative).read_text()
+              assert all(marker in source for marker in markers), relative
           print('tested staging artifact provider delivery contract verified')
           PY
 
@@ -511,4 +531,3 @@ jobs:
             exit 1
           fi
           echo "HF Staging is running exact tested revision $GITHUB_SHA"
-
