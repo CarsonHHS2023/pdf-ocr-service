@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 
-from sqlalchemy import case, cast, create_engine, func, LargeBinary, or_, select
+from sqlalchemy import BigInteger, case, cast, create_engine, func, LargeBinary, or_, select
 from sqlalchemy.pool import NullPool
 
 from app.models import Document, ProcessingRun, SourceFile
@@ -108,7 +108,7 @@ def publish(engine, claim, name, payload):
             source = conn.execute(select(SourceFile.id).where(
                 SourceFile.id == claim.source_file_id, SourceFile.document_id == claim.document_id,
                 SourceFile.file_type == "txt", SourceFile.retained == 1,
-                SourceFile.byte_size > 0, SourceFile.byte_size <= contract.MAX_NS,
+                SourceFile.byte_size > 0, cast(SourceFile.byte_size, BigInteger) <= contract.MAX_NS,
                 SourceFile.storage_reference.is_not(None), SourceFile.storage_reference != "",
             )).first()
             if not source:
@@ -126,9 +126,9 @@ def publish(engine, claim, name, payload):
             slot = contract.slot_id(claim.payload.txt_processing_run_ref, payload["ordinal"])
             if slot in by_id:
                 stored, valid = contract.decode_payload(by_id[slot]["payload_json"])
-                if valid and stored == payload and by_id[slot]["event_name"] == name:
+                if reason is None and valid and stored == payload and by_id[slot]["event_name"] == name:
                     return True
-                reason = "duplicate_worker" if name == contract.START else "conflicting_terminal"
+                reason = reason or ("duplicate_worker" if name == contract.START else "conflicting_terminal")
             elif name == contract.START and rows:
                 reason = "duplicate_worker"
             elif name == contract.TERMINAL:

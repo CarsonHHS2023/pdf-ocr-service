@@ -372,3 +372,11 @@ def test_terminal_evidence_absent_after_canonical_commit_failure(runtime, monkey
     succeed(runtime)
     assert persistence.collect(runtime.engine, RUN).status == "not_available"
     assert json.loads(rows(runtime)[1].payload_json)["outcome"] == "failed"
+
+
+def test_retained_publication_replay_after_revision_change_invalidates(runtime):
+    observation = admit(runtime)
+    runtime.revision[0] = "b" * 40
+    assert not persistence.publish(runtime.engine, runtime.claim, c.START, dict(observation.common, ordinal=0))
+    invalid = next(row for row in rows(runtime) if row.event_name == c.INVALIDATED)
+    assert json.loads(invalid.payload_json)["reason"] == "revision_changed"

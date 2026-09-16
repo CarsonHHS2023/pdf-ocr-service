@@ -70,7 +70,7 @@ ambiguous, even if it would produce an identical candidate. Pre-start dispatch
 reclaims can increase `attempt_count` without starting another worker; therefore
 the contract binds the observed attempt number and does not require it to be 1.
 
-The future database adapter must provide exactly these eight envelope fields:
+The database adapter provides exactly these eight envelope fields:
 `id`, `processing_run_id`, `document_id`, `schema_version`, `event_name`,
 `severity`, `page_number`, `payload_json`.
 
