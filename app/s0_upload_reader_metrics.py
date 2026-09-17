@@ -129,6 +129,10 @@ def measure_upload_reader(events, *, expected_source_scope, run_status,
             or any(proof[k] != t[k] for k in ("frontend_revision", "backend_revision"))
             or any(e.payload["candidate_scope_id"] != t["candidate_scope_id"] for e in selected)):
         return missing("Reader open is not the accepted first-open candidate/revision.")
+    # Both browser intervals end at the same sample. The upload begins before
+    # its automatic Reader open, so it must contain that open's full duration.
+    if t["duration_seconds"] < proof["duration_seconds"]:
+        return missing("Upload duration is shorter than its contained Reader open.")
     return dict(status="observed", value=t["duration_seconds"],
         breakdown={**{k: t[k] for k in COMMON - {"ordinal", "succeeded"}},
             "open_scope_id": t["open_scope_id"], "candidate_scope_id": t["candidate_scope_id"],
