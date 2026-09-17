@@ -260,7 +260,7 @@ def test_legacy_txt_acceptance_survives_task_registration_crash(tmp_path: Path) 
 def test_supervisor_overlay_reuses_single_recovery_loop_and_shutdown_cleanup(tmp_path: Path) -> None:
     path = tmp_path / "main.py"
     source = _raw_source("app/main.py")
-    assert "Durable ingestion dispatch startup recovery" not in source
+    assert "Durable ingestion dispatch recovery sweep" not in source
     path.write_text(source, encoding="utf-8")
 
     patch_ingestion_dispatch_supervisor(path)
@@ -277,6 +277,9 @@ def test_supervisor_overlay_reuses_single_recovery_loop_and_shutdown_cleanup(tmp
     loop_end = transformed.index('@app.get("/")', loop_start)
     loop = transformed[loop_start:loop_end]
     assert "_recover_and_kick_ingestion_dispatches" in loop
+    assert loop.index("recover_stale_s0_pdf_processing_runs") < loop.index(
+        "await _recover_and_kick_ingestion_dispatches"
+    ) < loop.index("await asyncio.sleep(S0_STALE_RECOVERY_SWEEP_SECONDS)")
     s0_error = loop[
         loop.index('logger.exception("S0 stale ProcessingRun recovery sweep failed open")') :
         loop.index("await _recover_and_kick_ingestion_dispatches")
@@ -286,9 +289,12 @@ def test_supervisor_overlay_reuses_single_recovery_loop_and_shutdown_cleanup(tmp
     startup_start = transformed.index("async def startup_event()")
     shutdown_start = transformed.index("async def shutdown_event()", startup_start)
     startup = transformed[startup_start:shutdown_start]
-    assert startup.index("init_db()") < startup.index(
-        '"Durable ingestion dispatch startup recovery"'
-    )
+    assert "init_db()" in startup
+    assert "recover_stale_s0_pdf_processing_runs()" not in startup
+    assert "await _recover_and_kick_ingestion_dispatches" not in startup
+    assert "Durable ingestion dispatch startup recovery" not in startup
+    assert "_stale_processing_run_recovery_loop()" in startup
+    assert startup.index("init_db()") < startup.index("_stale_processing_run_recovery_loop()")
 
     first = transformed
     patch_ingestion_dispatch_supervisor(path)
@@ -343,5 +349,6 @@ def test_staging_workspace_installs_all_durable_paths_and_supervisor_from_one_en
     assert "DIRECT_UPLOAD_COMPLETE_IDEMPOTENT" in direct
     assert "legacy_acceptance_key" in legacy
     assert "background_tasks.add_task(run_ingestion_dispatch, accepted.dispatch_id)" in legacy
-    assert "Durable ingestion dispatch startup recovery" in main
+    assert "Durable ingestion dispatch recovery sweep" in main
+    assert "Durable ingestion dispatch startup recovery" not in main
     assert main.count("await asyncio.sleep(S0_STALE_RECOVERY_SWEEP_SECONDS)") == 1
