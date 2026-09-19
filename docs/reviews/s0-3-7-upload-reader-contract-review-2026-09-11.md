@@ -82,6 +82,14 @@ For the documentation changes, verify repository-relative links, pinned-source
 paths, whitespace, private-fixture leakage and the changed-file scope. Do not
 present documentation CI as a new runtime deployment or acceptance run.
 
+## Later collector review — 2026-09-19
+
+The [source-pinned follow-up](s0-3-7-collector-admission-review-2026-09-19.md)
+reproduces malformed Reader-scope filtering and upload-envelope admission defects
+on current Staging. It also confirms PR #48's narrow fix with 53 passing focused
+tests and one PostgreSQL-specific skip. The findings predate #48 and remain open;
+this original point-in-time review is not a full collector sign-off.
+
 ## Remaining work
 
 - PR #48 exact-head CI and scoped self-review are complete; a merge/rollout

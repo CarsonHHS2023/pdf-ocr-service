@@ -55,13 +55,28 @@ registered TXT baseline and PDF-only browser admission remain separate gaps;
 same late lifecycle timestamps are still unsuitable. This auxiliary containing
 interval is not full preprocessing CPU or upload-memory attribution.
 
+## 2026-09-19 collector review result
+
+The [bounded collector review](../reviews/s0-3-7-collector-admission-review-2026-09-19.md)
+reproduced two P2 defects: malformed Reader scope evidence is dropped before the
+upload join, and upload envelope metadata is not validated by the collector.
+Unknown Reader-family names are also ignored. A 16-case synthetic probe documents
+the failures and rejection controls. Current-Staging focused tests passed
+49/1 skipped; with PR #48, 53/1 skipped. PR #48 fixes duration containment and
+does not fix these pre-existing admission gaps.
+
+Next implementation target: fail-closed Reader family/scope admission and bounded
+upload-envelope validation, with composed regressions and valid-other-open
+controls. Full S0.3.7 remains open; these findings do not invalidate the previously
+audited live evidence or justify a new fixture upload.
+
 ## Next work that does not require redefining these metrics
 
 - Finish S0.3.7 review of the composed producer/persistence/collector contracts,
   including exact source identities, bounded payloads, privacy, late terminals,
   unknown/malformed events and duplicate/conflicting scopes. The new small
   acceptance proves its own path, not every negative or concurrent runtime case.
-- Start the next S0.3.7 pass at the composed collector's SQL projection and
+- Continue S0.3.7 beyond the completed upload/Reader pass at the composed collector's SQL projection and
   event-envelope boundary: map each event family to its exact validator, byte
   bound, cap-plus-one detection, run/document/revision joins and ambiguity
   handling. Inspect missing/extra envelope fields and unknown family names.
