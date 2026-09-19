@@ -115,6 +115,9 @@ The complete new snapshot has **17 of 19 required metrics observed**. Required
 `not_instrumented`. No limitation is accepted or waived by this record.
 
 No further small or medium upload is needed for this already accepted target.
-TXT ingestion timing, full memory/CPU attribution, final mapping/privacy review
-and the final S0 closure decision remain separately gated. S0 and M5 are In
-Progress; S1/S2 and 100/528-page execution have not begun.
+The later [TXT small live control](s0-txt-worker-small-acceptance-2026-09-19.md)
+adds worker-timing evidence on its own revision; it does not change this PDF
+snapshot. Formal registered TXT baseline, full memory/CPU attribution, final
+mapping/privacy review and the final S0 closure decision remain separately gated.
+S0 and M5 are In Progress; S1/S2 and 100/528-page execution have not begun.
+

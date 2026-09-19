@@ -1,10 +1,24 @@
 # S0 TXT lifecycle and timing inspection — 2026-09-11
 
-Status: **Source inspection complete; timing implementation and TXT acceptance pending**.
+Status: **Worker timing implemented and deployed; small live control accepted 2026-09-19; formal registered TXT baseline remains open**.
 
 Product milestone: M5 support. Scalability phase: S0. This plan retains the two
 unimplemented PDF attribution requirements in the
 [remaining-decision record](s0-remaining-attribution-decisions-2026-09-11.md).
+
+## Current checkpoint — 2026-09-19
+
+[PR #49](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/49) is merged and
+deployed on `090f1f075b7ef356f3066e29848415c7db559a93`.
+The [small live acceptance](../reviews/s0-txt-worker-small-acceptance-2026-09-19.md)
+records a 64,476-byte TXT, complete two-event evidence and **23.63936695 s**
+worker wall time. Reader body and TOC were confirmed by the user. This was a
+bounded read-only relational audit with independent contract checks, not native
+collector replay or formal `txt-small-v1` acceptance. The registry's fixture has
+a different reference size and private checksum identity was not checked.
+
+Sections 1–3 retain the original source inspection. The independent clock does
+not correct business lifecycle timestamps or extend PDF-only browser timing.
 
 ## 1. Pinned sources and evidence limits
 
@@ -61,15 +75,14 @@ timestamps unsuitable. Preserve those records; do not backfill guessed times.
 
 ## 4. First implementation slice and contract progress
 
-The [v1 contract and pure validator](https://github.com/CarsonHHS2023/pdf-ocr-service/blob/56707e9c63c1c2374aff3dfc4d91c934ba9b3eea/docs/testing/s0-txt-worker-wall-observability-v1.md)
-are implemented in [PR #49](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/49).
-The fixed auxiliary key is `txt_ingestion_worker_wall_seconds`. Twenty-two local
-synthetic evidence tests pass; exact-head CI is tracked on that PR. No producer,
-persistence/relational adapter or baseline mapping is installed. The next slice
-is the **Staging-only TXT worker wall-duration observer**. Do not map this containing
-interval to PDF preprocessing or PDF canonicalization keys.
+The [deployed v1 contract](https://github.com/CarsonHHS2023/pdf-ocr-service/blob/090f1f075b7ef356f3066e29848415c7db559a93/docs/testing/s0-txt-worker-wall-observability-v1.md)
+and validator, worker hooks, bounded persistence, relational adapter and collector
+auxiliary are implemented through PR #49. The auxiliary key is
+`txt_ingestion_worker_wall_seconds`; it does not map to PDF preprocessing or
+canonicalization. Final-head CI passed before deployment; the small live
+acceptance above supplies runtime evidence with its stated limits.
 
-Recommended boundary:
+Implemented boundary:
 
 - Start inside the synchronous TXT worker, before analyzer configuration and
   canonicalization work, on a monotonic clock owned by that execution.
@@ -90,7 +103,7 @@ business ProcessingRun timestamps is a separately reviewed lifecycle change,
 not a substitute for the monotonic measurement. Keep database sessions short;
 do not hold a transaction across analyzer network work.
 
-## 5. Required contract before coding
+## 5. Contract obligations retained after implementation
 
 1. Give each actual worker execution a bounded, server-generated scope and bind
    it to the exact dispatch, document, retained source and TXT run reference.
@@ -119,15 +132,15 @@ do not hold a transaction across analyzer network work.
 
 | Step | Concrete deliverable / gate |
 |---|---|
-| A | Contract and pure evidence validator implemented in PR #49; 22 local tests pass; runtime obligations still require composed verification |
-| B | Minimal worker observer and collector auxiliary, feature-gated to Staging; preserve existing PDF paths |
-| C | Synthetic-clock tests for slow analysis/storage/commit, configuration/analysis/selection/commit failures, missing run, duplicate execution, cancellation, privacy and malformed/oversized evidence |
-| D | Verify actual durable-dispatch + worker + collector composition, observer off/on behavior, publication atomicity and bounded costs in CI |
-| E | Separately reviewed exact tested Staging rollout; record source and deployed revision separately |
-| F | `txt-small-v1` acceptance, then `txt-medium-v1` when additional window/outline coverage is demonstrated |
+| A | Complete: versioned contract and strict validator; final pure suite 23 passed |
+| B | Complete: Staging worker observer, bounded persistence and read-only collector auxiliary |
+| C | Complete: final runtime suite 85 passed, 2 dialect-specific skips; invalid clocks, failures, cancellation, identity, publication and bounds covered |
+| D | Complete: exact-head CI and composed integration/artifact verification passed; PostgreSQL exercised in disposable schemas |
+| E | Complete: deployment run 35093211333 verified exact revision 090f1f075b7ef356f3066e29848415c7db559a93 |
+| F | Small live worker control accepted; formal registered txt-small-v1 baseline and medium coverage remain open |
 
-No fixture is requested before A–E. Existing TXT Reader-reopen evidence is
-preserved and cannot satisfy F. The first slice does not extend the PDF-only
+A–E are complete. The small live control is scoped evidence, not completion of
+all F requirements. Existing TXT Reader-reopen evidence remains separate. The first slice does not extend the PDF-only
 browser upload observer: a later TXT upload-to-Reader contract must separately
 cover acknowledgement identity, book-state publication and automatic first-open
 eligibility. Reusing PDF admission by changing only a filename predicate is

@@ -1,6 +1,6 @@
 # S0 remaining attribution decisions — 2026-09-11
 
-Status: **Proposed decision record; no waiver, runtime change or S0 closure**.
+Status: **Current handoff, updated 2026-09-19; attribution gaps retained without waiver**.
 
 The [latest small acceptance](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md)
 has 17/19 required rows observed. Two are unimplemented attribution methods,
@@ -46,12 +46,14 @@ reproduced missing duration-containment validation. [PR #48](https://github.com/
 adds the collector guard and regression cases; its exact-head CI passed, but it
 is not deployed. The full S0.3.7 review remains open.
 
-The [TXT lifecycle inspection and plan](s0-txt-lifecycle-timing-plan-2026-09-11.md)
-is now source-pinned. Newly created TXT runs receive the same late timestamp for
-start and completion; PDF-only browser admission is a separate gap. Next is a
-versioned TXT worker wall-duration contract, followed by scoped instrumentation
-and composition tests before any fixture. This is an auxiliary containing
-interval, not full preprocessing CPU or upload-memory attribution.
+The [TXT lifecycle plan](s0-txt-lifecycle-timing-plan-2026-09-11.md) now records
+PR #49's completed implementation, tested deployment and
+[small live worker acceptance](../reviews/s0-txt-worker-small-acceptance-2026-09-19.md).
+The 64,476-byte control measured **23.63936695 s**, and the user confirmed Reader
+body and TOC. The read-only audit was not a native collector replay. Formal
+registered TXT baseline and PDF-only browser admission remain separate gaps;
+same late lifecycle timestamps are still unsuitable. This auxiliary containing
+interval is not full preprocessing CPU or upload-memory attribution.
 
 ## Next work that does not require redefining these metrics
 
@@ -59,9 +61,19 @@ interval, not full preprocessing CPU or upload-memory attribution.
   including exact source identities, bounded payloads, privacy, late terminals,
   unknown/malformed events and duplicate/conflicting scopes. The new small
   acceptance proves its own path, not every negative or concurrent runtime case.
-- Implement the next review stage in the source-pinned TXT plan: fix the versioned
-  worker timing contract and its failure/publication boundaries before runtime
-  instrumentation or TXT fixtures. PDF evidence does not substitute for TXT timing.
+- Start the next S0.3.7 pass at the composed collector's SQL projection and
+  event-envelope boundary: map each event family to its exact validator, byte
+  bound, cap-plus-one detection, run/document/revision joins and ambiguity
+  handling. Inspect missing/extra envelope fields and unknown family names.
+  Reproduce any candidate defect with a bounded synthetic case before a fix;
+  publish source references and explicit unreviewed areas.
+- Keep PR #48 as the existing duration-containment fix (still open and unmerged
+  as checked on 2026-09-19). Its earlier exact-head CI is recorded separately;
+  recheck against current Staging before any separately authorized merge/rollout.
+- Preserve the accepted TXT control. A formal registered baseline needs verified
+  private fixture identity and a native collector report; medium execution needs
+  a concrete additional window/outline coverage target. No repeat upload is
+  needed merely to reconfirm the successful small control.
 - Keep the cost/benefit decision for the large PDF explicitly deferred. Medium
   reruns are justified by new multi-page/sharding coverage, not by the number of
   rows left open in the collector.

@@ -88,8 +88,9 @@ present documentation CI as a new runtime deployment or acceptance run.
   remains a separate step.
 - Continue the remaining event-family and outer-envelope S0.3.7 review. This
   scoped pass does not close it.
-- Follow the [TXT lifecycle/timing plan](../plans/s0-txt-lifecycle-timing-plan-2026-09-11.md)
-  before any TXT timing fixture.
+- The later [TXT live acceptance](s0-txt-worker-small-acceptance-2026-09-19.md)
+  records PR #49 deployment and a small worker control; formal registered TXT
+  baseline and TXT upload-to-Reader timing remain separate gates.
 - Retain full upload peak memory and full preprocessing CPU as unimplemented;
   preserve the earlier missing-terminal result and all original acceptance
   revisions.
