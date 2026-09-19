@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document Type | Testing / Implementation candidate |
-| Approval Status | Candidate implementation; runtime acceptance pending |
+| Approval Status | Implemented via Backend #46; scoped small acceptance PASS; repository record proposed |
 | Lifecycle Status | Active |
 | Date | 2026-09-10 |
 | Scope | Staging canonical single-PDF upload to automatic initial semantic render |
@@ -60,12 +60,15 @@ method, one-file delegation, manual opens, overlapping uploads/batches, lifecycl
 loss, clock replacement/expiry and detached publication. Existing Reader and
 application regressions must pass with the companion candidate.
 
-Next: exact-head review and CI, artifact verification, then separately authorized
-Staging and companion Preview acceptance. Record both deployed revisions before
-requesting one fresh small PDF and its natural automatic first open. No existing
-run can be retroactively promoted into upload-clock evidence.
+Follow-up: Backend #46 is merged and deployed. The [small acceptance record](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md)
+pins Backend/runtime `f3b7af8122d5e5fe946614c6e1ddd0047877d504` and frontend Preview
+`086cda854c24680ea4ce1c414844f10af2c14dcf`. The new run has complete durable
+upload/Reader evidence and `upload_to_reader_ready_seconds = observed` at
+`170.5072 s`. The earlier attempt with no upload terminal remains unavailable;
+no prior run is retroactively promoted into upload-clock evidence. Frontend #87
+remains Draft and unmerged; no new fixture is requested for this accepted target.
 
-The deployed baseline remains 16/19 required metrics observed. Full upload-owned
-memory, full preprocessing CPU and upload-to-Reader-ready runtime acceptance remain
-open. S0 and M5 remain In Progress. No Production change, merge, fixture upload,
+The latest accepted snapshot has 17/19 required metrics observed. Full upload-owned
+memory and full preprocessing CPU remain unimplemented and are not waived. S0
+and M5 remain In Progress. No Production change, further merge, fixture upload,
 medium rerun or 100/528-page benchmark is authorized by this document.
