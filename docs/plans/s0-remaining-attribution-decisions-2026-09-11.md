@@ -1,6 +1,6 @@
 # S0 remaining attribution decisions — 2026-09-11
 
-Status: **Current handoff, updated 2026-09-19; attribution gaps retained without waiver**.
+Status: **Current handoff, updated 2026-09-20; attribution gaps retained without waiver**.
 
 The [latest small acceptance](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md)
 has 17/19 required rows observed. Two are unimplemented attribution methods,
@@ -65,10 +65,15 @@ the failures and rejection controls. Current-Staging focused tests passed
 49/1 skipped; with PR #48, 53/1 skipped. PR #48 fixes duration containment and
 does not fix these pre-existing admission gaps.
 
-Next implementation target: fail-closed Reader family/scope admission and bounded
-upload-envelope validation, with composed regressions and valid-other-open
-controls. Full S0.3.7 remains open; these findings do not invalidate the previously
-audited live evidence or justify a new fixture upload.
+**2026-09-20 implementation:** PR #48 now fixes Reader family/scope admission
+and bounded upload-envelope validation at `5ea0608a071218ed52e2dde69a13ec77c5e9d633`, with
+composed regressions and valid-other-open controls. Local results are 152 passed,
+two PostgreSQL-specific skips and 155 subtests passed. See the
+[review follow-up](../reviews/s0-3-7-collector-admission-review-2026-09-19.md)
+for exact-head CI status. The candidate is not merged into Staging or deployed.
+Next gate: review exact-head CI/artifact evidence, then a separately authorized
+rollout. Full S0.3.7 remains open beyond these fixes. Existing audited live
+evidence stays valid; no repeated fixture upload is required merely for this fix.
 
 ## Next work that does not require redefining these metrics
 
@@ -82,9 +87,10 @@ audited live evidence or justify a new fixture upload.
   handling. Inspect missing/extra envelope fields and unknown family names.
   Reproduce any candidate defect with a bounded synthetic case before a fix;
   publish source references and explicit unreviewed areas.
-- Keep PR #48 as the existing duration-containment fix (still open and unmerged
-  as checked on 2026-09-19). Its earlier exact-head CI is recorded separately;
-  recheck against current Staging before any separately authorized merge/rollout.
+- Keep PR #48 as the existing collector fix, now including duration containment
+  and both admission defects. Its branch is synchronized with current Staging;
+  use the new head's CI/artifact evidence before any separately authorized
+  merge/rollout. Historical exact-head CI remains separate.
 - Preserve the accepted TXT control. A formal registered baseline needs verified
   private fixture identity and a native collector report; medium execution needs
   a concrete additional window/outline coverage target. No repeat upload is

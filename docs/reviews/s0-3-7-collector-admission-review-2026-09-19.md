@@ -1,6 +1,32 @@
 # S0.3.7 collector admission review — 2026-09-19
 
-Status: **Two reproduced admission defects remain open; PR #48's narrow fix passes local current-Staging composition tests.**
+Status: **Defects reproduced on 2026-09-19; collector hardening implemented in PR #48 on 2026-09-20, not yet deployed.**
+
+## Implementation follow-up — 2026-09-20
+
+[PR #48](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/48) now includes
+the two fixes at `5ea0608a071218ed52e2dde69a13ec77c5e9d633`, synchronized with Staging
+`090f1f075b7ef356f3066e29848415c7db559a93`. Reader names and scope identity
+are checked before exact-open filtering; the Staging collector preserves and
+checks schema/page/severity plus deterministic upload slot IDs. Valid unrelated
+families and separately identified incomplete opens retain their prior behavior.
+
+The 16-case probe below now rejects the two reproduced defects and the shorter
+containing duration. Valid, equal-duration and unrelated-family controls remain
+observed. Focused upload/Reader suites: **83 passed, 1 skipped**. Generic baseline
+and TXT suites: **69 passed, 1 skipped, 155 unittest subtests passed**. Both skips
+are PostgreSQL-specific; local results do not substitute for PostgreSQL CI.
+The exact Staging overlay sequence and repeated upload/TXT installation passed.
+
+Exact-head CI for `5ea0608a071218ed52e2dde69a13ec77c5e9d633` passed all five workflows:
+[Durable Processing Events CI](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/35507970569), [S0 Baseline CI](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/35507970570), [Provider Transport Sharding CI](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/35507970568), [Provider 20 MiB Staging CI](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/35507970571), [Staging Backend Integration CI](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/35507970590).
+Integration job `106070873751` and artifact verification `106071065881`
+passed; deploy job `106071082505` was skipped.
+
+The findings and result matrix below describe the historical reviewed revisions,
+not the hardened candidate. No merge into Staging, deployment, new upload or
+change to S0's 17/19 status is included. Full S0.3.7 work beyond these defects
+remains open.
 
 ## Scope and pinned sources
 
