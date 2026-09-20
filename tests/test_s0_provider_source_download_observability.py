@@ -311,3 +311,83 @@ def test_result_projection_records_only_privacy_safe_provider_download_fields(mo
     assert "storage.example.com" not in rendered
     assert "secret" not in rendered
     assert "private-token" not in rendered
+
+
+@pytest.mark.parametrize("schema", [
+    "atlas.processing.event.v1", "atlas.processing.event.v999", "", "atlas.processing.event.v1 ",
+])
+@pytest.mark.parametrize("target", ["provider", "decision", "route", "terminal", "download"])
+def test_collector_requires_supported_event_schema_before_payload_admission(schema, target):
+    from app.processing.s0_baseline import _load_bounded_event_rows
+
+    db = _session()
+    _seed_base(db)
+    db.add_all([
+        _decision(False, 120),
+        _route(SCOPE_A, transport.ROUTE_PRESIGNED, 120, "route", 3),
+        _terminal(SCOPE_A, 0, "terminal", 4),
+        _download(PROVIDER_A, 120, 0.2, "download", 5),
+    ])
+    db.commit()
+    db.get(ProcessingEvent, target).schema_version = schema
+    db.commit()
+    try:
+        supported = schema == "atlas.processing.event.v1"
+        projected, truncated = _load_bounded_event_rows(db, processing_run_id=RUN_ID,
+            document_id=DOCUMENT_ID, max_events=5000)
+        # SQL must preserve evidence cardinality while withholding foreign payloads.
+        assert len(projected) == 5 and not truncated
+        assert sum(row.payload_json is None for row in projected) == (0 if supported else 1)
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        modal = _metric(snapshot, "modal_download_seconds")
+        assert modal.status == ("observed" if supported else "not_available")
+        assert modal.value == (0.2 if supported else None)
+        assert snapshot.event_payload_decode_incomplete is (not supported)
+        assert snapshot.event_payload_oversized_incomplete is False
+        source = _metric(snapshot, "source_byte_size")
+        assert (source.status, source.value) == ("observed", 100)
+        assert _aux(snapshot, "durable_event_count").value == 5
+        json.dumps(snapshot.to_dict(), allow_nan=False)
+    finally:
+        db.close()
+
+
+def test_foreign_schema_shadow_event_invalidates_otherwise_valid_download():
+    db = _session()
+    _seed_base(db)
+    db.add_all([
+        _decision(False, 120),
+        _route(SCOPE_A, transport.ROUTE_PRESIGNED, 120, "route", 3),
+        _terminal(SCOPE_A, 0, "terminal", 4),
+        _download(PROVIDER_A, 120, 0.2, "download", 5),
+    ])
+    # The valid payload alone would be complete; a future-schema row is not
+    # safely interpretable and must not be filtered away in SQL.
+    shadow = _event("shadow", download.PROVIDER_DOWNLOAD_EVENT, {}, 6)
+    shadow.schema_version = "atlas.processing.event.v999"
+    db.add(shadow)
+    db.commit()
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        assert _metric(snapshot, "modal_download_seconds").status == "not_available"
+        assert _aux(snapshot, "durable_event_count").value == 6
+        assert snapshot.event_payload_decode_incomplete
+    finally:
+        db.close()
+
+
+def test_foreign_schema_numeric_payload_is_not_generic_resource_evidence():
+    db = _session()
+    _seed_base(db)
+    heartbeat = _event("foreign-heartbeat", "PDF_S0_RESOURCE_HEARTBEAT", {"peak_rss_mb": 9999.0}, 2)
+    heartbeat.schema_version = "atlas.processing.event.v999"
+    db.add(heartbeat)
+    db.commit()
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        assert _aux(snapshot, "max_observed_peak_rss_mb").value is None
+        assert "peak_rss_mb" not in snapshot.observed_numeric_event_fields
+        assert snapshot.event_payload_decode_incomplete
+        assert _aux(snapshot, "durable_event_count").value == 2
+    finally:
+        db.close()
