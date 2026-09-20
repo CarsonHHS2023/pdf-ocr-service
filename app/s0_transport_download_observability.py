@@ -314,8 +314,9 @@ def measure_backend_source_transport(
                 return None, None, None, "not_available", "Presigned Provider source access conflicts with Backend fallback retrieval/transmission evidence."
             scope_body_bytes = 0
         else:
-            expected_ordinals = set(range(1, terminal_count + 1))
-            if set(sent) != expected_ordinals:
+            # Keys are unique positive integers. Count and maximum prove 1..N
+            # without allocating a range controlled by retained event content.
+            if len(sent) != terminal_count or max(sent, default=0) != terminal_count:
                 return None, None, None, "not_available", "Backend source-body transmission evidence does not match the post-revoke retrieval count."
             scope_body_bytes = 0
             for ordinal in sorted(sent):

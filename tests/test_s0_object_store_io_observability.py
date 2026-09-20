@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -572,3 +574,72 @@ def test_federated_provider_input_secondary_remains_observable() -> None:
     router.put(b"subset", "src_" + "9" * 32)
     generated = tracker.stages[io.STAGE_GENERATED_ARTIFACT]
     assert (generated.write_bytes, generated.write_operations) == (6, 1)
+
+
+@pytest.mark.parametrize(("count", "ordinals", "status"), [
+    (0, [], "observed"),
+    (1, [1], "observed"),
+    (3, [3, 1, 2], "observed"),
+    (3, [1, 3], "not_available"),
+    (2, [2, 3], "not_available"),
+    (2, [1, 1], "not_available"),
+    (0, [1], "not_available"),
+    (2, [1, 10**400], "not_available"),
+    (5001, [1], "not_available"),
+    (10**400, [1], "not_available"),
+])
+def test_storage_retrieval_reconciliation_is_bounded(monkeypatch, count, ordinals, status):
+    import builtins
+    import json
+    from app.processing import s0_baseline as baseline
+
+    db = _session()
+    _seed(db)
+    db.delete(db.get(ProcessingEvent, "io-transport"))
+    row = db.get(ProcessingEvent, "io-transport-terminal")
+    payload = json.loads(row.payload_json)
+    payload["terminal_retrieval_count"] = count
+    row.payload_json = encode_json_text(payload)
+    for index, ordinal in enumerate(ordinals):
+        db.add(_event(f"retrieval-{index}", io.STAGE_PROVIDER_SOURCE_TRANSPORT,
+                      read_bytes=1000, read_ops=1, scope_id=TRANSPORT_SCOPE,
+                      ordinal=ordinal))
+    db.commit()
+
+    def bounded_range(*args):
+        result = builtins.range(*args)
+        assert result.stop <= baseline.MAX_EVENTS_HARD_LIMIT + 1, "payload-sized allocation"
+        return result
+
+    # Protect the regression runner against the old huge-count allocation.
+    monkeypatch.setattr(baseline, "range", bounded_range, raising=False)
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        metric = _metric(snapshot, "backend_object_store_bytes")
+        assert metric.status == status
+        assert metric.value == (2812 + 1000 * len(ordinals) if status == "observed" else None)
+        assert _metric(snapshot, "source_byte_size").value == 456
+        json.dumps(snapshot.to_dict(), allow_nan=False)
+    finally:
+        db.close()
+
+
+def test_terminal_overlay_upgrades_installed_helper_and_is_idempotent(tmp_path):
+    from scripts import apply_s0_transport_terminal_collector as overlay
+
+    path = tmp_path / "baseline.py"
+    prefix = "# preserve surrounding composition\n"
+    suffix = "def _phase2_process_lifetime_peak():\n    return 'unchanged'\n"
+    legacy = '''def _s0_storage_io_measurement():
+    terminal_retrieval_counts: dict[str, int] = {}
+    return set(range(1, terminal_count + 1))
+
+
+'''
+    path.write_text(prefix + legacy + suffix, encoding="utf-8")
+    overlay.patch_s0_transport_terminal_collector(path)
+    first = path.read_text(encoding="utf-8")
+    assert first == prefix + overlay._HELPER_BLOCK + suffix
+    compile(first, str(path), "exec")
+    overlay.patch_s0_transport_terminal_collector(path)
+    assert path.read_text(encoding="utf-8") == first

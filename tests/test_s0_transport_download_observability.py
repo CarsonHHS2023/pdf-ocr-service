@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 from datetime import datetime, timedelta
 
@@ -257,3 +259,48 @@ def test_response_does_not_record_when_asgi_body_send_fails(monkeypatch) -> None
     else:
         raise AssertionError("expected disconnect")
     assert calls == []
+
+
+@pytest.mark.parametrize(("count", "ordinals", "status"), [
+    (0, [], "observed"),
+    (1, [1], "observed"),
+    (3, [3, 1, 2], "observed"),
+    (3, [1, 3], "not_available"),
+    (2, [2, 3], "not_available"),
+    (2, [1, 1], "not_available"),
+    (0, [1], "not_available"),
+    (2, [1, 10**400], "not_available"),
+    (5001, [1], "not_available"),
+    (10**400, [1], "not_available"),
+])
+def test_body_retrieval_reconciliation_is_bounded(monkeypatch, count, ordinals, status):
+    import builtins
+    import json
+    from app.processing.s0_baseline import MAX_EVENTS_HARD_LIMIT
+
+    db = _session()
+    _seed_base(db)
+    db.add_all([
+        _decision(False, 120),
+        _route(SCOPE_A, transport.ROUTE_FALLBACK, 120, "route", 3),
+        _terminal(SCOPE_A, count, "terminal", 5),
+    ])
+    for index, ordinal in enumerate(ordinals):
+        db.add(_body(SCOPE_A, ordinal, 120, f"body-{index}", 4))
+    db.commit()
+
+    def bounded_range(*args):
+        result = builtins.range(*args)
+        assert result.stop <= MAX_EVENTS_HARD_LIMIT + 1, "payload-sized allocation"
+        return result
+
+    monkeypatch.setattr(transport, "range", bounded_range, raising=False)
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        metric = _metric(snapshot, "backend_to_modal_transport_bytes")
+        assert metric.status == status
+        assert metric.value == (120 * len(ordinals) if status == "observed" else None)
+        assert _metric(snapshot, "source_byte_size").value == 100
+        json.dumps(snapshot.to_dict(), allow_nan=False)
+    finally:
+        db.close()
