@@ -3,6 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import json
+import math
+from dataclasses import asdict
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -152,6 +157,57 @@ def test_fallback_keeps_backend_send_bytes_separate_from_provider_download_bytes
     assert _metric(snapshot, "backend_to_modal_transport_bytes").value == 120
     assert _metric(snapshot, "modal_download_seconds").value == 0.4
     assert _aux(snapshot, "provider_source_download_bytes").value == 120
+
+
+@pytest.mark.parametrize("durations,expected", [
+    ([10**400], "not_available"), ([-10**400], "not_available"),
+    ([1e308, 1e308], "not_available"), ([1e308], "observed"),
+    ([0], "observed"), ([.2, .3], "observed"),
+])
+def test_duration_extremes_preserve_a_finite_serializable_collector_snapshot(durations, expected):
+    db = _session()
+    try:
+        _seed_base(db)
+        db.add(_decision(len(durations) > 1, 100 * len(durations)))
+        if len(durations) > 1:
+            db.add(_event("shards", "PDF_PROVIDER_TRANSPORT_SHARDING_TERMINAL",
+                {"succeeded": True, "shard_count": len(durations)}, 3))
+        for i, duration in enumerate(durations):
+            scope, provider = (SCOPE_A, PROVIDER_A) if i == 0 else (SCOPE_B, PROVIDER_B)
+            db.add_all([_route(scope, transport.ROUTE_PRESIGNED, 100, f"route-{i}", 4+i),
+                _terminal(scope, 0, f"terminal-{i}", 6+i),
+                _download(provider, 100, duration, f"download-{i}", 8+i)])
+        db.commit()
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        measured = _metric(snapshot, "modal_download_seconds")
+        assert measured.status == expected
+        if expected == "observed":
+            assert math.isfinite(measured.value) and measured.value == sum(durations)
+        else:
+            assert measured.value is None
+            assert _aux(snapshot, "provider_source_download_bytes").value is None
+        backend = _metric(snapshot, "backend_to_modal_transport_bytes")
+        assert backend.status == "observed" and backend.value == 0
+        json.dumps(asdict(snapshot), allow_nan=False, default=str)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("duration", [10**400, -10**400, True, "0.5", float("inf"), float("nan"), -1])
+def test_producer_rejects_invalid_duration_without_throwing_or_publishing(monkeypatch, duration):
+    from app.processing import processing_events
+    monkeypatch.setattr(download, "_enabled", lambda: True)
+    writes = []
+    monkeypatch.setattr(processing_events, "record_processing_event", lambda **kw: writes.append(kw) or True)
+    request = SimpleNamespace(processing_attempt_id=RUN_ID, document_id=DOCUMENT_ID, provider_job_id="synthetic-job")
+    measurement = {"succeeded": True, "measurement_scope": download.PROVIDER_DOWNLOAD_MEASUREMENT_SCOPE,
+        "bytes": 100, "duration_seconds": duration}
+    result = SimpleNamespace(raw_provider_payload={"documents": [{"document_id": DOCUMENT_ID, "source_download": measurement}]})
+    assert download.record_provider_source_download_from_result(request, result) is False
+    assert writes == []
+    measurement["duration_seconds"] = 0
+    assert download.record_provider_source_download_from_result(request, result) is True
+    assert writes[0]["payload"]["download_duration_seconds"] == 0
 
 
 def test_consumer_byte_mismatch_fails_closed_without_invalidating_backend_boundary() -> None:
