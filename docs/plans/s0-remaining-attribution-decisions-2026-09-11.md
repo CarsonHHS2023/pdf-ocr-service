@@ -78,6 +78,16 @@ Next work is the remaining S0.3.7 contract review beyond the corrected
 upload/Reader path. Existing audited live evidence retains its original
 provenance; no repeated fixture upload is required merely for this fix.
 
+## Provider numeric review — 2026-09-20
+
+The [Provider download/compute review](../reviews/s0-3-7-provider-numeric-review-2026-09-20.md)
+reproduced an unchecked huge-integer conversion and nonfinite duration sum in the
+download collector. PR #50 fixes both failure modes at `2d89122050d61f54515f7e675fd30f4d6da44cb8`;
+65 local focused/baseline tests passed. The review retains the explicit byte-size
+multiset correlation boundary and the independent OCR/GPU status semantics.
+The candidate is not deployed; exact-head CI is recorded in the review.
+Continue other S0.3.7 families without relabeling historical acceptance.
+
 ## Next work that does not require redefining these metrics
 
 - Finish S0.3.7 review of the composed producer/persistence/collector contracts,
