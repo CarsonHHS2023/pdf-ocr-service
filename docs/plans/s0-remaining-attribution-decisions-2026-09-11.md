@@ -94,6 +94,21 @@ SQL run/document filtering and exact source ownership were checked; complete
 family-envelope and candidate-linkage review remains open.
 Continue other S0.3.7 families without relabeling historical acceptance.
 
+## Event schema and candidate association — 2026-09-20
+
+The [schema/identity review](../reviews/s0-3-7-schema-identity-review-2026-09-20.md)
+reproduced an unsupported v999 download event admitted as observed.
+PR #50 now gates payload projection by the supported event schema at
+`d9f608b5223b0d600b33c23e3042a7788e077664`, retaining unusable rows for ambiguity detection.
+The local targeted suite passed 170 tests with two PostgreSQL-specific skips;
+exact-head CI is recorded in the review. The candidate remains undeployed.
+
+Reader writer-side candidate/run/document association and TXT's consistent
+relational projection were reviewed. Reader offline collection validates
+retained identities but does not independently rejoin candidate/source units;
+this remains an explicit provenance boundary. Full severity/page/unknown-family
+and cross-family revision policies remain open.
+
 ## Next work that does not require redefining these metrics
 
 - Finish S0.3.7 review of the composed producer/persistence/collector contracts,

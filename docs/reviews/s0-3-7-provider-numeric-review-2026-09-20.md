@@ -158,6 +158,14 @@ bounded SQL projection, payload limits and truncation. Source ownership was
 also checked in the source-file lookup. No live database queries, fixture
 uploads, Provider requests, merges or deployments were performed in this pass.
 
+## Subsequent schema/identity pass
+
+PR #50 was subsequently extended at `d9f608b5223b0d600b33c23e3042a7788e077664` with
+generic event-schema admission. See the [schema/identity review](s0-3-7-schema-identity-review-2026-09-20.md)
+for the separate reproduction, candidate-association boundaries and current-head
+CI. Numeric results and CI above remain historical checkpoints, not claims
+about a different revision. The current PR changes seven files.
+
 ## Reviewed safeguards and retained limits
 
 - Existing compute tests cover missing/duplicate terminals and batches,
