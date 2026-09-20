@@ -83,6 +83,24 @@ def test_upload_duration_contains_its_exact_reader_open(upload_seconds, expected
     assert result["value"] == (upload_seconds if expected == "observed" else None)
 
 
+@pytest.mark.parametrize("payload", [{}, {"open_scope_id": None}, {"open_scope_id": True},
+    {"open_scope_id": "not-an-open"}, {"open_scope_id": []}, None])
+def test_unassignable_reader_event_cannot_be_discarded_before_exact_join(payload):
+    events = rows() + [NS(event_name=c.TERMINAL_EVENT, payload=payload)]
+    assert measure(events)["status"] == "not_available"
+
+
+def test_unknown_reader_family_rejects_but_valid_other_open_can_remain_incomplete():
+    events = rows()
+    unknown = NS(event_name="S0_READER_OPEN_UNRECOGNIZED", payload={"open_scope_id": request()["open_scope_id"]})
+    assert measure(events + [unknown])["status"] == "not_available"
+    assert measure(events, uninspectable_event_names={unknown.event_name})["status"] == "not_available"
+    assert measure(events, uninspectable_event_names={"S0_UPLOAD_READER_UNKNOWN"})["status"] == "not_available"
+    other = evidence(scope="reader_" + "2" * 32)
+    assert measure(events + other[:1])["status"] == "observed"
+    assert measure(events + [NS(event_name="UNRELATED_EVENT", payload={})])["status"] == "observed"
+
+
 @pytest.mark.parametrize("change", [
     lambda r: r.append(copy.deepcopy(r[0])), lambda r: r[1].payload.update(ordinal=True),
     lambda r: r[1].payload.update(duration_seconds=True), lambda r: r[1].payload.update(duration_seconds=float("inf")),
@@ -179,7 +197,8 @@ def test_final_composed_collector_requires_matching_durable_reader_rows():
         pytest.skip("final composition gate")
     db = _session(); run = seed(db)
     for n, e in enumerate(rows()):
-        db.add(ProcessingEvent(id=f"upload-reader-{n}", processing_run_id=run, document_id="doc-s0",
+        event_id = p.slot_id(run, e.payload["ordinal"]) if e.event_name in c.EVENT_NAMES else f"upload-reader-{n}"
+        db.add(ProcessingEvent(id=event_id, processing_run_id=run, document_id="doc-s0",
             schema_version="atlas.processing.event.v1", event_name=e.event_name, severity="info", payload_json=json.dumps(e.payload)))
     db.commit()
     result = _metric(collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
@@ -198,6 +217,88 @@ def test_final_composed_collector_requires_matching_durable_reader_rows():
     result = _metric(collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
     assert result.status == "not_available" and result.value is None
     db.close()
+
+
+def _seed_admission_evidence(db, run):
+    for n, row in enumerate(rows()):
+        event_id = p.slot_id(run, row.payload["ordinal"]) if row.event_name in c.EVENT_NAMES else f"reader-admission-{n}"
+        db.add(ProcessingEvent(id=event_id, processing_run_id=run, document_id="doc-s0",
+            schema_version="atlas.processing.event.v1", event_name=row.event_name,
+            severity="info", payload_json=json.dumps(row.payload)))
+    db.commit()
+
+
+@pytest.mark.parametrize("name", [c.ACCEPTED, c.TERMINAL, c.REQUEST_EVENT, c.TERMINAL_EVENT])
+@pytest.mark.parametrize("field,value", [("schema_version", "unsupported.v99"),
+    ("page_number", 1), ("severity", "error")])
+def test_composed_collector_rejects_invalid_upload_reader_envelope(name, field, value):
+    from app.processing import s0_baseline as baseline
+    from tests.test_s0_baseline import _metric
+    if not hasattr(baseline, "_valid_upload_reader_envelope"):
+        pytest.skip("final composition gate")
+    db = _session()
+    try:
+        run = seed(db); _seed_admission_evidence(db, run)
+        assert _metric(baseline.collect_s0_run_snapshot(db, processing_run_id=run),
+            "upload_to_reader_ready_seconds").status == "observed"
+        row = db.query(ProcessingEvent).filter_by(event_name=name).first()
+        setattr(row, field, value); db.commit()
+        result = _metric(baseline.collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
+        assert result.status == "not_available" and result.value is None
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("name", [c.ACCEPTED, c.TERMINAL])
+def test_composed_collector_rejects_noncanonical_upload_slot(name):
+    from app.processing import s0_baseline as baseline
+    from tests.test_s0_baseline import _metric
+    if not hasattr(baseline, "_valid_upload_reader_envelope"):
+        pytest.skip("final composition gate")
+    db = _session()
+    try:
+        run = seed(db); _seed_admission_evidence(db, run)
+        db.query(ProcessingEvent).filter_by(event_name=name).one().id = p.slot_id("different-run", 1)
+        db.commit()
+        result = _metric(baseline.collect_s0_run_snapshot(db, processing_run_id=run), "upload_to_reader_ready_seconds")
+        assert result.status == "not_available" and result.value is None
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("case", ["missing_scope", "invalid_scope", "unknown_reader",
+    "malformed_unknown", "oversized_unknown", "valid_other_incomplete", "unrelated", "truncated"])
+def test_composed_reader_family_admission_and_bounds(case):
+    from app.processing import s0_baseline as baseline
+    from tests.test_s0_baseline import _metric
+    if not hasattr(baseline, "_valid_upload_reader_envelope"):
+        pytest.skip("final composition gate")
+    db = _session()
+    try:
+        run = seed(db); _seed_admission_evidence(db, run)
+        name, payload = c.TERMINAL_EVENT, "{}"
+        if case == "invalid_scope": payload = '{"open_scope_id":null}'
+        elif case in {"unknown_reader", "malformed_unknown", "oversized_unknown"}:
+            name = "S0_READER_OPEN_UNRECOGNIZED"
+            payload = {"unknown_reader": json.dumps({"open_scope_id": request()["open_scope_id"]}),
+                "malformed_unknown": "{", "oversized_unknown": "x" * 8193}[case]
+        elif case == "valid_other_incomplete":
+            row = evidence(scope="reader_" + "2" * 32)[0]
+            name, payload = row.event_name, json.dumps(row.payload)
+        elif case == "unrelated": name = "UNRELATED_EVENT"
+        if case != "truncated":
+            db.add(ProcessingEvent(id="admission-extra", processing_run_id=run, document_id="doc-s0",
+                schema_version="atlas.processing.event.v1", event_name=name, severity="info", payload_json=payload))
+            db.commit()
+        snapshot = baseline.collect_s0_run_snapshot(db, processing_run_id=run,
+            **({"max_events": 5} if case == "truncated" else {}))
+        result = _metric(snapshot, "upload_to_reader_ready_seconds")
+        expected = "observed" if case in {"valid_other_incomplete", "unrelated"} else "not_available"
+        assert result.status == expected and result.value == (120.25 if expected == "observed" else None)
+        if case in {"missing_scope", "invalid_scope", "unknown_reader", "malformed_unknown", "oversized_unknown"}:
+            assert _metric(snapshot, "reader_open_latency_seconds").status == "not_available"
+    finally:
+        db.close()
 
 
 def test_bounded_writers_keep_cleanup_ownership_after_waiter_cancellation():

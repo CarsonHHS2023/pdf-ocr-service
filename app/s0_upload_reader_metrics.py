@@ -5,8 +5,12 @@ import hashlib
 import json
 import math
 import re
+import uuid
 
-from app.s0_reader_open_metrics import REQUEST_EVENT, TERMINAL_EVENT, measure_reader_open
+from app.s0_reader_open_metrics import (
+    REQUEST_EVENT, TERMINAL_EVENT, EVENT_PREFIX as READER_EVENT_PREFIX,
+    measure_reader_open, valid_reader_family_scopes,
+)
 
 VERSION = "s0_upload_reader_v1"
 SCOPE = "canonical_single_upload_to_initial_semantic_render_v1"
@@ -103,12 +107,27 @@ def common(root, source, frontend, backend):
         backend_revision=backend)
 
 
+def valid_event_envelope(row, processing_run_id):
+    """Validate bounded metadata after the collector's exact run/document SQL filter."""
+    if row.schema_version != "atlas.processing.event.v1" or row.page_number is not None:
+        return False
+    if row.event_name in {REQUEST_EVENT, TERMINAL_EVENT}:
+        return row.severity == "info"
+    ordinal = {ACCEPTED: 0, TERMINAL: 1, INVALIDATED: 2}.get(row.event_name)
+    if ordinal is None:
+        return False
+    expected_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{VERSION}:{processing_run_id}:{ordinal}"))
+    return row.id == expected_id and row.severity == ("warning" if ordinal == 2 else "info")
+
+
 def measure_upload_reader(events, *, expected_source_scope, run_status,
                           evidence_incomplete=False, uninspectable_event_names=frozenset()):
     def missing(note):
         return dict(status="not_available", value=None, breakdown=None, note=note)
     if (evidence_incomplete or run_status != "succeeded" or expected_source_scope is None
-            or (EVENT_NAMES | {REQUEST_EVENT, TERMINAL_EVENT}) & uninspectable_event_names):
+            or any(name.startswith(("S0_UPLOAD_READER_", READER_EVENT_PREFIX))
+                for name in uninspectable_event_names)
+            or not valid_reader_family_scopes(events)):
         return missing("Incomplete, malformed or nonterminal upload/Reader evidence.")
     rows = [e for e in events if e.event_name.startswith("S0_UPLOAD_READER_")]
     if len(rows) != 2 or {e.event_name for e in rows} != {ACCEPTED, TERMINAL}:
