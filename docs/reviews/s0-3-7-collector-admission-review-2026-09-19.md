@@ -1,6 +1,6 @@
 # S0.3.7 collector admission review — 2026-09-19
 
-Status: **Defects reproduced on 2026-09-19; collector hardening implemented in PR #48 on 2026-09-20, not yet deployed.**
+Status: **Defects reproduced on 2026-09-19; collector hardening merged and deployed to Staging on 2026-09-20.**
 
 ## Implementation follow-up — 2026-09-20
 
@@ -23,15 +23,31 @@ Exact-head CI for `5ea0608a071218ed52e2dde69a13ec77c5e9d633` passed all five wor
 Integration job `106070873751` and artifact verification `106071065881`
 passed; deploy job `106071082505` was skipped.
 
-The findings and result matrix below describe the historical reviewed revisions,
-not the hardened candidate. No merge into Staging, deployment, new upload or
-change to S0's 17/19 status is included. Full S0.3.7 work beyond these defects
-remains open.
+### Verified Staging rollout
+
+PR #48 was squash-merged as `593d65199c6e21571e0094014d41dc30269f9adc`.
+Its Git tree equals the tested PR head's tree. The merge-triggered
+[Staging integration/deployment run 35508286188](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/35508286188)
+passed integration job `106071664153`, artifact verification
+`106071826324` and deployment `106071846076`.
+
+At `2026-09-20T11:39:27.1783859Z`, the deployment job verified
+`593d65199c6e21571e0094014d41dc30269f9adc` from the HF Staging health
+endpoint; its final success confirmation followed at
+`2026-09-20T11:39:27.4614841Z`. GitHub Staging was rechecked at the same
+revision. This verification comes from the successful deployment job's health
+check, not a separate operator-side live request.
+
+This is deployment verification, not a new upload or a replay of the earlier
+live acceptance snapshot under the new collector. Existing PDF/TXT acceptance
+keeps its original revisions and evidence. S0 remains 17/19; full S0.3.7 review
+beyond these defects remains open. The findings and result matrix below describe
+the historical reviewed revisions.
 
 ## Scope and pinned sources
 
 - Backend Staging: `090f1f075b7ef356f3066e29848415c7db559a93`.
-- PR #48 head: `5ee14ed5d106a8aff86ecc190475de017a701a3e`, still Draft, unmerged.
+- PR #48 at the original review: `5ee14ed5d106a8aff86ecc190475de017a701a3e`, Draft and unmerged at that checkpoint.
 - Scope: bounded SQL event loading, upload/Reader payload admission and the exact
   Reader join. TXT's separate strict envelope adapter is a source-level comparison,
   not a new full TXT audit.

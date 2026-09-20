@@ -43,8 +43,9 @@ architecture/baseline decision; they are not silently included in S0 observabili
 
 The [scoped upload/Reader review](../reviews/s0-3-7-upload-reader-contract-review-2026-09-11.md)
 reproduced missing duration-containment validation. [PR #48](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/48)
-adds the collector guard and regression cases; its exact-head CI passed, but it
-is not deployed. The full S0.3.7 review remains open.
+added the collector guard and regression cases; at that checkpoint exact-head
+CI had passed and deployment was pending. The later rollout is recorded below.
+The full S0.3.7 review remains open.
 
 The [TXT lifecycle plan](s0-txt-lifecycle-timing-plan-2026-09-11.md) now records
 PR #49's completed implementation, tested deployment and
@@ -70,10 +71,12 @@ and bounded upload-envelope validation at `5ea0608a071218ed52e2dde69a13ec77c5e9d
 composed regressions and valid-other-open controls. Local results are 152 passed,
 two PostgreSQL-specific skips and 155 subtests passed. See the
 [review follow-up](../reviews/s0-3-7-collector-admission-review-2026-09-19.md)
-for exact-head CI status. The candidate is not merged into Staging or deployed.
-Next gate: review exact-head CI/artifact evidence, then a separately authorized
-rollout. Full S0.3.7 remains open beyond these fixes. Existing audited live
-evidence stays valid; no repeated fixture upload is required merely for this fix.
+for exact-head CI and deployment evidence. PR #48 is now merged and deployed
+as `593d65199c6e21571e0094014d41dc30269f9adc`; merge-triggered integration, artifact verification
+and exact HF runtime revision checks passed in run 35508286188.
+Next work is the remaining S0.3.7 contract review beyond the corrected
+upload/Reader path. Existing audited live evidence retains its original
+provenance; no repeated fixture upload is required merely for this fix.
 
 ## Next work that does not require redefining these metrics
 
@@ -87,10 +90,9 @@ evidence stays valid; no repeated fixture upload is required merely for this fix
   handling. Inspect missing/extra envelope fields and unknown family names.
   Reproduce any candidate defect with a bounded synthetic case before a fix;
   publish source references and explicit unreviewed areas.
-- Keep PR #48 as the existing collector fix, now including duration containment
-  and both admission defects. Its branch is synchronized with current Staging;
-  use the new head's CI/artifact evidence before any separately authorized
-  merge/rollout. Historical exact-head CI remains separate.
+- Retain PR #48's merged/deployed provenance for duration containment and both
+  admission fixes. The merge-triggered tested artifact and HF revision are pinned
+  in the review follow-up; historical acceptance is not relabeled as a new run.
 - Preserve the accepted TXT control. A formal registered baseline needs verified
   private fixture identity and a native collector report; medium execution needs
   a concrete additional window/outline coverage target. No repeat upload is
