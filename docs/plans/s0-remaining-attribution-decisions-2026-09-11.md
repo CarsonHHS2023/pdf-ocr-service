@@ -86,6 +86,12 @@ download collector. PR #50 fixes both failure modes at `2d89122050d61f54515f7e67
 65 local focused/baseline tests passed. The review retains the explicit byte-size
 multiset correlation boundary and the independent OCR/GPU status semantics.
 The candidate is not deployed; exact-head CI is recorded in the review.
+A follow-up reproduced payload-sized set allocation in storage and Backend
+transport retrieval reconciliation. PR #50 now uses actual retained ordinal
+count/maximum at `2fdaca282a5128a95e9f8362045bad36ae41a4f8`, including upgrade-safe composition.
+The composed 122-test suite passed; current-head CI is recorded in the review.
+SQL run/document filtering and exact source ownership were checked; complete
+family-envelope and candidate-linkage review remains open.
 Continue other S0.3.7 families without relabeling historical acceptance.
 
 ## Next work that does not require redefining these metrics
