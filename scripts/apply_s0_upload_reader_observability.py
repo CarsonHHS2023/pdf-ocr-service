@@ -22,10 +22,22 @@ def main():
         (import_anchor, "from app.s0_upload_reader_metrics import (\n"
             "    EVENT_NAMES as _UPLOAD_READER_EVENTS, decode_payload as _decode_upload_reader,\n"
             "    measure_upload_reader as _measure_upload_reader, source_scope_id as _upload_reader_source_scope,\n"
+            "    valid_event_envelope as _valid_upload_reader_envelope,\n"
             ")\n" + import_anchor),
+        ("    payload_oversized: bool\n", "    payload_oversized: bool\n"
+            "    id: str\n    schema_version: str\n    page_number: int | None\n"),
+        ('            ProcessingEvent.event_name.label("event_name"),\n',
+            '            ProcessingEvent.id.label("id"),\n'
+            '            ProcessingEvent.schema_version.label("schema_version"),\n'
+            '            ProcessingEvent.page_number.label("page_number"),\n'
+            '            ProcessingEvent.event_name.label("event_name"),\n'),
+        ('            event_name=row.event_name,\n',
+            '            id=row.id, schema_version=row.schema_version, page_number=row.page_number,\n'
+            '            event_name=row.event_name,\n'),
         ("        *_VISUAL_ASSET_GENERATION_EVENTS,\n", "        *_UPLOAD_READER_EVENTS,\n        *_VISUAL_ASSET_GENERATION_EVENTS,\n"),
         (decode_anchor, decode_anchor + '        if row.event_name.startswith(("S0_UPLOAD_READER_", "S0_READER_OPEN_")):\n'
-            '            payload, decode_valid = _decode_upload_reader(row.payload_json)\n'),
+            '            payload, decode_valid = _decode_upload_reader(row.payload_json)\n'
+            '            decode_valid = decode_valid and _valid_upload_reader_envelope(row, normalized_run_id)\n'),
         (mapping_anchor, "    upload_reader = _measure_upload_reader(\n"
             "        decoded_events_tuple, expected_source_scope=_upload_reader_source_scope(run.source_file_id),\n"
             "        run_status=run.status, evidence_incomplete=payload_evidence_incomplete,\n"

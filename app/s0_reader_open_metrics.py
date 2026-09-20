@@ -4,12 +4,31 @@ import re
 
 REQUEST_EVENT = "S0_READER_OPEN_REQUEST_MEASURED"
 TERMINAL_EVENT = "S0_READER_OPEN_TERMINAL"
+EVENT_PREFIX = "S0_READER_OPEN_"
+EVENT_NAMES = frozenset({REQUEST_EVENT, TERMINAL_EVENT})
 MEASUREMENT_SCOPE = "reader_v2_core_open_v1"
 MAX_REQUESTS = 4
 MAX_OPENS = 32
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _OPEN = re.compile(r"^reader_[0-9a-f]{32}$")
 _CANDIDATE = re.compile(r"^candidate_[0-9a-f]{16}$")
+
+
+def valid_reader_family_scopes(events):
+    """Establish scope ownership before any exact-open filtering.
+
+    A valid different scope may be incomplete (an open can still be running).
+    An unknown family name or unassignable row cannot safely be excluded.
+    """
+    for event in events:
+        if not event.event_name.startswith(EVENT_PREFIX):
+            continue
+        if event.event_name not in EVENT_NAMES or not isinstance(event.payload, dict):
+            return False
+        scope = event.payload.get("open_scope_id")
+        if not isinstance(scope, str) or not _OPEN.fullmatch(scope):
+            return False
+    return True
 
 def _integer(value, low=0, high=100000):
     return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
@@ -26,9 +45,11 @@ def _duration(value):
 
 def measure_reader_open(events, *, evidence_incomplete, uninspectable_event_names):
     """Summarize complete core opens by mode; duplicates/gaps remain unavailable."""
+    events = tuple(events)
     def missing(reason):
         return {"status": "not_available", "latency": None, "queries": None, "breakdown": None, "note": reason}
-    if {REQUEST_EVENT, TERMINAL_EVENT} & uninspectable_event_names:
+    if (any(name.startswith(EVENT_PREFIX) for name in uninspectable_event_names)
+            or not valid_reader_family_scopes(events)):
         return missing("Reader evidence contains malformed or oversized events.")
     scopes = {}
     for e in events:

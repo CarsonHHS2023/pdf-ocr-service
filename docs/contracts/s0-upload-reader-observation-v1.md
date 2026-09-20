@@ -3,21 +3,26 @@
 | Field | Value |
 |---|---|
 | Document Type | Contract |
-| Approval Status | Proposed |
+| Approval Status | Scoped small acceptance recorded; collector hardening candidate in PR #48 |
 | Lifecycle Status | Active |
 | Version | 1 |
 | Date | 2026-09-09 |
-| Authority Domain | Proposed Staging observation wire format and collector admission |
+| Authority Domain | Staging observation wire format and collector admission |
 | Scope | One canonical PDF upload and its automatic initial core semantic render in one Preview page |
 | Supersedes | None |
 | Related Milestones | S0 / M5, both In Progress |
 | Related boundary | [Measurement boundary proposal](../testing/s0-upload-to-reader-ready-observability-v1.md) |
 
-This fixes the proposed wire format for review; it installs no producer, endpoint
-or collector mapping. The semantic-ready interpretation still needs explicit
-acceptance. `upload_to_reader_ready_seconds` remains `not_instrumented`; the
-current baseline remains 16/19 required metrics observed. Strong requirements
-below describe proposed conformance, not an accepted or deployed contract.
+The original proposal was implemented through Backend PR #46 and has
+[scoped small acceptance](https://github.com/CarsonHHS2023/pdf-ocr-service/blob/64295978b72a2e5a1a865f4f03fd9ec460c07f45/docs/reviews/s0-upload-reader-small-acceptance-2026-09-11.md).
+The accepted PDF snapshot remains **17/19**; full upload peak memory and complete
+preprocessing CPU remain unimplemented. The semantic boundary is initial core
+render, not full visible-page readiness.
+
+The 2026-09-20 collector hardening in
+[PR #48](https://github.com/CarsonHHS2023/pdf-ocr-service/pull/48) is an undeployed
+implementation candidate. It enforces existing envelope requirements and makes
+Reader family/scope admission explicit without changing wire format v1.
 
 ## 1. Constants and identity
 
@@ -259,11 +264,44 @@ root/open IDs, source/candidate hashes, revisions and `client_reported = true`.
 Do not persist or emit filename, title, content, URL, raw storage reference,
 credential, raw candidate ID, checksum or absolute browser clock samples.
 
+### 5.1 Collector admission hardening — 2026-09-20
+
+Before exact-open filtering, inspect every `S0_READER_OPEN_` event in the
+bounded run/document snapshot. Admit only the known request and terminal names
+and require a dictionary payload with a valid `reader_<32 lowercase hex>` scope.
+Missing, null, malformed or uninspectable scope identity cannot prove that an
+event belongs to another open; reject the upload join. Unknown Reader-family
+names reject both the upload join and Reader aggregate, including names of
+oversized or undecodable records. Unrelated families are not Reader evidence.
+A separately identified valid open may still be incomplete and must not replace
+or block an otherwise valid selected upload open solely for that incompleteness.
+
+Project event ID, schema and page along with existing severity and SQL-bounded
+payload; keep the exact run/document predicates and cap-plus-one truncation
+detection. Require `atlas.processing.event.v1`, null page, and `info` for normal
+upload/Reader records (`warning` for upload invalidation). Each upload ID must
+match its name's deterministic run/ordinal slot from section 4. Reader IDs have
+no new deterministic-slot rule. Invalid envelopes enter the existing incomplete/
+uninspectable evidence path; no raw malformed values enter the metric report.
+The existing decode-incomplete flag covers inadmissible decoded envelopes as
+well as payload decoding failure. Reader aggregates may be partial when only
+non-Reader evidence is incomplete, but the upload join remains unavailable.
+
+The upload and its exact Reader interval share the same stop sample. Require
+`upload.duration_seconds >= reader.duration_seconds`; equality remains valid
+at the shared clock precision. Never add the two containing intervals.
+
+Local current-Staging composition validation: 152 tests passed, two
+PostgreSQL-specific cases skipped, and 155 unittest subtests passed across the
+upload/Reader, generic baseline and TXT suites. The source-pinned 16-case review
+probe now rejects both reproduced defects and retains valid/equal-duration and
+unrelated-event controls. Exact-head CI and rollout remain separate gates.
+
 ## 6. Implementation and verification gate
 
-This contract and its companion boundary remain Proposed. The review has fixed
-the correlation and error boundaries, but does not approve semantic-ready as
-full visible-page readiness. Keep current upload/Reader schemas, polling cadence,
+The original scoped small acceptance does not approve semantic-ready as full
+visible-page readiness. The admission-hardening candidate above must independently
+pass its exact-head CI and artifact verification before rollout. Keep current upload/Reader schemas, polling cadence,
 selection, rendering, task ownership and processing statuses unchanged. A future
 Preview must retain its exact Staging origin, separate access token and source
 revision gates; the Backend requires its Staging revision/event gates. TXT and
@@ -286,7 +324,9 @@ companion Preview, including real PostgreSQL transactions for concurrency:
   and lock cleanup, and bounded observer contention; SQLite alone cannot prove
   PostgreSQL locking behavior.
 
-Then require exact-head CI, artifact verification and separately authorized
-Staging/Preview deployment before a fresh one-page upload and automatic open.
-No existing fixture can acquire a missing browser clock retroactively. This
-docs-only change requests no upload, benchmark, merge or deployment.
+The original fixture acceptance keeps its pinned source and evidence. Collector
+hardening requires exact-head CI, artifact verification and a separately
+authorized rollout; it does not require a repeat upload merely to reconstruct
+already present clocks. No existing fixture can acquire a missing browser clock
+retroactively. This candidate performs no merge, deployment or fixture execution.
+

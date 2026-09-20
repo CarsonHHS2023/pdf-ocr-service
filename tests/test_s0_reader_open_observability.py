@@ -44,6 +44,14 @@ def test_first_and_reopen_are_separate_samples_and_query_counts():
     assert measure(evidence(), incomplete=True)["status"] == "partial"
 
 
+def test_unknown_reader_family_is_rejected_before_known_event_filtering():
+    unknown = NS(event_name="S0_READER_OPEN_UNRECOGNIZED", payload={"open_scope_id": SCOPE})
+    assert measure(evidence() + [unknown])["status"] == "not_available"
+    assert measure(evidence(), uninspectable={unknown.event_name})["status"] == "not_available"
+    assert measure(evidence() + [NS(event_name="UNRELATED_EVENT", payload={})])["status"] == "observed"
+    assert measure(iter(evidence()))["status"] == "observed"
+
+
 @pytest.mark.parametrize("change", [
     lambda rows: rows.pop(), lambda rows: rows.pop(0),
     lambda rows: rows.append(copy.deepcopy(rows[0])), lambda rows: rows.append(copy.deepcopy(rows[-1])),
