@@ -261,6 +261,7 @@ def measure_backend_source_transport(
             or payload.get("stage") != TRANSPORT_STAGE
             or not isinstance(scope_id, str)
             or _SCOPE_ID_RE.fullmatch(scope_id) is None
+            or not isinstance(route, str)
             or route not in SOURCE_ROUTES
             or isinstance(source_size, bool)
             or not isinstance(source_size, int)

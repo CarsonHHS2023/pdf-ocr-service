@@ -643,3 +643,29 @@ def test_terminal_overlay_upgrades_installed_helper_and_is_idempotent(tmp_path):
     compile(first, str(path), "exec")
     overlay.patch_s0_transport_terminal_collector(path)
     assert path.read_text(encoding="utf-8") == first
+
+
+@pytest.mark.parametrize("stage", [[], {}, ["processing_source"], {"name": "processing_source"}, None, True, 1, "unknown", "processing_source"])
+def test_collector_rejects_non_string_storage_stage_without_losing_snapshot(stage):
+    import json
+
+    db = _session()
+    _seed(db)
+    row = db.get(ProcessingEvent, "io-source")
+    payload = json.loads(row.payload_json)
+    payload["stage"] = stage
+    row.payload_json = encode_json_text(payload)
+    db.commit()
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        valid = stage == io.STAGE_PROCESSING_SOURCE
+        for key in ("backend_object_store_bytes", "object_store_stage_io"):
+            result = _metric(snapshot, key)
+            assert result.status == ("observed" if valid else "not_available")
+            if not valid:
+                assert result.value is None
+        source = _metric(snapshot, "source_byte_size")
+        assert (source.status, source.value) == ("observed", 456)
+        json.dumps(snapshot.to_dict(), allow_nan=False)
+    finally:
+        db.close()

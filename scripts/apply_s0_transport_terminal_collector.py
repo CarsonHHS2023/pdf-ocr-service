@@ -90,7 +90,7 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
         stage = payload.get("stage")
         scope_id = payload.get("scope_id")
         ordinal = payload.get("scope_ordinal")
-        if stage not in _S0_STORAGE_IO_STAGES:
+        if not isinstance(stage, str) or stage not in _S0_STORAGE_IO_STAGES:
             return None, None, "not_available", "A storage I/O event has an unsupported stage."
         if not isinstance(scope_id, str) or re.fullmatch(r"[a-z0-9_]{1,48}", scope_id) is None:
             return None, None, "not_available", "A storage I/O event has an invalid scope identifier."

@@ -304,3 +304,35 @@ def test_body_retrieval_reconciliation_is_bounded(monkeypatch, count, ordinals, 
         json.dumps(snapshot.to_dict(), allow_nan=False)
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("route", [
+    [], {}, ["presigned_object_get"], {"name": "presigned_object_get"},
+    None, True, 1, "unknown", transport.ROUTE_PRESIGNED, transport.ROUTE_FALLBACK,
+])
+def test_collector_rejects_non_string_route_without_losing_snapshot(route):
+    import json
+
+    db = _session()
+    _seed_base(db)
+    fallback = route == transport.ROUTE_FALLBACK
+    db.add_all([
+        _decision(False, 120),
+        _route(SCOPE_A, route, 120, "route", 3),
+        _terminal(SCOPE_A, 1 if fallback else 0, "terminal", 5),
+    ])
+    if fallback:
+        db.add(_body(SCOPE_A, 1, 120, "body", 4))
+    db.commit()
+    try:
+        snapshot = collect_s0_run_snapshot(db, processing_run_id=RUN_ID)
+        valid = isinstance(route, str) and route in transport.SOURCE_ROUTES
+        result = _metric(snapshot, "backend_to_modal_transport_bytes")
+        assert result.status == ("observed" if valid else "not_available")
+        assert result.value == ((120 if fallback else 0) if valid else None)
+        assert _aux(snapshot, "provider_source_transport_breakdown").status == result.status
+        source = _metric(snapshot, "source_byte_size")
+        assert (source.status, source.value) == ("observed", 100)
+        json.dumps(snapshot.to_dict(), allow_nan=False)
+    finally:
+        db.close()
