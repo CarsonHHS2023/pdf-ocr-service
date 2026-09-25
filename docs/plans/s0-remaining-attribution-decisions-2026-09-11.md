@@ -131,6 +131,21 @@ unmerged. No external review has been submitted. A later merge needs its own
 push-triggered artifact/deployment and exact runtime revision verification.
 This conclusion does not close full S0.3.7 or the two attribution gaps.
 
+## PR #50 rollout completed — 2026-09-25
+
+The user merged PR #50 as `8110784a5061641fd6229045a6f51b2fb89db7dd`. Its tree matches the
+reviewed seven-file candidate. [Push run 36171784375](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/36171784375)
+passed integration, artifact verification and deployment. The deployment
+health check reported the exact merged revision at 18:14:12 UTC.
+See the [rollout evidence](../reviews/s0-3-7-field-type-review-2026-09-25.md).
+Earlier unmerged/undeployed statements are historical checkpoints.
+
+The numeric, retrieval-count, schema and retained field-type guards are now in
+Staging. This adds no fixture acceptance and leaves S0/M5 at 17/19.
+Next review work remains the unclosed family-envelope and provenance boundaries,
+while complete upload peak memory and full preprocessing CPU remain separate
+unimplemented methods.
+
 ## Next work that does not require redefining these metrics
 
 - Finish S0.3.7 review of the composed producer/persistence/collector contracts,

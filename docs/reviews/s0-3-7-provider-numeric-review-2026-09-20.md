@@ -1,6 +1,11 @@
 # S0.3.7 Provider download/compute review — 2026-09-20
 
-Status: **Duration and retrieval-count numeric defects reproduced and corrected in PR #50; candidate not deployed. Full S0.3.7 remains open.**
+Status: **PR #50 numeric safeguards merged and deployed to Staging as `8110784a5061641fd6229045a6f51b2fb89db7dd`; full S0.3.7 remains open.**
+
+The [2026-09-25 rollout record](s0-3-7-field-type-review-2026-09-25.md)
+contains merge-triggered integration, artifact and exact runtime revision proof.
+Earlier candidate descriptions and numeric experiments below retain their own
+revisions; they are not new fixture acceptance.
 
 ## Source and reviewed boundary
 

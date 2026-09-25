@@ -1,6 +1,6 @@
 # S0.3.7 retained field-type review — 2026-09-25
 
-Status: **Two enum-field crashes reproduced and fixed in PR #50; unmerged and undeployed. Full S0.3.7 remains open.**
+Status: **PR #50 merged and deployed to Staging as `8110784a5061641fd6229045a6f51b2fb89db7dd`; full S0.3.7 remains open.**
 
 ## Source and reproduction
 
@@ -65,6 +65,37 @@ All five workflows associated with the PR head passed on attempt 1 (see the fina
 
 Integration and artifact verification succeeded; deployment was skipped.
 The candidate remains unmerged and undeployed.
+
+## PR #50 Staging rollout — 2026-09-25
+
+PR #50 was merged at 18:10:56 UTC as `8110784a5061641fd6229045a6f51b2fb89db7dd`.
+The Staging branch was rechecked at that same SHA. Its source tree
+`4e272831969c55a7587c607695800f50412098b9` matches the reviewed
+PR head `6fc4809592166d4695bd8450ec24ef38a441b130` and its earlier
+temporary CI merge. This is a new merge-triggered rollout, not reuse of the
+earlier PR artifact as deployment proof.
+
+[Push run 36171784375](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/36171784375)
+passed all three jobs:
+
+- [Integration](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/36171784375/job/108192833374): success.
+- [Artifact verification](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/36171784375/job/108193371753): success.
+- [Deployment](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/36171784375/job/108193431956): success.
+
+The deployed artifact is `atlas-staging-tested-8110784a5061641fd6229045a6f51b2fb89db7dd`,
+ID `10881251136`. The deployment log records the health endpoint returning
+the exact revision at **18:14:12 UTC**, then confirms Staging still points to
+that revision. This is deployment-job health evidence, not an independent
+browser inspection or a new document acceptance run.
+
+The [merge-triggered Provider Transport Sharding check](https://github.com/CarsonHHS2023/pdf-ocr-service/actions/runs/36171784384)
+also passed. The earlier PR-head test counts and temporary-merge identity
+remain historical evidence. No Production/frontend deployment or additional
+fixture upload was performed in this verification pass.
+
+S0/M5 remain In Progress at **17/19**; this rollout does not close the remaining
+attribution methods or the full S0.3.7 review. Earlier candidate/readiness
+sections below describe their pre-merge checkpoints.
 
 ## Final merge-readiness review — 2026-09-25
 

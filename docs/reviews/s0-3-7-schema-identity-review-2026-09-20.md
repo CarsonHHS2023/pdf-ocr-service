@@ -1,6 +1,10 @@
 # S0.3.7 event schema and candidate association review — 2026-09-20
 
-Status: **Unsupported-schema admission reproduced and fixed in PR #50; candidate not deployed. Scoped identity checks passed; full S0.3.7 remains open.**
+Status: **PR #50 merged and deployed to Staging as `8110784a5061641fd6229045a6f51b2fb89db7dd`; scoped identity checks passed and full S0.3.7 remains open.**
+
+The [2026-09-25 rollout record](s0-3-7-field-type-review-2026-09-25.md)
+contains merge-triggered integration, artifact and exact runtime revision proof.
+Candidate and CI descriptions below retain their earlier checkpoint identities.
 
 ## Source and scope
 
