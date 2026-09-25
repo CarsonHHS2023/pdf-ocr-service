@@ -1,6 +1,6 @@
 # S0 full preprocessing CPU — architecture decision draft
 
-Status: **TODO — Pending Decision; design only, no runtime implementation**.
+Status: **Feasibility experiment approved; local capability gate blocked**.
 Date: 2026-09-25. Milestone: M5 / S0. Task: S0 CPU ownership decision.
 Source revision: `8110784a5061641fd6229045a6f51b2fb89db7dd` (Backend Staging).
 S0 remains **17/19**; `preprocessing_cpu_seconds` remains `not_instrumented`.
@@ -12,17 +12,19 @@ The missing requirement is exclusive, complete ownership of helper CPU.
 Adding another timer around the existing shared process cannot establish that
 ownership. See the [current CPU contract](../testing/s0-preprocessing-cpu-attribution-v1.md).
 
-**Codex recommendation:** approve an isolated-worker feasibility implementation
-as a separate architecture experiment, after verifying that the intended runner
-can provide a delegated per-operation CPU accounting domain. Keep the current
+**Approved direction (2026-09-25):** investigate an isolated-worker feasibility
+implementation as a separate architecture experiment, after verifying that the
+intended runner can provide a delegated per-operation CPU accounting domain. Keep the current
 Staging route as the default. Do not map the experiment to the required metric
 until coverage, behavior equivalence, and the new execution baseline are approved.
 
-This is a proposed change of compute placement, not an instrumentation-only patch.
-The user's instruction to continue CPU work is implemented here as a reviewable
-decision package; it does not resolve the previously explicit baseline decision.
-The [development workflow](../engineering/development-workflow.md) requires
-ambiguous project decisions to remain pending.
+The user approved the proposed experiment at 18:43 America/Chicago on 2026-09-25,
+without deployment. The read-only capability implementation and local result are
+recorded in the [preflight review](../reviews/s0-cpu-isolation-preflight-2026-09-25.md).
+This is authorization to investigate changed compute placement, not acceptance
+of a measured baseline or a narrower metric scope. The
+[development workflow](../engineering/development-workflow.md) keeps unresolved
+scope decisions pending.
 
 ## Source inventory and ownership boundaries
 
@@ -150,9 +152,10 @@ acceptance work.
 
 ## Compatibility, rollout and rollback
 
-This PR changes documentation only. It adds no dependencies, runtime flag,
-collector mapping, workflow, deployment, or storage schema. Production and main
-are outside scope. PR #47 remains the existing acceptance/handoff record.
+This PR adds the design, a standalone read-only preflight, its tests and a review
+record. It adds no dependencies, application runtime flag, collector mapping,
+workflow, deployment, or storage schema. Production and main are outside scope.
+PR #47 remains the existing acceptance/handoff record.
 
 A subsequent approved experimental implementation must default off, preserve
 current admission limits, and remain separate from normal Staging processing
@@ -161,22 +164,25 @@ new measurement method. Disabling a future experiment stops new admissions;
 already-running jobs retain their completion owner until drained. Retain the
 existing worker-thread auxiliary and original acceptance provenance.
 
-## Decision requested
+## Decision recorded and remaining gates
 
-**Approve only the isolated-worker feasibility experiment and its separate
-baseline, conditional on the capability gate above, or retain the current
-execution model and required CPU gap.** Neither choice waives upload peak memory.
+**The isolated-worker feasibility experiment with a separate execution baseline
+is approved, conditional on the capability gate above.** The local read-only
+cgroup mount blocks worker execution here; intended-host delegation is unknown.
+Do not repeat the approval request for work within this experiment. Upload peak
+memory remains open.
 
 Approval of the experiment is not approval to deploy it, to run private fixtures,
 to narrow the existing required CPU scope, or to close S0. If the exact boundary
 cannot be preserved, present the measured difference and a scope decision first.
 
-## Validation of this design change
+## Validation
 
 - Re-read pinned source and owning composition scripts; no AGENTS.md was present
   in the pinned repository tree.
-- Checked repository-relative links against the pinned tree, Markdown whitespace,
-  and the documentation-only change allowlist.
-- No application tests, native probes, live database queries, fixture uploads,
-  Provider requests or deployment were performed for this design-only change.
-- The architecture recommendation and intended-host capability remain unverified.
+- Checked repository-relative links and the four-file change allowlist.
+- Preflight/parser tests: 29 passed; actual local CLI: exit 2, readonly_mount.
+- No application pipeline tests, native CPU ownership probes, live database
+  queries, fixture uploads, Provider requests or deployment were performed.
+- Intended-host capability and full CPU ownership remain unverified. See the
+  review for exact evidence and the capability gate's limits.
