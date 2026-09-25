@@ -1,6 +1,6 @@
 # S0 remaining attribution decisions — 2026-09-11
 
-Status: **Current handoff, updated 2026-09-20; attribution gaps retained without waiver**.
+Status: **Current handoff, updated 2026-09-25; attribution gaps retained without waiver**.
 
 The [latest small acceptance](../reviews/s0-upload-reader-small-acceptance-2026-09-11.md)
 has 17/19 required rows observed. Two are unimplemented attribution methods,
@@ -108,6 +108,16 @@ relational projection were reviewed. Reader offline collection validates
 retained identities but does not independently rejoin candidate/source units;
 this remains an explicit provenance boundary. Full severity/page/unknown-family
 and cross-family revision policies remain open.
+
+## Retained field-type review — 2026-09-25
+
+The [field-type review](../reviews/s0-3-7-field-type-review-2026-09-25.md)
+reproduced report-aborting TypeError exceptions when storage stage or source
+route values are JSON arrays/objects. PR #50 adds string admission before
+set membership at `6fc4809592166d4695bd8450ec24ef38a441b130`; 163 local targeted tests passed with
+no skips, including 19 added field-type cases. Current-head CI is recorded in
+the review. The same seven-file candidate remains unmerged and undeployed.
+The fix does not complete every event-family envelope or provenance check.
 
 ## Next work that does not require redefining these metrics
 

@@ -87,6 +87,13 @@ open, and TXT source/dispatch/candidate/revision conflicts. This review does not
 claim that a mutually consistent set of forged retained Reader rows has been
 independently matched against candidate tables by the offline collector.
 
+## Subsequent field-type pass — 2026-09-25
+
+The [field-type review](s0-3-7-field-type-review-2026-09-25.md) records two
+additional retained enum-field crashes and their fix in PR #50 at
+`6fc4809592166d4695bd8450ec24ef38a441b130`. Its CI describes that later candidate. The schema
+reproduction and exact-head results above remain the earlier checkpoint.
+
 ## Remaining work and provenance
 
 - Full event-family severity/page/unknown-name policy and cross-family revision
