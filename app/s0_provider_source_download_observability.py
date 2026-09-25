@@ -34,6 +34,18 @@ def provider_scope_id(provider_job_id: object) -> str | None:
     return f"provider_{digest}"
 
 
+def _duration_seconds(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        seconds = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return round(seconds, 6)
+
+
 def _measurement_from_result(request: object, result: object) -> tuple[str, int, float] | None:
     scope_id = provider_scope_id(getattr(request, "provider_job_id", None))
     document_id = getattr(request, "document_id", None)
@@ -53,20 +65,17 @@ def _measurement_from_result(request: object, result: object) -> tuple[str, int,
     if not isinstance(measurement, dict):
         return None
     byte_count = measurement.get("bytes")
-    duration = measurement.get("duration_seconds")
+    duration = _duration_seconds(measurement.get("duration_seconds"))
     if (
         measurement.get("succeeded") is not True
         or measurement.get("measurement_scope") != PROVIDER_DOWNLOAD_MEASUREMENT_SCOPE
         or isinstance(byte_count, bool)
         or not isinstance(byte_count, int)
         or byte_count <= 0
-        or isinstance(duration, bool)
-        or not isinstance(duration, (int, float))
-        or not math.isfinite(float(duration))
-        or float(duration) < 0
+        or duration is None
     ):
         return None
-    return scope_id, byte_count, round(float(duration), 6)
+    return scope_id, byte_count, duration
 
 
 def record_provider_source_download_from_result(request: object, result: object) -> bool:
@@ -137,7 +146,7 @@ def measure_provider_source_download(
         payload = event.payload
         scope_id = payload.get("provider_scope_id")
         byte_count = payload.get("download_bytes")
-        duration = payload.get("download_duration_seconds")
+        duration = _duration_seconds(payload.get("download_duration_seconds"))
         if (
             payload.get("succeeded") is not True
             or payload.get("measurement_scope") != PROVIDER_DOWNLOAD_MEASUREMENT_SCOPE
@@ -146,18 +155,17 @@ def measure_provider_source_download(
             or isinstance(byte_count, bool)
             or not isinstance(byte_count, int)
             or byte_count <= 0
-            or isinstance(duration, bool)
-            or not isinstance(duration, (int, float))
-            or not math.isfinite(float(duration))
-            or float(duration) < 0
+            or duration is None
         ):
             return None, None, None, "not_available", "Provider source-download evidence is invalid."
         if scope_id in seen_scopes:
             return None, None, None, "not_available", "Duplicate Provider source-download scope is ambiguous."
         seen_scopes.add(scope_id)
         measured_sizes.append(byte_count)
-        duration_value = round(float(duration), 6)
+        duration_value = duration
         total_seconds += duration_value
+        if not math.isfinite(total_seconds):
+            return None, None, None, "not_available", "Provider source-download duration sum is not finite."
         rows.append({
             "provider_scope_id": scope_id,
             "download_bytes": byte_count,

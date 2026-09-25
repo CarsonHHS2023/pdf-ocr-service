@@ -17,6 +17,7 @@ from sqlalchemy import LargeBinary, case, cast, func, select
 
 from app.models import Document, ProcessingRun, SourceFile, decode_json_text
 from app.processing.processing_event_model import ProcessingEvent
+from app.processing.processing_events import PROCESSING_EVENT_SCHEMA_VERSION
 from app.processing.processing_events import MAX_EVENT_PAYLOAD_BYTES
 
 
@@ -649,9 +650,14 @@ def _load_bounded_event_rows(
 ) -> tuple[tuple[_BoundedEventRow, ...], bool]:
     """Load a bounded event window without materializing oversized Text payloads."""
     payload_bytes = _payload_byte_length_expression(session)
-    payload_within_limit = payload_bytes <= MAX_EVENT_PAYLOAD_BYTES
+    # Keep unsupported envelopes in the event window, but never interpret their
+    # payload under the current schema. NULL feeds the existing incomplete and
+    # uninspectable-family handling instead of silently dropping contradictory rows.
+    payload_admissible = (payload_bytes <= MAX_EVENT_PAYLOAD_BYTES) & (
+        ProcessingEvent.schema_version == PROCESSING_EVENT_SCHEMA_VERSION
+    )
     bounded_payload = case(
-        (payload_within_limit, ProcessingEvent.payload_json),
+        (payload_admissible, ProcessingEvent.payload_json),
         else_=None,
     ).label("bounded_payload_json")
     payload_oversized = case(

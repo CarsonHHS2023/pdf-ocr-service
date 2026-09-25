@@ -90,7 +90,7 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
         stage = payload.get("stage")
         scope_id = payload.get("scope_id")
         ordinal = payload.get("scope_ordinal")
-        if stage not in _S0_STORAGE_IO_STAGES:
+        if not isinstance(stage, str) or stage not in _S0_STORAGE_IO_STAGES:
             return None, None, "not_available", "A storage I/O event has an unsupported stage."
         if not isinstance(scope_id, str) or re.fullmatch(r"[a-z0-9_]{1,48}", scope_id) is None:
             return None, None, "not_available", "A storage I/O event has an invalid scope identifier."
@@ -232,8 +232,9 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
 
     for scope_id, terminal_count in terminal_retrieval_counts.items():
         ordinals = transport_ordinals.get(scope_id, set())
-        expected_ordinals = set(range(1, terminal_count + 1))
-        if ordinals != expected_ordinals:
+        # Ordinals are unique positive integers; count and maximum prove 1..N.
+        # Keep work bounded by retained rows, not a payload-declared count.
+        if len(ordinals) != terminal_count or max(ordinals, default=0) != terminal_count:
             return None, None, "not_available", (
                 "Provider source-transport retrieval evidence does not match the "
                 "post-revoke terminal retrieval count; one or more successful storage "
@@ -288,6 +289,13 @@ _HELPER_BLOCK = r'''def _s0_storage_io_measurement(
 def patch_s0_transport_terminal_collector(path: Path = BASELINE_PATH) -> None:
     source = path.read_text(encoding="utf-8")
     if _FINAL_MARKER in source:
+        # Refresh an installed helper too, so upgrades and repeated composition
+        # cannot retain the previous payload-sized allocation.
+        start = source.index("def _s0_storage_io_measurement(")
+        end = source.index("def _phase2_process_lifetime_peak(", start)
+        updated = source[:start] + _HELPER_BLOCK + source[end:]
+        if updated != source:
+            path.write_text(updated, encoding="utf-8")
         return
     if "def _s0_storage_io_measurement(" not in source:
         raise RuntimeError("S0.3.2 storage collector must be installed first")
